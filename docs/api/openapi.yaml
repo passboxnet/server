@@ -2136,7 +2136,11 @@ paths:
                 expiresAt: { type: integer, description: Unix ms, 0 for none. }
                 grants: { type: array, items: { $ref: "#/components/schemas/ServiceAccountGrantUpload" } }
       responses:
-        "201": { description: Created., content: { application/json: { schema: { $ref: "#/components/schemas/ServiceAccount" } } } }
+        "201":
+          {
+            description: Created.,
+            content: { application/json: { schema: { $ref: "#/components/schemas/ServiceAccount" } } },
+          }
         "400": { description: Invalid or unsigned key or grant. }
         "409": { description: The vault's key was rotated (`currentKeyEpoch` in the details). }
   /api/v1/service-accounts/{id}:
@@ -2150,7 +2154,11 @@ paths:
           application/json:
             schema: { type: object, properties: { name: { type: string }, expiresAt: { type: integer } } }
       responses:
-        "200": { description: Updated., content: { application/json: { schema: { $ref: "#/components/schemas/ServiceAccount" } } } }
+        "200":
+          {
+            description: Updated.,
+            content: { application/json: { schema: { $ref: "#/components/schemas/ServiceAccount" } } },
+          }
     delete:
       summary: Delete the service account and its activity
       operationId: serviceAccountsDelete
@@ -2173,7 +2181,11 @@ paths:
               required: [grants]
               properties: { grants: { type: array, items: { $ref: "#/components/schemas/ServiceAccountGrantUpload" } } }
       responses:
-        "200": { description: Updated., content: { application/json: { schema: { $ref: "#/components/schemas/ServiceAccount" } } } }
+        "200":
+          {
+            description: Updated.,
+            content: { application/json: { schema: { $ref: "#/components/schemas/ServiceAccount" } } },
+          }
   /api/v1/service-accounts/{id}/grants/{vaultId}:
     delete:
       summary: Remove access to a vault (all key epochs)
@@ -2254,7 +2266,8 @@ paths:
         required: true
         content:
           application/json:
-            schema: { type: object, required: [request], properties: { request: { $ref: "#/components/schemas/Base64Url" } } }
+            schema:
+              { type: object, required: [request], properties: { request: { $ref: "#/components/schemas/Base64Url" } } }
       responses:
         "201": { description: "Created; pending for 10 minutes. Response `{ id, expiresAt }`." }
         "429": { $ref: "#/components/responses/RateLimited" }
@@ -2265,7 +2278,10 @@ paths:
       tags: [agents]
       parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
       responses:
-        "200": { description: "`{ id, status, decision?, decisionSignature?, notAfter, expiresAt }`; status `pending`, `approved`, `denied`, `expired` or `revoked`." }
+        "200":
+          {
+            description: "`{ id, status, decision?, decisionSignature?, notAfter, expiresAt }`; status `pending`, `approved`, `denied`, `expired` or `revoked`.",
+          }
   /api/v1/agent-grants/{id}/decision:
     post:
       summary: Approve or deny, signed with the account key on the approving device
@@ -2301,7 +2317,10 @@ paths:
       tags: [agents]
       parameters: [{ name: limit, in: query, schema: { type: integer, default: 100, maximum: 500 } }]
       responses:
-        "200": { description: "Events: principal, client name, grant, tool, item IDs, target (command word and hash), result." }
+        "200":
+          {
+            description: "Events: principal, client name, grant, tool, item IDs, target (command word and hash), result.",
+          }
     post:
       summary: Report an agent action (the broker); never values
       operationId: agentEventsCreate
