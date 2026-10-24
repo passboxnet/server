@@ -23,7 +23,8 @@ Every option can be set as a command-line flag or an environment variable.
 | `PASSBOX_AUTH_RATE_LIMIT` | `60` | Sign-in and registration requests per client IP and minute. Raise it only for test servers that many clients share |
 | `PASSBOX_SMTP_URL` | unset | SMTP server for outgoing mail, see [Email](#email). Without it, mails are only written to the log |
 | `PASSBOX_MAIL_FROM` | unset | Sender, for example `Passbox <passbox@example.com>`. Required with `PASSBOX_SMTP_URL` |
-| `PASSBOX_PUBLIC_URL` | unset | Address users open Passbox at, for example `https://passbox.example.com`. Used for links in mails |
+| `PASSBOX_PUBLIC_URL` | unset | Address users open Passbox at, for example `https://passbox.example.com`. Used for links in mails; required for [single sign-on](#single-sign-on-sso) (redirect URI) |
+| `PASSBOX_SSO_ALLOW_HTTP_LOOPBACK` | unset | `1` allows `http://` identity providers on `localhost`/`127.0.0.1`/`[::1]`, for development only |
 | `PASSBOX_ADMIN_EMAILS` | unset | Comma-separated emails of accounts that are always instance admins, see [Administration](#administration) |
 | `PASSBOX_LOG_FORMAT` | `pretty` | `pretty` or `json` |
 | `RUST_LOG` | `info` | Log level, for example `debug` or `passbox_server=debug` |
@@ -122,3 +123,64 @@ Losing the `server_secrets` table invalidates all logins: users cannot sign in a
 - **Device codes:** adding a device with a code needs approval on the signed-in device; codes are valid for 10 minutes, claims are limited to 10 per IP and minute and 5 open codes per account. Only the email and the Secret Key move; the master password is never transferred.
 - **Sessions:** users see their signed-in devices and can sign them out. Changing the master password signs out every other device.
 - **Activity log:** sign-ins (with or without a second factor), failed sign-ins and second factors, sign-outs, revoked sessions, password changes, two-factor changes, used recovery codes, account recoveries and emergency access events are recorded per account and visible to the account owner.
+- **Single sign-on:** see [Single sign-on (SSO)](#single-sign-on-sso). Flows, tickets, proofs, device requests and SCIM tokens are random 256-bit values stored as SHA-256 hashes; client secrets are encrypted with a server key (`sso_key` in `server_secrets`). Deprovisioning through SCIM ends all sessions of the person immediately.
+
+## Single sign-on (SSO)
+
+Team organizations can sign in their members through an OpenID Connect identity provider and provision them with SCIM 2.0. Everything is included in every installation. How it works and what it protects: [docs/architecture/sso.md](architecture/sso.md). SAML is not supported ([ADR 0005](adr/0005-saml-deferred.md)); use your provider's OpenID Connect support (ADFS 2016 and later have it).
+
+**Before you start:** set `PASSBOX_PUBLIC_URL` to the address users open Passbox at (`https://passbox.example.com`). The identity provider sends users back to `{PASSBOX_PUBLIC_URL}/api/v1/sso/callback`, and SCIM is served at `{PASSBOX_PUBLIC_URL}/api/v1/scim/v2`. The server must reach the provider over https (outbound). For a development provider on the same machine over plain http, set `PASSBOX_SSO_ALLOW_HTTP_LOOPBACK=1` (only `localhost`, `127.0.0.1` and `[::1]`; never in production).
+
+**In Passbox:** open the team (Family & team → your team) → Settings → **Single sign-on → Set up**, as owner or admin:
+
+1. Choose the provider, enter a name for the sign-in button, the **issuer URL**, the **client ID** and the **client secret**, and the **email domains** of your organization (one per line). Copy the **redirect URI** into the provider's app registration.
+2. **Check connection** reads the provider's discovery document and keys. Save with **Single sign-on is on**.
+3. **Test sign-in** opens the provider in a popup and shows the claims it sent and whether a real sign-in would work, without signing you in.
+4. Optional: **Require single sign-on** (members must sign in through the provider; owners and admins keep the master password as a fallback) and **Allow unlocking with single sign-on** (members can trust their devices and unlock without the master password; read the trade-off in [sso.md](architecture/sso.md#threat-model-of-sso-unlock) first).
+
+Members still need their master password and, on a new device, the Secret Key, unless the device is trusted. Users sign in with **Use single sign-on (SSO)** on the sign-in page, or the option appears when they type an email of a configured domain.
+
+### Microsoft Entra ID
+
+1. Entra admin center → App registrations → **New registration**: name "Passbox", single tenant, redirect URI type **Web** = the redirect URI from Passbox.
+2. Certificates & secrets → **New client secret**; copy the value (not the ID).
+3. Token configuration → **Add optional claim** → ID token → `email`. Optional: **Add groups claim** (shows in the test result).
+4. In Passbox: issuer `https://login.microsoftonline.com/<tenant-id>/v2.0` (the tenant ID from Overview; never `common` or `organizations`), client ID = Application (client) ID. Turn **Require a verified email** off under Advanced: Entra ID does not send `email_verified`, and the email claim is only as trustworthy as your tenant's directory (Passbox links accounts by the stable `sub` after the first sign-in).
+5. Users must be assigned to the app if "Assignment required" is on (Enterprise applications → Passbox → Properties).
+
+### Google Workspace
+
+1. Google Cloud console → APIs & Services → OAuth consent screen: **Internal**. Credentials → **Create OAuth client ID** → Web application; authorized redirect URI = the redirect URI from Passbox.
+2. In Passbox: issuer `https://accounts.google.com`, client ID and secret from the credential. Google sends `email_verified`; keep the setting on. Google does not send groups in ID tokens.
+
+### Okta
+
+1. Applications → **Create App Integration** → OIDC, Web Application; sign-in redirect URI = the redirect URI from Passbox; grant type Authorization Code; assign the people or groups.
+2. In Passbox: issuer `https://<your-org>.okta.com` (org authorization server) or `https://<your-org>.okta.com/oauth2/default` (custom authorization server; it must match the `iss` Okta puts into tokens), client ID and secret.
+3. Groups (optional): Sign On → OpenID Connect ID Token → Groups claim filter `groups` matches `.*`.
+
+### Keycloak
+
+1. Realm → Clients → **Create client**: OpenID Connect, client ID `passbox`, **Client authentication on**, Standard flow on; valid redirect URI = the redirect URI from Passbox. Advanced → Proof Key for Code Exchange: S256.
+2. Credentials tab: copy the client secret.
+3. In Passbox: issuer `https://<host>/realms/<realm>`. Groups (optional): client scopes → add a "Group Membership" mapper with token claim name `groups`, full group path off.
+
+### authentik
+
+1. Applications → Providers → **Create** → OAuth2/OpenID Provider: client type Confidential, redirect URI (strict) = the redirect URI from Passbox, signing key: your certificate (RS256). Then create an Application for it with slug `passbox`.
+2. In Passbox: issuer `https://<host>/application/o/passbox/` (with the trailing slash, as authentik shows it), client ID and secret from the provider. authentik sends `email_verified` and `groups` with the default scope mappings.
+
+### ZITADEL
+
+1. Project → **New application** → Web, authentication method **Code** (or PKCE for a public client), redirect URI = the redirect URI from Passbox.
+2. In Passbox: issuer `https://<instance>.zitadel.cloud` (or your own domain), client ID and secret. Choose client authentication "Client secret (HTTP Basic)" for the Code method, or "None" for PKCE. Roles appear under `urn:zitadel:iam:org:project:roles` if you enable "Assert roles on authentication"; set the groups claim to that name to see them in the test.
+
+### SCIM provisioning
+
+In the team's Single sign-on page, **Provisioning (SCIM)** shows the base URL. **Create token** (owner or admin, sign-in within the last 10 minutes) shows a token once; enter both in your provider. Tokens expire after the chosen 1–730 days; create a new one before that and revoke the old one.
+
+- **Microsoft Entra ID:** Enterprise applications → (a non-gallery app) → Provisioning → Automatic; Tenant URL = base URL, Secret token = the token; Test connection; mappings: `userPrincipalName` or `mail` → `userName`, `Switch([IsSoftDeleted], , "False", "True", "True", "False")` → `active` (the default), keep emails and names. Entra deprovisions with `active: false` and later `DELETE`.
+- **Okta:** in the OIDC app (or a SCIM 2.0 app) → General → enable SCIM provisioning; base URL, authentication "HTTP Header" with the token; unique identifier `userName`; enable Push New Users, Push Profile Updates, Push Groups and Deactivate Users.
+- **Keycloak, authentik, ZITADEL, JumpCloud, OneLogin:** use their SCIM 2.0 outbound connector or plugin with the base URL and bearer token.
+
+What provisioning does: new people get an invitation mail (or join on their first SSO sign-in); existing members are linked. People who joined are **pending confirmation** until an owner or admin confirms them in the list (an admin's unlocked Passbox seals the organization key for them; the server cannot). Deactivating someone suspends the membership and immediately ends all their sessions and trusted devices; reactivating restores the membership. Directory groups are shown, but adding their members to Passbox groups is done by an admin.

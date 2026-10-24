@@ -1154,9 +1154,10 @@ async fn load_groups(
 ) -> ScimResult<Vec<GroupRow>> {
     let rows: Vec<(String, String, String, i64, i64, i64)> = sqlx::query_as(
         "SELECT id, external_id, display_name, version, created_at, updated_at FROM scim_groups \
-         WHERE org_id = $1 AND ($2 = '' OR id = $2) ORDER BY created_at, id",
+         WHERE org_id = $1 AND ($2 = '' OR id = $3) ORDER BY created_at, id",
     )
     .bind(org_id)
+    .bind(id.unwrap_or(""))
     .bind(id.unwrap_or(""))
     .fetch_all(&mut *conn)
     .await?;

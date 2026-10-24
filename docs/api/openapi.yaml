@@ -21,6 +21,10 @@ info:
     `emergency_access_waiting` and `device_link_expired` (403). Account
     recovery, emergency access and device codes are described in
     docs/architecture/recovery.md.
+    Single sign-on errors (403) start with `sso_`, for example
+    `sso_required`, `sso_proof_invalid`, `sso_expired` or
+    `sso_device_not_trusted`; SSO, trusted devices and SCIM are described in
+    docs/architecture/sso.md (tags `sso` and `scim`).
 
     Two-factor authentication: when an account has a second factor (TOTP
     authenticator app or WebAuthn security key), `login/finish` answers with
@@ -212,6 +216,13 @@ paths:
                   description: |
                     The web client's `location.origin`. Selects the security
                     keys offered in `TwoFactorChallenge.webauthn`.
+                ssoProof:
+                  type: string
+                  description: |
+                    Proof of an SSO sign-in (`/sso/redeem`). Required (403
+                    `sso_required`) for members of organizations that require
+                    SSO, unless the device signed in with SSO recently; a valid
+                    proof also replaces the second factor.
       responses:
         "200":
           description: |
@@ -2099,11 +2110,388 @@ paths:
                 properties:
                   status: { type: string }
                   sealedPayload: { type: string }
+  # --- Single sign-on, trusted devices and SCIM (wave E, docs/architecture/sso.md) ---
+  /api/v1/orgs/{orgId}/sso:
+    parameters:
+      - { name: orgId, in: path, required: true, schema: { type: string } }
+    get:
+      summary: The organization's OIDC configuration, or null (owners and admins)
+      operationId: ssoConfig
+      tags: [sso]
+      responses:
+        "200":
+          description: The configuration without the client secret (`hasClientSecret`), the redirect URI and the cached discovery endpoints.
+          content:
+            { application/json: { schema: { oneOf: [{ $ref: "#/components/schemas/SsoConfig" }, { type: "null" }] } } }
+    put:
+      summary: Create or replace the configuration (team organizations)
+      description: |
+        Enabling fetches the discovery document and the JWKS (`sso_unreachable`,
+        `sso_issuer_mismatch`, `sso_insecure_url`, … as 403) and claims the
+        email domains (409 with `details.code = sso_domain_taken`). Omit
+        `clientSecret` to keep the stored one, send `""` to remove it.
+      operationId: ssoSaveConfig
+      tags: [sso]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/SsoSettings" } } }
+      responses:
+        "200":
+          { description: Saved., content: { application/json: { schema: { $ref: "#/components/schemas/SsoConfig" } } } }
+    delete:
+      summary: Remove the configuration, its domains, links and pending approvals
+      operationId: ssoRemoveConfig
+      tags: [sso]
+      responses:
+        "204": { description: Removed. }
+  /api/v1/orgs/{orgId}/sso/check:
+    post:
+      summary: Fetch discovery and JWKS and report what was found (no response bodies)
+      operationId: ssoCheck
+      tags: [sso]
+      parameters:
+        - { name: orgId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        content:
+          {
+            application/json:
+              {
+                schema:
+                  {
+                    type: object,
+                    properties: { issuer: { type: string, description: Check this issuer instead of the saved one. } },
+                  },
+              },
+          }
+      responses:
+        "200":
+          description: "`ok`, endpoints, number of keys, supported algorithms, or `problem: {code, message}`."
+          content: { application/json: { schema: { type: object } } }
+  /api/v1/orgs/{orgId}/sso/test/start:
+    post:
+      summary: Start a test sign-in (prompt=login); nothing is linked or signed in
+      operationId: ssoTestStart
+      tags: [sso]
+      parameters:
+        - { name: orgId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          {
+            description: The authorization URL and flow secret.,
+            content: { application/json: { schema: { $ref: "#/components/schemas/SsoStart" } } },
+          }
+  /api/v1/orgs/{orgId}/sso/test/result:
+    post:
+      summary: The claims of a test sign-in (only for the admin who started it)
+      operationId: ssoTestResult
+      tags: [sso]
+      parameters:
+        - { name: orgId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/SsoTicket" } } }
+      responses:
+        "200":
+          {
+            description: "`outcome`, `subject`, `email`, `emailVerified`, `name`, `groups`, `accountFound`, `claims`.",
+            content: { application/json: { schema: { type: object } } },
+          }
+  /api/v1/sso/discover:
+    post:
+      summary: Which organization's identity provider signs in an email domain
+      operationId: ssoDiscover
+      tags: [sso]
+      security: []
+      requestBody:
+        required: true
+        content:
+          { application/json: { schema: { type: object, required: [email], properties: { email: { type: string } } } } }
+      responses:
+        "200":
+          description: "`{ sso: { orgId, displayName, provider, required, deviceUnlock } | null }`; per domain, it reveals nothing about accounts."
+          content: { application/json: { schema: { type: object } } }
+  /api/v1/sso/start:
+    post:
+      summary: Start a sign-in (authorization code with PKCE)
+      operationId: ssoStart
+      tags: [sso]
+      security: []
+      requestBody:
+        required: true
+        content:
+          {
+            application/json:
+              {
+                schema:
+                  {
+                    type: object,
+                    required: [orgId],
+                    properties: { orgId: { type: string }, email: { type: string, description: Sent as login_hint. } },
+                  },
+              },
+          }
+      responses:
+        "200":
+          {
+            description: Send the browser to `authorizationUrl`; keep `flowSecret` in the tab.,
+            content: { application/json: { schema: { $ref: "#/components/schemas/SsoStart" } } },
+          }
+  /api/v1/sso/callback:
+    get:
+      summary: The identity provider's redirect
+      description: Answers with 303 to `{PASSBOX_PUBLIC_URL}/#/sso?ticket=…` or `#/sso?error=<code>` (`&test=1` for connection tests).
+      operationId: ssoCallback
+      tags: [sso]
+      security: []
+      parameters:
+        - { name: state, in: query, schema: { type: string } }
+        - { name: code, in: query, schema: { type: string } }
+        - { name: error, in: query, schema: { type: string } }
+      responses:
+        "303": { description: Back to the web app. }
+  /api/v1/sso/redeem:
+    post:
+      summary: Turn a ticket into a single-use proof (10 minutes)
+      operationId: ssoRedeem
+      tags: [sso]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/SsoTicket"
+                - {
+                    type: object,
+                    properties: { deviceId: { type: string, description: This device's trusted device ID. } },
+                  }
+      responses:
+        "200":
+          description: "`status` `ok` (with `accountId`, `proof`, `proofExpiresAt`) or `no_account`; `email`, `orgId`, `deviceUnlock`, `deviceTrusted`."
+          content: { application/json: { schema: { type: object } } }
+  /api/v1/sso/unlock:
+    post:
+      summary: A trusted device trades a proof for a session and its sealed account key
+      operationId: ssoUnlock
+      tags: [sso]
+      security: []
+      requestBody:
+        required: true
+        content:
+          {
+            application/json:
+              {
+                schema:
+                  {
+                    type: object,
+                    required: [proof, deviceId],
+                    properties:
+                      {
+                        proof: { type: string },
+                        deviceId: { type: string },
+                        deviceName: { type: string },
+                        clientKind: { type: string },
+                      },
+                  },
+              },
+          }
+      responses:
+        "200":
+          {
+            description: "`{ session, unlock: TrustedDeviceUnlock, email }`.",
+            content: { application/json: { schema: { type: object } } },
+          }
+  /api/v1/sso/device-requests:
+    post:
+      summary: A new device asks a trusted device for approval (30 minutes)
+      operationId: ssoRequestDevice
+      tags: [sso]
+      security: []
+      requestBody:
+        required: true
+        content:
+          {
+            application/json:
+              {
+                schema:
+                  {
+                    type: object,
+                    required: [proof, publicKey],
+                    properties:
+                      {
+                        proof: { type: string },
+                        publicKey: { type: string },
+                        deviceName: { type: string },
+                        clientKind: { type: string },
+                      },
+                  },
+              },
+          }
+      responses:
+        "201":
+          {
+            description: "`requestId`, `requestToken`, `expiresAt`, `approvalCode`.",
+            content: { application/json: { schema: { type: object } } },
+          }
+  /api/v1/sso/device-requests/status:
+    post:
+      summary: Poll an approval; returns the session and sealed key once
+      operationId: ssoDeviceRequestStatus
+      tags: [sso]
+      security: []
+      requestBody:
+        required: true
+        content:
+          {
+            application/json:
+              { schema: { type: object, required: [requestToken], properties: { requestToken: { type: string } } } },
+          }
+      responses:
+        "200":
+          {
+            description: "`status` `pending`, `approved` (with `result`) or `denied`.",
+            content: { application/json: { schema: { type: object } } },
+          }
+  /api/v1/account/trusted-devices:
+    get:
+      summary: Trusted devices and pending approval requests
+      operationId: trustedDevices
+      tags: [sso]
+      responses:
+        "200":
+          {
+            description: "`allowed`, `orgId`, `devices`, `requests`.",
+            content: { application/json: { schema: { type: object } } },
+          }
+    post:
+      summary: Trust this device (login in the last 10 minutes)
+      operationId: trustDevice
+      tags: [sso]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/TrustedDeviceUpload" } } }
+      responses:
+        "201": { description: Trusted. }
+  /api/v1/account/trusted-devices/{id}:
+    delete:
+      summary: Remove a trusted device
+      operationId: removeTrustedDevice
+      tags: [sso]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "204": { description: Removed. }
+  /api/v1/account/trusted-devices/requests/{id}/approve:
+    post:
+      summary: Approve a new device after comparing its code (login in the last 10 minutes)
+      operationId: approveDevice
+      tags: [sso]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/TrustedDeviceUpload" } } }
+      responses:
+        "204": { description: Approved. }
+  /api/v1/account/trusted-devices/requests/{id}/deny:
+    post:
+      summary: Decline a new device
+      operationId: denyDevice
+      tags: [sso]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "204": { description: Declined. }
+  /api/v1/orgs/{orgId}/scim:
+    get:
+      summary: SCIM base URL, tokens, provisioned people (with status) and groups (owners and admins)
+      operationId: scimOverview
+      tags: [scim]
+      parameters:
+        - { name: orgId, in: path, required: true, schema: { type: string } }
+      responses:
+        "200": { description: Overview., content: { application/json: { schema: { type: object } } } }
+  /api/v1/orgs/{orgId}/scim/tokens:
+    post:
+      summary: Create a SCIM bearer token (shown once; login in the last 10 minutes)
+      operationId: scimCreateToken
+      tags: [scim]
+      parameters:
+        - { name: orgId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          {
+            application/json:
+              {
+                schema:
+                  {
+                    type: object,
+                    required: [name],
+                    properties: { name: { type: string }, expiresInDays: { type: integer, minimum: 1, maximum: 730 } },
+                  },
+              },
+          }
+      responses:
+        "201":
+          {
+            description: "`id`, `token`, `expiresAt`, `baseUrl`.",
+            content: { application/json: { schema: { type: object } } },
+          }
+  /api/v1/orgs/{orgId}/scim/tokens/{id}:
+    delete:
+      summary: Revoke a SCIM token
+      operationId: scimRevokeToken
+      tags: [scim]
+      parameters:
+        - { name: orgId, in: path, required: true, schema: { type: string } }
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "204": { description: Revoked. }
+  /api/v1/scim/v2/{resource}:
+    get:
+      summary: SCIM 2.0 (RFC 7644) — ServiceProviderConfig, ResourceTypes, Schemas, Users, Groups
+      description: |
+        Bearer token of the organization (`pbx_scim_…`). Bodies are
+        `application/scim+json`. `Users` and `Groups` support list with
+        `filter`, `startIndex` and `count`, `POST`, and on `/{id}` `GET`,
+        `PUT`, `PATCH` and `DELETE`. Errors use the SCIM error schema.
+        Deactivating or deleting a user suspends the membership and ends all
+        sessions of the account. See docs/architecture/sso.md.
+      operationId: scim
+      tags: [scim]
+      security: [{ scim: [] }]
+      parameters:
+        - {
+            name: resource,
+            in: path,
+            required: true,
+            schema: { type: string, enum: [ServiceProviderConfig, ResourceTypes, Schemas, Users, Groups] },
+          }
+        - { name: filter, in: query, schema: { type: string } }
+        - { name: startIndex, in: query, schema: { type: integer } }
+        - { name: count, in: query, schema: { type: integer } }
+      responses:
+        "200":
+          {
+            description: A SCIM resource or ListResponse.,
+            content: { application/scim+json: { schema: { type: object } } },
+          }
+        "401":
+          {
+            description: Missing or invalid SCIM token.,
+            content: { application/scim+json: { schema: { type: object } } },
+          }
 components:
   securitySchemes:
     session:
       type: http
       scheme: bearer
+    scim:
+      type: http
+      scheme: bearer
+      description: A SCIM token of an organization (`pbx_scim_…`).
   responses:
     Unauthorized:
       description: Missing, invalid or expired session token.
@@ -2122,6 +2510,58 @@ components:
         `registration_closed` (invite-only server), `domain_not_allowed`
         (`domains` mode, other domain) or `invitation_invalid`.
   schemas:
+    SsoSettings:
+      type: object
+      required: [enabled, displayName, issuer, clientId]
+      properties:
+        enabled: { type: boolean }
+        required: { type: boolean, description: Members (not owners and admins) must sign in with SSO. }
+        allowDeviceUnlock: { type: boolean, description: Members may unlock with SSO on trusted devices. }
+        provider: { type: string, enum: [generic, entra, google, okta, keycloak, authentik, zitadel] }
+        displayName: { type: string, maxLength: 80 }
+        issuer: { type: string, format: uri }
+        clientId: { type: string }
+        clientSecret: { type: string, writeOnly: true }
+        tokenAuthMethod: { type: string, enum: [client_secret_basic, client_secret_post, none] }
+        scopes: { type: string, default: openid email profile }
+        emailClaim: { type: string, default: email }
+        requireVerifiedEmail: { type: boolean, default: true }
+        nameClaim: { type: string, default: name }
+        groupsClaim: { type: string, default: groups }
+        allowedDomains: { type: array, items: { type: string } }
+        reauthHours: { type: integer, minimum: 1, maximum: 720, default: 12 }
+    SsoConfig:
+      allOf:
+        - $ref: "#/components/schemas/SsoSettings"
+        - type: object
+          properties:
+            hasClientSecret: { type: boolean }
+            redirectUri: { type: [string, "null"] }
+            discovery: { type: [object, "null"] }
+            updatedAt: { type: integer }
+    SsoStart:
+      type: object
+      required: [authorizationUrl, flowSecret, expiresAt]
+      properties:
+        authorizationUrl: { type: string }
+        flowSecret: { type: string, description: Keep it in the tab that started the flow. }
+        expiresAt: { type: integer }
+    SsoTicket:
+      type: object
+      required: [ticket, flowSecret]
+      properties:
+        ticket: { type: string }
+        flowSecret: { type: string }
+    TrustedDeviceUpload:
+      type: object
+      required: [deviceId, publicKey, sealedKey, grant, grantSignature]
+      properties:
+        deviceId: { type: string }
+        publicKey: { type: string, description: X-Wing public key of the device. }
+        sealedKey: { type: string }
+        grant: { type: string, description: "Canonical `passbox/v1/trusted-device-grant`, signed by the account." }
+        grantSignature: { type: string }
+        name: { type: string }
     Session:
       type: object
       required: [token, accountId, sessionId, expiresAt, deviceToken]

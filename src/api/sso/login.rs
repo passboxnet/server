@@ -571,11 +571,15 @@ async fn accept_invitation(
     .bind(invitation_id)
     .execute(&mut *conn)
     .await?;
-    sqlx::query("UPDATE scim_users SET account_id = $1 WHERE org_id = $2 AND email = (SELECT email FROM accounts WHERE id = $1)")
-        .bind(account_id)
-        .bind(org_id)
-        .execute(&mut *conn)
-        .await?;
+    sqlx::query(
+        "UPDATE scim_users SET account_id = $1 WHERE org_id = $2 \
+         AND email = (SELECT email FROM accounts WHERE id = $3)",
+    )
+    .bind(account_id)
+    .bind(org_id)
+    .bind(account_id)
+    .execute(&mut *conn)
+    .await?;
     Ok(())
 }
 
@@ -1069,9 +1073,10 @@ pub(crate) async fn remember(state: &AppState, device_token: &str, until: i64) -
     if until == 0 {
         return Ok(());
     }
-    sqlx::query("UPDATE device_tokens SET sso_until = $1 WHERE token_hash = $2 AND sso_until < $1")
+    sqlx::query("UPDATE device_tokens SET sso_until = $1 WHERE token_hash = $2 AND sso_until < $3")
         .bind(until)
         .bind(auth::hash_token(device_token))
+        .bind(until)
         .execute(&state.db)
         .await?;
     Ok(())
