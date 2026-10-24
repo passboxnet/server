@@ -20,6 +20,7 @@ Every option can be set as a command-line flag or an environment variable.
 | `PASSBOX_DATABASE_URL` | `sqlite://passbox.db?mode=rwc` | `sqlite://<path>?mode=rwc` or `postgres://user:password@host/database` |
 | `PASSBOX_WEB_DIR` | unset | Directory with the built web client; the Docker image sets it |
 | `PASSBOX_TRUST_PROXY` | `false` | Take the client IP from `X-Forwarded-For`. Enable only behind a reverse proxy that sets it; client IPs are used for rate limiting and shown in the activity log and device list |
+| `PASSBOX_AUTH_RATE_LIMIT` | `60` | Sign-in and registration requests per client IP and minute. Raise it only for test servers that many clients share |
 | `PASSBOX_SMTP_URL` | unset | SMTP server for outgoing mail, see [Email](#email). Without it, mails are only written to the log |
 | `PASSBOX_MAIL_FROM` | unset | Sender, for example `Passbox <passbox@example.com>`. Required with `PASSBOX_SMTP_URL` |
 | `PASSBOX_PUBLIC_URL` | unset | Address users open Passbox at, for example `https://passbox.example.com`. Used for links in mails |

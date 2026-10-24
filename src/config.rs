@@ -29,6 +29,11 @@ pub struct Config {
     #[arg(long, env = "PASSBOX_TRUST_PROXY", default_value_t = false)]
     pub trust_proxy: bool,
 
+    /// Sign-in and registration requests allowed per client IP and minute.
+    /// Raise it only for test servers that many clients share.
+    #[arg(long, env = "PASSBOX_AUTH_RATE_LIMIT", default_value_t = 60)]
+    pub auth_rate_limit: u32,
+
     /// SMTP server for outgoing mail, for example
     /// `smtps://user:password@mail.example.com:465` (implicit TLS) or
     /// `smtp://user:password@mail.example.com:587?tls=required` (STARTTLS).
@@ -63,6 +68,7 @@ impl std::fmt::Debug for Config {
             .field("database_url", &"<redacted>")
             .field("web_dir", &self.web_dir)
             .field("trust_proxy", &self.trust_proxy)
+            .field("auth_rate_limit", &self.auth_rate_limit)
             .field("smtp_url", &self.smtp_url.as_ref().map(|_| "<redacted>"))
             .field("mail_from", &self.mail_from)
             .field("public_url", &self.public_url)
@@ -85,6 +91,7 @@ impl Default for Config {
             database_url: "sqlite::memory:".to_owned(),
             web_dir: None,
             trust_proxy: false,
+            auth_rate_limit: 60,
             smtp_url: None,
             mail_from: None,
             public_url: None,

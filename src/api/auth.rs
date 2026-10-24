@@ -18,7 +18,6 @@ use crate::security::ClientIp;
 use crate::state::AppState;
 
 /// Requests to authentication endpoints per client IP and minute.
-const AUTH_REQUESTS_PER_MINUTE: u32 = 60;
 /// Failed logins within the lockout window per (email, IP) pair for unknown
 /// devices, and per device token for known devices.
 const MAX_FAILED_LOGINS: u32 = 10;
@@ -41,7 +40,7 @@ const MAX_DEVICE_TOKENS_PER_ACCOUNT: i64 = 50;
 pub(crate) fn limit_ip(state: &AppState, ip: &str) -> ApiResult<()> {
     match state.limiter.hit(
         &format!("auth-ip:{ip}"),
-        AUTH_REQUESTS_PER_MINUTE,
+        state.auth_rate_limit,
         std::time::Duration::from_secs(60),
     ) {
         Some(wait) => Err(ApiError::RateLimited(wait)),

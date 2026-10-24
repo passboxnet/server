@@ -26,6 +26,7 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
     let db = db::connect(&config.database_url).await?;
     let mut state = AppState::load(db).await?;
     state.trust_proxy = config.trust_proxy;
+    state.auth_rate_limit = config.auth_rate_limit;
     state.admin_emails = std::sync::Arc::new(admin_emails(&config.admin_emails));
     state.mailer = mail::Mailer::new(
         state.db.clone(),

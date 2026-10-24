@@ -73,7 +73,7 @@ jobs:
       - name: Start a server for client integration tests
         run: |
           cargo build --package passbox-server --locked
-          PASSBOX_DATABASE_URL=sqlite::memory: PASSBOX_BIND=127.0.0.1:8080 ./target/debug/passbox-server &
+          PASSBOX_DATABASE_URL=sqlite::memory: PASSBOX_BIND=127.0.0.1:8080 PASSBOX_AUTH_RATE_LIMIT=1000 ./target/debug/passbox-server &
           for i in $(seq 1 30); do curl -sf http://127.0.0.1:8080/health && break; sleep 1; done
       - run: pnpm test
         env:

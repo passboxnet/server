@@ -24,6 +24,8 @@ pub struct AppState {
     pub limiter: Arc<RateLimiter>,
     /// Trust `X-Forwarded-For` from a reverse proxy for client IPs.
     pub trust_proxy: bool,
+    /// Sign-in and registration requests per client IP and minute.
+    pub auth_rate_limit: u32,
     /// Signs the head of the key directory log.
     pub log_signer: Arc<LogSigner>,
     /// Queues outgoing mail. Logs mails until SMTP is configured.
@@ -78,6 +80,7 @@ impl AppState {
             two_factor_key: Arc::new(SymmetricKey::from_bytes(two_factor_key)),
             limiter: Arc::new(RateLimiter::default()),
             trust_proxy: false,
+            auth_rate_limit: 60,
         })
     }
 }
