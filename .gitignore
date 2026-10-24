@@ -23,3 +23,6 @@ crates/core-wasm/pkg/
 .idea/
 .vscode/*
 !.vscode/extensions.json
+
+# Local agent worktrees
+.claude/worktrees/
