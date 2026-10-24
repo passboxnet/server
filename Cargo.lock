@@ -3522,6 +3522,7 @@ name = "passbox-client"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "data-encoding",
  "passbox-core",
  "passbox-server",
  "serde",
