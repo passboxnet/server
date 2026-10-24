@@ -1598,8 +1598,10 @@ dependencies = [
 name = "passbox-ffi"
 version = "0.1.0"
 dependencies = [
+ "jni",
  "passbox-client",
  "passbox-core",
+ "rustls-platform-verifier",
  "serde_json",
  "tempfile",
  "thiserror",
