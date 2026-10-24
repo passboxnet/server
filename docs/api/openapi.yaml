@@ -2543,11 +2543,282 @@ paths:
             description: Missing or invalid SCIM token.,
             content: { application/scim+json: { schema: { type: object } } },
           }
+  # --- Service accounts (F2), see docs/architecture/service-accounts.md -----------------
+  /api/v1/service-accounts:
+    get:
+      summary: The account's service accounts, newest first
+      operationId: serviceAccountsList
+      tags: [service-accounts]
+      responses:
+        "200":
+          description: Service accounts with their vault grants (`keyEpoch` below `currentKeyEpoch` needs renewing).
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: "#/components/schemas/ServiceAccount" } }
+    post:
+      summary: Register a service account created by the client
+      description: |
+        The client generates the key pair and token (`passbox_core::service_account`). The public key and every
+        grant must be signed by the account's published signing key; grants need the vault's current key epoch,
+        and `write` needs the account's write access. The token itself is never sent.
+      operationId: serviceAccountsCreate
+      tags: [service-accounts]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, name, publicKey, publicKeySignature, encryptedPrivate, authHash]
+              properties:
+                id: { type: string }
+                name: { type: string, maxLength: 100 }
+                publicKey: { $ref: "#/components/schemas/Base64Url" }
+                publicKeySignature: { $ref: "#/components/schemas/Base64Url" }
+                encryptedPrivate: { $ref: "#/components/schemas/Base64Url" }
+                authHash: { type: string, description: Lowercase hex SHA-256 of the Base64url authentication key. }
+                expiresAt: { type: integer, description: Unix ms, 0 for none. }
+                grants: { type: array, items: { $ref: "#/components/schemas/ServiceAccountGrantUpload" } }
+      responses:
+        "201":
+          {
+            description: Created.,
+            content: { application/json: { schema: { $ref: "#/components/schemas/ServiceAccount" } } },
+          }
+        "400": { description: Invalid or unsigned key or grant. }
+        "409": { description: The vault's key was rotated (`currentKeyEpoch` in the details). }
+  /api/v1/service-accounts/{id}:
+    put:
+      summary: Rename or change the expiry
+      operationId: serviceAccountsUpdate
+      tags: [service-accounts]
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object, properties: { name: { type: string }, expiresAt: { type: integer } } }
+      responses:
+        "200":
+          {
+            description: Updated.,
+            content: { application/json: { schema: { $ref: "#/components/schemas/ServiceAccount" } } },
+          }
+    delete:
+      summary: Delete the service account and its activity
+      operationId: serviceAccountsDelete
+      tags: [service-accounts]
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        "204": { description: Deleted. }
+  /api/v1/service-accounts/{id}/grants:
+    put:
+      summary: Add or renew vault grants
+      operationId: serviceAccountsPutGrants
+      tags: [service-accounts]
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [grants]
+              properties: { grants: { type: array, items: { $ref: "#/components/schemas/ServiceAccountGrantUpload" } } }
+      responses:
+        "200":
+          {
+            description: Updated.,
+            content: { application/json: { schema: { $ref: "#/components/schemas/ServiceAccount" } } },
+          }
+  /api/v1/service-accounts/{id}/grants/{vaultId}:
+    delete:
+      summary: Remove access to a vault (all key epochs)
+      operationId: serviceAccountsDeleteGrant
+      tags: [service-accounts]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: vaultId, in: path, required: true, schema: { type: string } }
+      responses:
+        "204": { description: Removed. }
+  /api/v1/service-accounts/{id}/revoke:
+    post:
+      summary: Revoke the token at once (sealed keys are deleted, agent grants revoked)
+      operationId: serviceAccountsRevoke
+      tags: [service-accounts]
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        "204": { description: Revoked. }
+  /api/v1/service-accounts/{id}/events:
+    get:
+      summary: What the service account did
+      operationId: serviceAccountsEvents
+      tags: [service-accounts]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, default: 50, maximum: 200 } }
+      responses:
+        "200":
+          description: Events, newest first (`created`, `read`, `item_written`, `item_deleted`, `access_granted`, `access_removed`, `updated`, `revoked`).
+  /api/v1/service-account:
+    get:
+      summary: Everything the service account can read (service account authentication)
+      description: |
+        Authenticated with `Authorization: Bearer sa.{id}.{authKey}`. Returns the encrypted private key, the
+        grants, vaults with the effective permission (the lower of the grant and the owner's live access) and
+        the items of those vaults. 403 `service_account_revoked` / `service_account_expired`.
+      operationId: serviceAccountState
+      tags: [service-accounts]
+      security: [{ serviceAccount: [] }]
+      responses:
+        "200": { description: The state. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /api/v1/service-account/items/{id}:
+    put:
+      summary: Create or update an item in a vault the service account may write to
+      operationId: serviceAccountPutItem
+      tags: [service-accounts]
+      security: [{ serviceAccount: [] }]
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        "200": { description: Written. }
+        "403": { description: Read-only access. }
+        "409": { description: Revision or key epoch conflict. }
+    delete:
+      summary: Delete an item (tombstone)
+      operationId: serviceAccountDeleteItem
+      tags: [service-accounts]
+      security: [{ serviceAccount: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: revision, in: query, required: true, schema: { type: integer } }
+      responses:
+        "200": { description: Deleted. }
+  # --- AI agents (F7), see docs/architecture/ai-agents.md ----------------------------------
+  /api/v1/agent-grants:
+    get:
+      summary: Agent grant requests for this account (pending by default, `status=all` for 30 days)
+      operationId: agentGrantsList
+      tags: [agents]
+      parameters: [{ name: status, in: query, schema: { type: string, enum: [pending, all] } }]
+      responses:
+        "200": { description: "Requests with the Base64url canonical `request` to parse and display before signing." }
+    post:
+      summary: Ask for a grant (pbx mcp signed in as the account)
+      operationId: agentGrantsCreate
+      tags: [agents]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              { type: object, required: [request], properties: { request: { $ref: "#/components/schemas/Base64Url" } } }
+      responses:
+        "201": { description: "Created; pending for 10 minutes. Response `{ id, expiresAt }`." }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /api/v1/agent-grants/{id}:
+    get:
+      summary: The decision on a request (polled by the requesting broker)
+      operationId: agentGrantsGet
+      tags: [agents]
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        "200":
+          {
+            description: "`{ id, status, decision?, decisionSignature?, notAfter, expiresAt }`; status `pending`, `approved`, `denied`, `expired` or `revoked`.",
+          }
+  /api/v1/agent-grants/{id}/decision:
+    post:
+      summary: Approve or deny, signed with the account key on the approving device
+      operationId: agentGrantsDecide
+      tags: [agents]
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [decision, decisionSignature]
+              properties:
+                decision: { $ref: "#/components/schemas/Base64Url" }
+                decisionSignature: { $ref: "#/components/schemas/Base64Url" }
+      responses:
+        "200": { description: Recorded. }
+        "400": { description: The signature or the decision does not match the request. }
+        "409": { description: Already answered or expired. }
+  /api/v1/agent-grants/{id}/revoke:
+    post:
+      summary: End a pending or approved grant
+      operationId: agentGrantsRevoke
+      tags: [agents]
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        "204": { description: Revoked. }
+  /api/v1/agent-events:
+    get:
+      summary: What agents did on behalf of this account
+      operationId: agentEventsList
+      tags: [agents]
+      parameters: [{ name: limit, in: query, schema: { type: integer, default: 100, maximum: 500 } }]
+      responses:
+        "200":
+          {
+            description: "Events: principal, client name, grant, tool, item IDs, target (command word and hash), result.",
+          }
+    post:
+      summary: Report an agent action (the broker); never values
+      operationId: agentEventsCreate
+      tags: [agents]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tool, result]
+              properties:
+                grantId: { type: string }
+                tool: { type: string, enum: [search, request_access, run, inject, create, generate] }
+                itemIds: { type: array, items: { type: string } }
+                target: { type: string, maxLength: 200 }
+                result: { type: string, enum: [ok, failed, denied, expired, blocked] }
+                clientName: { type: string, maxLength: 100 }
+      responses:
+        "204": { description: Recorded. }
+  /api/v1/service-account/agent-grants:
+    post:
+      summary: Ask the owner for a grant (pbx mcp with a service account token)
+      operationId: serviceAccountAgentGrantsCreate
+      tags: [agents]
+      security: [{ serviceAccount: [] }]
+      responses:
+        "201": { description: Created. }
+  /api/v1/service-account/agent-grants/{id}:
+    get:
+      summary: The owner's decision
+      operationId: serviceAccountAgentGrantsGet
+      tags: [agents]
+      security: [{ serviceAccount: [] }]
+      parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+      responses:
+        "200": { description: "As for `/agent-grants/{id}`." }
+  /api/v1/service-account/agent-events:
+    post:
+      summary: Report an agent action of a service account
+      operationId: serviceAccountAgentEventsCreate
+      tags: [agents]
+      security: [{ serviceAccount: [] }]
+      responses:
+        "204": { description: Recorded. }
 components:
   securitySchemes:
     session:
       type: http
       scheme: bearer
+    serviceAccount:
+      type: http
+      scheme: bearer
+      description: "`sa.{id}.{authKey}`, where `authKey` is derived from the service account token's secret."
     scim:
       type: http
       scheme: bearer
@@ -2570,6 +2841,38 @@ components:
         `registration_closed` (invite-only server), `domain_not_allowed`
         (`domains` mode, other domain) or `invitation_invalid`.
   schemas:
+    ServiceAccountGrantUpload:
+      type: object
+      required: [vaultId, keyEpoch, permission, sealedKey, grant, grantSignature]
+      properties:
+        vaultId: { type: string }
+        keyEpoch: { type: integer }
+        permission: { type: string, enum: [read, write] }
+        sealedKey: { $ref: "#/components/schemas/Base64Url" }
+        grant: { $ref: "#/components/schemas/Base64Url" }
+        grantSignature: { $ref: "#/components/schemas/Base64Url" }
+    ServiceAccount:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        publicKey: { $ref: "#/components/schemas/Base64Url" }
+        publicKeySignature: { $ref: "#/components/schemas/Base64Url" }
+        expiresAt: { type: integer }
+        revokedAt: { type: integer }
+        lastUsedAt: { type: integer }
+        lastUsedIp: { type: string }
+        createdAt: { type: integer }
+        grants:
+          type: array
+          items:
+            type: object
+            properties:
+              vaultId: { type: string }
+              keyEpoch: { type: integer }
+              permission: { type: string, enum: [read, write] }
+              currentKeyEpoch: { type: integer }
+              createdAt: { type: integer }
     SsoSettings:
       type: object
       required: [enabled, displayName, issuer, clientId]
