@@ -25,6 +25,7 @@ Every option can be set as a command-line flag or an environment variable.
 | `PASSBOX_MAIL_FROM` | unset | Sender, for example `Passbox <passbox@example.com>`. Required with `PASSBOX_SMTP_URL` |
 | `PASSBOX_PUBLIC_URL` | unset | Address users open Passbox at, for example `https://passbox.example.com`. Used for links in mails |
 | `PASSBOX_ADMIN_EMAILS` | unset | Comma-separated emails of accounts that are always instance admins, see [Administration](#administration) |
+| `PASSBOX_ICONS` | `on` | `on` lets signed-in apps load website icons through the server, `off` turns this off. See [Website icons](#website-icons) |
 | `PASSBOX_LOG_FORMAT` | `pretty` | `pretty` or `json` |
 | `RUST_LOG` | `info` | Log level, for example `debug` or `passbox_server=debug` |
 
@@ -97,6 +98,14 @@ The server sends:
 
 `Access-Control-Allow-Credentials` is never sent. If your reverse proxy adds its own CORS headers, remove them so they do not conflict with these.
 
+## Website icons
+
+Apps show the icons (favicons) of the websites in a vault. So that the user's devices never contact those websites, they load the icons through their own server: `GET /api/v1/icons/{domain}`. The server fetches `https://{domain}/apple-touch-icon.png`, `/favicon.ico` or the icon linked from the homepage and caches the result in memory (7 days, "no icon" for a day).
+
+**Privacy:** with icons on, the server learns which domains are in its users' vaults (the vault contents stay encrypted), and the websites see requests from the server's IP address. Turn it off with `PASSBOX_ICONS=off` if that is not acceptable; `/api/v1/meta` then reports `"icons": false` and the apps show monograms. Users can also turn icons off in their apps ("Website-Icons anzeigen").
+
+**Outbound connections:** the server needs HTTPS access to the internet for icons. Requests do not use a proxy (`HTTPS_PROXY` is ignored), go only to port 443 of public addresses (the server resolves the name itself and refuses loopback, private, link-local, multicast, unique-local and other special addresses, also after redirects), follow at most 3 redirects, time out after 3 seconds and read at most 200 KB. Only PNG, ICO, JPEG, GIF and WebP images are passed on; cookies are neither stored nor forwarded. Each session may load 600 icons per minute.
+
 ## Backups
 
 Back up the database. Everything in it except the server secrets is encrypted by the clients, but treat backups as sensitive anyway.
@@ -120,5 +129,6 @@ Losing the `server_secrets` table invalidates all logins: users cannot sign in a
 - **Account recovery:** see [recovery.md](architecture/recovery.md). A recovery (by recovery code or through an organization) sets a new master password and a new Secret Key, signs out every device, deletes all device tokens and mails the account. Recovery-code logins share the per-IP authentication limit and are refused after 10 failures per email and IP, 20 per email and 100 per IP in 15 minutes; with two-factor sign-in the second factor is required too. Organization recovery requests are limited to 10 per IP and 3 per email per hour and expire after 48 hours; unknown emails get the same answer as known ones. Recovery tokens are single use and valid for 15 minutes.
 - **Emergency access:** the server releases the sealed vault keys only after the waiting period the owner chose (1–30 days, default 7) or the owner's approval; the owner can deny until then. A server operator who changes the clock or the database can shorten the waiting period, but cannot read the vaults without the trusted person's private key. At most 20 contacts and 20 invitations per hour per account.
 - **Device codes:** adding a device with a code needs approval on the signed-in device; codes are valid for 10 minutes, claims are limited to 10 per IP and minute and 5 open codes per account. Only the email and the Secret Key move; the master password is never transferred.
+- **Item history:** every change of an item keeps the previous encrypted version on the server (the newest 20 per item); a permanent deletion removes them. They are encrypted like the item itself.
 - **Sessions:** users see their signed-in devices and can sign them out. Changing the master password signs out every other device.
 - **Activity log:** sign-ins (with or without a second factor), failed sign-ins and second factors, sign-outs, revoked sessions, password changes, two-factor changes, used recovery codes, account recoveries and emergency access events are recorded per account and visible to the account owner.

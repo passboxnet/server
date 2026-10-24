@@ -8,6 +8,7 @@ pub mod auth;
 pub mod device_links;
 pub mod emergency;
 pub mod groups;
+pub mod icons;
 pub mod items;
 pub mod keys;
 pub mod notify;
@@ -98,6 +99,8 @@ pub fn router() -> Router<AppState> {
         .route("/vaults", post(vaults::create))
         .route("/vaults/{id}", put(vaults::update))
         .route("/items/{id}", put(items::put).delete(items::delete))
+        .route("/items/{id}/versions", get(items::versions))
+        .route("/icons/{domain}", get(icons::get))
         // Account key pairs and the key directory.
         .route("/account/keys", get(keys::own).put(keys::publish))
         .route("/keys/head", get(keys::head))

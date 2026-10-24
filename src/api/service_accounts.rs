@@ -843,6 +843,7 @@ pub struct SaItem {
     encrypted_data: String,
     key_epoch: i64,
     updated_at: i64,
+    created_at: i64,
 }
 
 #[derive(Serialize)]
@@ -909,26 +910,26 @@ pub async fn state(State(state): State<AppState>, auth: ServiceAuth) -> ApiResul
             permission: effective.as_str().to_owned(),
             org_id,
         });
-        let rows: Vec<(String, i64, Option<String>, i64, i64)> = sqlx::query_as(
-            "SELECT id, revision, encrypted_data, key_epoch, updated_at FROM items \
+        let rows: Vec<(String, i64, Option<String>, i64, i64, i64)> = sqlx::query_as(
+            "SELECT id, revision, encrypted_data, key_epoch, updated_at, created_at FROM items \
              WHERE vault_id = $1 AND deleted = 0",
         )
         .bind(&vault_id)
         .fetch_all(&mut *conn)
         .await?;
-        items.extend(
-            rows.into_iter()
-                .filter_map(|(id, revision, data, key_epoch, updated_at)| {
-                    Some(SaItem {
-                        id,
-                        vault_id: vault_id.clone(),
-                        revision,
-                        encrypted_data: data?,
-                        key_epoch,
-                        updated_at,
-                    })
-                }),
-        );
+        items.extend(rows.into_iter().filter_map(
+            |(id, revision, data, key_epoch, updated_at, created_at)| {
+                Some(SaItem {
+                    id,
+                    vault_id: vault_id.clone(),
+                    revision,
+                    encrypted_data: data?,
+                    key_epoch,
+                    updated_at,
+                    created_at,
+                })
+            },
+        ));
     }
     sa_event(
         &mut conn,
