@@ -153,11 +153,19 @@ fn full_lifecycle_with_two_devices_and_offline_unlock() {
 
     // Delete propagates; sign out removes everything from the device.
     laptop.delete_item(&item_id).unwrap();
+    let device_token = phone_store.get("device_token").unwrap().unwrap();
     phone.unlock(PASSWORD).unwrap();
+    // Every login rotates the device token.
+    assert_ne!(
+        phone_store.get("device_token").unwrap().unwrap(),
+        device_token
+    );
     assert!(matches!(phone.item(&item_id), Err(Error::NotFound(_))));
+    assert!(phone_store.get("device_token").unwrap().is_some());
     phone.sign_out().unwrap();
     assert_eq!(phone.status().unwrap(), Status::SignedOut);
     assert!(phone_store.get("cache").unwrap().is_none());
+    assert!(phone_store.get("device_token").unwrap().is_none());
 }
 
 #[test]

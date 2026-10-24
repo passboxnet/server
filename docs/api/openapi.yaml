@@ -12,7 +12,7 @@ info:
 
     Errors have the shape `{ "error": "<code>", "message": "...", "details"?: {...} }`
     with the codes `bad_request`, `unauthorized`, `invalid_credentials`,
-    `not_found`, `conflict` and `internal`.
+    `not_found`, `conflict`, `rate_limited` and `internal`.
 servers:
   - url: http://localhost:8080
 security:
@@ -145,6 +145,14 @@ paths:
               properties:
                 email: { type: string }
                 credentialRequest: { $ref: "#/components/schemas/Base64Url" }
+                deviceToken:
+                  type: string
+                  description: |
+                    The `deviceToken` from this device's last successful login.
+                    A valid token for this account exempts the login from the
+                    per-email lockout (it still counts against the per-IP limit
+                    and the token's own limit of 10 failures per 15 minutes).
+                    Invalid or foreign tokens are ignored.
       responses:
         "200":
           description: OPAQUE credential response. Finish within 5 minutes.
@@ -156,6 +164,7 @@ paths:
                 properties:
                   loginId: { $ref: "#/components/schemas/Id" }
                   credentialResponse: { $ref: "#/components/schemas/Base64Url" }
+        "429": { $ref: "#/components/responses/RateLimited" }
   /api/v1/auth/login/finish:
     post:
       summary: Finish the login and receive a session token
@@ -178,11 +187,21 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [token, accountId, expiresAt]
+                required: [token, accountId, sessionId, expiresAt, deviceToken]
                 properties:
                   token: { type: string }
                   accountId: { $ref: "#/components/schemas/Id" }
+                  sessionId: { $ref: "#/components/schemas/Id" }
                   expiresAt: { type: integer }
+                  deviceToken:
+                    type: string
+                    description: |
+                      Store it on the device and send it with the next
+                      `login/start`. Every successful login issues a new token
+                      and invalidates the one it was started with. Tokens grant
+                      no access by themselves, survive logout and session
+                      revocation, expire after a year, and are invalidated for
+                      all other devices by a master password change.
         "401":
           description: Wrong credentials, unknown or expired login.
   /api/v1/auth/logout:
@@ -323,6 +342,10 @@ components:
   responses:
     Unauthorized:
       description: Missing, invalid or expired session token.
+    RateLimited:
+      description: |
+        Too many requests or failed logins. `details.retryAfterSeconds` and the
+        `Retry-After` header give the remaining time of the current window.
     Conflict:
       description: The revision does not follow the stored one. `details.currentRevision` holds the stored revision.
   schemas:

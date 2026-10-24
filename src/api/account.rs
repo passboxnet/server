@@ -120,7 +120,7 @@ pub struct PasswordFinishRequest {
 }
 
 /// Replaces the login credentials and the wrapped account key, and signs
-/// out every other device.
+/// out every other device (deleting their device tokens as well).
 pub async fn password_finish(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
@@ -154,6 +154,17 @@ pub async fn password_finish(
     .bind(i64::from(req.kdf_params.parallelism))
     .bind(&req.encrypted_account_key)
     .bind(&session.account_id)
+    .execute(&mut *tx)
+    .await?;
+    // Other devices must enter the new password anyway, so they lose their
+    // exemption from the per-email lockout too. This device keeps the device
+    // token issued with its session.
+    sqlx::query(
+        "DELETE FROM device_tokens WHERE account_id = $1 AND token_hash NOT IN \
+         (SELECT device_token_hash FROM sessions WHERE token_hash = $2)",
+    )
+    .bind(&session.account_id)
+    .bind(session.token_hash())
     .execute(&mut *tx)
     .await?;
     sqlx::query("DELETE FROM sessions WHERE account_id = $1 AND token_hash <> $2")
