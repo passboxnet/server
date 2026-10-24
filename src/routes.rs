@@ -1,7 +1,11 @@
+use std::time::Duration;
+
+use axum::http::{Method, header};
 use axum::routing::get;
 use axum::{Json, Router};
 use passbox_core::kdf::KdfParams;
 use serde::Serialize;
+use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 
@@ -15,7 +19,8 @@ pub fn router(config: &Config, state: AppState) -> Router {
     let mut app = Router::new()
         .route("/health", get(health))
         .nest("/api/v1", api)
-        .with_state(state);
+        .with_state(state)
+        .layer(cors());
 
     if let Some(dir) = &config.web_dir {
         // Unknown paths fall back to index.html so client-side routing works.
@@ -24,6 +29,20 @@ pub fn router(config: &Config, state: AppState) -> Router {
     }
 
     app.layer(TraceLayer::new_for_http())
+}
+
+/// Lets clients on other origins (the desktop app, a web client served
+/// elsewhere) call the API.
+///
+/// The API authenticates with bearer tokens, never with cookies, so allowing
+/// any origin is safe: a foreign page can only send requests with a token it
+/// already has. Credentials (cookies, HTTP auth) are never allowed.
+fn cors() -> CorsLayer {
+    CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE])
+        .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE])
+        .max_age(Duration::from_secs(60 * 60))
 }
 
 #[derive(Debug, Serialize)]

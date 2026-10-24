@@ -24,6 +24,21 @@ Every option can be set as a command-line flag or an environment variable.
 
 Migrations run automatically at startup.
 
+## Cross-origin requests (CORS)
+
+The API answers cross-origin requests from any origin, so the [desktop app](desktop.md) (origins such as `tauri://localhost` and `http://tauri.localhost`) and web clients hosted elsewhere can use your server. This is safe because Passbox authenticates every request with a bearer token in the `Authorization` header and never uses cookies: a foreign page cannot act on behalf of a user without already holding their session token.
+
+The server sends:
+
+| Header | Value |
+| --- | --- |
+| `Access-Control-Allow-Origin` | `*` |
+| `Access-Control-Allow-Methods` | `GET, POST, PUT, DELETE` |
+| `Access-Control-Allow-Headers` | `authorization, content-type` |
+| `Access-Control-Max-Age` | `3600` |
+
+`Access-Control-Allow-Credentials` is never sent. If your reverse proxy adds its own CORS headers, remove them so they do not conflict with these.
+
 ## Backups
 
 Back up the database. Everything in it except the server secrets is encrypted by the clients, but treat backups as sensitive anyway.

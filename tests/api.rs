@@ -175,6 +175,7 @@ async fn run_all(database_url: &str) {
     items_sync_and_conflicts(&server).await;
     accounts_are_isolated(&server).await;
     requests_need_a_session(&server).await;
+    cross_origin_requests_are_allowed_without_credentials(&server).await;
 }
 
 #[tokio::test]
@@ -465,4 +466,49 @@ async fn requests_need_a_session(server: &TestServer) {
         let (status, _) = server.request(method, uri, Some("not-a-token"), None).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
     }
+}
+
+async fn cross_origin_requests_are_allowed_without_credentials(server: &TestServer) {
+    // Preflight as sent by the desktop app before an authenticated write.
+    let preflight = Request::builder()
+        .method(Method::OPTIONS)
+        .uri("/api/v1/items/some-id")
+        .header("origin", "tauri://localhost")
+        .header("access-control-request-method", "PUT")
+        .header(
+            "access-control-request-headers",
+            "authorization,content-type",
+        )
+        .body(Body::empty())
+        .unwrap();
+    let response = server.app.clone().oneshot(preflight).await.unwrap();
+    assert!(response.status().is_success(), "{}", response.status());
+    let headers = response.headers();
+    assert_eq!(headers["access-control-allow-origin"], "*");
+    let methods = headers["access-control-allow-methods"].to_str().unwrap();
+    for method in ["GET", "POST", "PUT", "DELETE"] {
+        assert!(methods.contains(method), "{methods}");
+    }
+    let allowed = headers["access-control-allow-headers"]
+        .to_str()
+        .unwrap()
+        .to_ascii_lowercase();
+    assert!(allowed.contains("authorization"), "{allowed}");
+    assert!(allowed.contains("content-type"), "{allowed}");
+    assert!(headers.contains_key("access-control-max-age"));
+    assert!(!headers.contains_key("access-control-allow-credentials"));
+
+    // The actual request carries the CORS header, but never allows credentials.
+    let request = Request::get("/api/v1/meta")
+        .header("origin", "http://tauri.localhost")
+        .body(Body::empty())
+        .unwrap();
+    let response = server.app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["access-control-allow-origin"], "*");
+    assert!(
+        !response
+            .headers()
+            .contains_key("access-control-allow-credentials")
+    );
 }

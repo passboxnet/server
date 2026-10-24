@@ -34,6 +34,10 @@ jobs:
       PASSBOX_TEST_DATABASE_URL: postgres://passbox:passbox@localhost:5432/passbox_test
     steps:
       - uses: actions/checkout@v5
+      - name: Install system libraries for the desktop app (Tauri)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
