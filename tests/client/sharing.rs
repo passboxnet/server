@@ -160,6 +160,7 @@ fn family_sharing_roles_groups_and_removal() {
     assert_eq!(alice.client.invitations(&org_id).unwrap().len(), 1);
     let preview = bob.client.preview_invitation(&invitation.link).unwrap();
     assert_eq!(preview.org_kind, "family");
+    assert_eq!(preview.inviter_email.as_deref(), Some(alice.email.as_str()));
     // The invitation is bound to Bob's email.
     assert!(carol.client.accept_invitation(&invitation.link).is_err());
     assert_eq!(
