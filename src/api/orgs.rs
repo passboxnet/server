@@ -550,6 +550,10 @@ pub async fn invite(
         3600,
     )?;
 
+    // Read before the transaction: SQLite in memory has one connection.
+    let locale = crate::instance::load_settings(&state.db)
+        .await?
+        .default_locale;
     let mut tx = db::begin_write(&state.db).await?;
     let me = access::require_admin(&mut tx, &org_id, &session.account_id).await?;
     if role == OrgRole::Admin && me.role != OrgRole::Owner {
@@ -621,9 +625,6 @@ pub async fn invite(
         .public_url()
         .map(|base| format!("{base}{mail_path}"))
         .unwrap_or_default();
-    let locale = crate::instance::load_settings(&state.db)
-        .await?
-        .default_locale;
     Mailer::enqueue_in(
         &mut tx,
         &email,
