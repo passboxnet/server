@@ -29,14 +29,42 @@ pub enum Template {
     /// Parameters: `email`, `change` (`enabled`, `disabled` or `changed`),
     /// `device`, `ip`, `time`.
     TwoFactorChanged,
-    /// Emergency access was requested, granted or used (placeholder for C3).
+    /// The grantee requested emergency access (to the grantor).
     ///
-    /// Parameters: `email`, `requester`, `event` (free text, optional), `link`.
+    /// Parameters: `email`, `requester`, `waitDays`, `releaseAt` (Unix ms),
+    /// `event` (free text, optional), `link`.
     EmergencyAccess,
-    /// Account recovery was requested or completed (placeholder for C1).
+    /// Someone added the recipient as their emergency contact.
+    /// Parameters: `inviter`, `waitDays`, `link`.
+    EmergencyAccessInvited,
+    /// The grantor approved a request early (to the grantee).
+    /// Parameters: `grantor`, `link`.
+    EmergencyAccessApproved,
+    /// The grantor declined the request (to the grantee). Parameters: `grantor`.
+    EmergencyAccessDenied,
+    /// The grantee opened the released vaults (to the grantor).
+    /// Parameters: `email`, `grantee`, `time`.
+    EmergencyAccessUsed,
+    /// Recovery through an organization was requested (to the member).
     ///
-    /// Parameters: `email`, `event` (free text, optional), `link`.
+    /// Parameters: `email`, `device`, `ip`, `time`, `event` (optional), `link`.
     Recovery,
+    /// A member requested recovery (to the admins who can approve it).
+    /// Parameters: `member`, `device`, `ip`, `time`, `link`.
+    RecoveryRequested,
+    /// An admin approved the member's request (to the member).
+    /// Parameters: `email`, `approver`.
+    RecoveryApproved,
+    /// An admin declined the member's request (to the member).
+    /// Parameters: `email`, `approver`.
+    RecoveryDenied,
+    /// The account was recovered: new master password and Secret Key, every
+    /// device signed out. To the account and, for organization recovery, to
+    /// the admins. Parameters: `email`, `member`, `method` (`code` or `org`),
+    /// `approver` (organization recovery), `device`, `ip`, `time`.
+    RecoveryUsed,
+    /// A recovery code was created or replaced. Parameters: `email`, `device`, `ip`, `time`.
+    RecoveryCodeCreated,
     /// A test mail sent from the administration. Parameters: `requestedBy`.
     Test,
 }
@@ -49,7 +77,16 @@ impl Template {
             Self::MasterPasswordChanged => "master_password_changed",
             Self::TwoFactorChanged => "two_factor_changed",
             Self::EmergencyAccess => "emergency_access",
+            Self::EmergencyAccessInvited => "emergency_access_invited",
+            Self::EmergencyAccessApproved => "emergency_access_approved",
+            Self::EmergencyAccessDenied => "emergency_access_denied",
+            Self::EmergencyAccessUsed => "emergency_access_used",
             Self::Recovery => "recovery",
+            Self::RecoveryRequested => "recovery_requested",
+            Self::RecoveryApproved => "recovery_approved",
+            Self::RecoveryDenied => "recovery_denied",
+            Self::RecoveryUsed => "recovery_used",
+            Self::RecoveryCodeCreated => "recovery_code_created",
             Self::Test => "test",
         }
     }
@@ -351,6 +388,8 @@ pub fn render(template: Template, locale: Locale, params: &Value, ctx: &Context<
         Template::EmergencyAccess => {
             let requester = param(params, "requester");
             let event = param(params, "event");
+            let wait = param(params, "waitDays");
+            let release = time_param(params, "releaseAt", locale);
             blocks.push(Block::Paragraph(if de {
                 format!(
                     "{requester} hat Notfallzugang zu Ihrem {instance}-Konto {email} angefordert."
@@ -360,6 +399,17 @@ pub fn render(template: Template, locale: Locale, params: &Value, ctx: &Context<
                     "{requester} has requested emergency access to your {instance} account {email}."
                 )
             }));
+            if !release.is_empty() {
+                blocks.push(Block::Paragraph(if de {
+                    format!(
+                        "Wenn Sie nichts tun, erhält {requester} nach der Wartezeit von {wait} Tagen, am {release}, Lesezugriff auf die freigegebenen Tresore."
+                    )
+                } else {
+                    format!(
+                        "If you do nothing, {requester} gets read access to the vaults you chose after the waiting period of {wait} days, on {release}."
+                    )
+                }));
+            }
             if !event.is_empty() {
                 blocks.push(Block::Paragraph(event));
             }
@@ -373,10 +423,11 @@ pub fn render(template: Template, locale: Locale, params: &Value, ctx: &Context<
                 },
             );
             blocks.push(Block::Paragraph(if de {
-                "Wenn Sie die Anfrage nicht erwartet haben, lehnen Sie sie in Passbox ab."
+                "Wenn Sie die Anfrage nicht erwartet haben, lehnen Sie sie in Passbox unter Einstellungen → Notfallzugang ab."
                     .to_owned()
             } else {
-                "If you did not expect this request, decline it in Passbox.".to_owned()
+                "If you did not expect this request, decline it in Passbox under Settings → Emergency access."
+                    .to_owned()
             }));
             if de {
                 format!("Notfallzugang zu {instance} angefordert")
@@ -384,15 +435,116 @@ pub fn render(template: Template, locale: Locale, params: &Value, ctx: &Context<
                 format!("Emergency access to {instance} requested")
             }
         }
+        Template::EmergencyAccessInvited => {
+            let inviter = param(params, "inviter");
+            let wait = param(params, "waitDays");
+            blocks.push(Block::Paragraph(if de {
+                format!(
+                    "{inviter} möchte Sie in {instance} als Notfallkontakt eintragen. Wenn {inviter} etwas zustößt, können Sie Zugriff anfordern und erhalten ihn nach einer Wartezeit von {wait} Tagen, falls {inviter} nicht ablehnt."
+                )
+            } else {
+                format!(
+                    "{inviter} would like to add you as an emergency contact on {instance}. If something happens to {inviter}, you can request access and get it after a waiting period of {wait} days, unless {inviter} declines."
+                )
+            }));
+            blocks.push(Block::Paragraph(if de {
+                "Melden Sie sich bei Passbox an (oder legen Sie ein Konto an) und nehmen Sie die Einladung unter Einstellungen → Notfallzugang an."
+                    .to_owned()
+            } else {
+                "Sign in to Passbox (or create an account) and accept the invitation under Settings → Emergency access."
+                    .to_owned()
+            }));
+            push_link(
+                &mut blocks,
+                params,
+                if de {
+                    "Passbox öffnen"
+                } else {
+                    "Open Passbox"
+                },
+            );
+            if de {
+                format!("{inviter} möchte Sie als Notfallkontakt eintragen")
+            } else {
+                format!("{inviter} wants to add you as an emergency contact")
+            }
+        }
+        Template::EmergencyAccessApproved => {
+            let grantor = param(params, "grantor");
+            blocks.push(Block::Paragraph(if de {
+                format!(
+                    "Ihr Notfallzugang zum {instance}-Konto von {grantor} ist jetzt freigegeben. Sie können die freigegebenen Tresore unter Einstellungen → Notfallzugang lesen."
+                )
+            } else {
+                format!(
+                    "Your emergency access to {grantor}'s {instance} account is now available. You can read the shared vaults under Settings → Emergency access."
+                )
+            }));
+            push_link(
+                &mut blocks,
+                params,
+                if de {
+                    "Passbox öffnen"
+                } else {
+                    "Open Passbox"
+                },
+            );
+            if de {
+                format!("Notfallzugang von {grantor} freigegeben")
+            } else {
+                format!("Emergency access from {grantor} is available")
+            }
+        }
+        Template::EmergencyAccessDenied => {
+            let grantor = param(params, "grantor");
+            blocks.push(Block::Paragraph(if de {
+                format!("{grantor} hat Ihre Anfrage auf Notfallzugang in {instance} abgelehnt.")
+            } else {
+                format!("{grantor} declined your emergency access request on {instance}.")
+            }));
+            if de {
+                format!("Notfallzugang von {grantor} abgelehnt")
+            } else {
+                format!("Emergency access from {grantor} declined")
+            }
+        }
+        Template::EmergencyAccessUsed => {
+            let grantee = param(params, "grantee");
+            blocks.push(Block::Paragraph(if de {
+                format!(
+                    "{grantee} hat mit dem Notfallzugang die freigegebenen Tresore Ihres {instance}-Kontos {email} geöffnet."
+                )
+            } else {
+                format!(
+                    "{grantee} used emergency access to open the vaults you shared from your {instance} account {email}."
+                )
+            }));
+            blocks.push(device_details(params));
+            blocks.push(Block::Paragraph(if de {
+                "Wenn das nicht gewollt war, entfernen Sie den Notfallkontakt unter Einstellungen → Notfallzugang und ändern Sie die Passwörter in diesen Tresoren."
+                    .to_owned()
+            } else {
+                "If this was not intended, remove the emergency contact under Settings → Emergency access and change the passwords in those vaults."
+                    .to_owned()
+            }));
+            if de {
+                format!("{grantee} hat Ihren Notfallzugang verwendet")
+            } else {
+                format!("{grantee} used your emergency access")
+            }
+        }
         Template::Recovery => {
             let event = param(params, "event");
             blocks.push(Block::Paragraph(if de {
                 format!(
-                    "für Ihr {instance}-Konto {email} wurde eine Wiederherstellung angefordert."
+                    "für Ihr {instance}-Konto {email} wurde eine Wiederherstellung über Ihre Organisation angefordert. Eine Administratorin oder ein Administrator muss sie bestätigen, nachdem Ihre Identität geprüft wurde."
                 )
             } else {
-                format!("Recovery of your {instance} account {email} was requested.")
+                format!(
+                    "Recovery of your {instance} account {email} through your organization was requested. An administrator has to approve it after verifying your identity."
+                )
             }));
+            blocks.push(device_details(params));
             if !event.is_empty() {
                 blocks.push(Block::Paragraph(event));
             }
@@ -406,15 +558,159 @@ pub fn render(template: Template, locale: Locale, params: &Value, ctx: &Context<
                 },
             );
             blocks.push(Block::Paragraph(if de {
-                "Wenn Sie das nicht waren, wenden Sie sich sofort an die Administration Ihrer Passbox-Instanz."
+                "Wenn Sie das nicht waren, wenden Sie sich sofort an die Administration Ihrer Organisation und lassen Sie die Anfrage ablehnen."
                     .to_owned()
             } else {
-                "If this wasn't you, contact the administrators of your Passbox server right away.".to_owned()
+                "If this wasn't you, contact the administrators of your organization right away and ask them to decline the request."
+                    .to_owned()
             }));
             if de {
-                format!("Wiederherstellung Ihres {instance}-Kontos")
+                format!("Wiederherstellung Ihres {instance}-Kontos angefordert")
             } else {
-                format!("Recovery of your {instance} account")
+                format!("Recovery of your {instance} account requested")
+            }
+        }
+        Template::RecoveryRequested => {
+            let member = param(params, "member");
+            blocks.push(Block::Paragraph(if de {
+                format!(
+                    "{member} hat in {instance} die Wiederherstellung des Kontos angefordert (Master-Passwort vergessen)."
+                )
+            } else {
+                format!(
+                    "{member} requested recovery of their {instance} account (forgotten master password)."
+                )
+            }));
+            blocks.push(device_details(params));
+            blocks.push(Block::Paragraph(if de {
+                format!(
+                    "Bestätigen Sie die Anfrage nur, wenn Sie sicher sind, dass sie von {member} stammt: Rufen Sie die Person unter einer Ihnen bekannten Nummer an oder sprechen Sie persönlich mit ihr, und vergleichen Sie den Anfragecode auf ihrem Bildschirm mit dem in Passbox."
+                )
+            } else {
+                format!(
+                    "Approve it only if you are sure the request comes from {member}: call them on a number you know or talk in person, and compare the request code on their screen with the one in Passbox."
+                )
+            }));
+            push_link(
+                &mut blocks,
+                params,
+                if de {
+                    "Anfragen ansehen"
+                } else {
+                    "View requests"
+                },
+            );
+            if de {
+                format!("Wiederherstellung angefordert: {member}")
+            } else {
+                format!("Recovery requested: {member}")
+            }
+        }
+        Template::RecoveryApproved => {
+            let approver = param(params, "approver");
+            blocks.push(Block::Paragraph(if de {
+                format!(
+                    "{approver} hat die Wiederherstellung Ihres {instance}-Kontos {email} bestätigt. Legen Sie auf dem Gerät, auf dem Sie sie angefordert haben, ein neues Master-Passwort fest."
+                )
+            } else {
+                format!(
+                    "{approver} approved the recovery of your {instance} account {email}. Set a new master password on the device where you requested it."
+                )
+            }));
+            if de {
+                format!("Wiederherstellung Ihres {instance}-Kontos bestätigt")
+            } else {
+                format!("Recovery of your {instance} account approved")
+            }
+        }
+        Template::RecoveryDenied => {
+            let approver = param(params, "approver");
+            blocks.push(Block::Paragraph(if de {
+                format!(
+                    "{approver} hat die Anfrage zur Wiederherstellung Ihres {instance}-Kontos {email} abgelehnt. Wenden Sie sich bei Fragen an Ihre Organisation."
+                )
+            } else {
+                format!(
+                    "{approver} declined the request to recover your {instance} account {email}. Contact your organization if you have questions."
+                )
+            }));
+            if de {
+                format!("Wiederherstellung Ihres {instance}-Kontos abgelehnt")
+            } else {
+                format!("Recovery of your {instance} account declined")
+            }
+        }
+        Template::RecoveryUsed => {
+            let member = param(params, "member");
+            let approver = param(params, "approver");
+            let method = param(params, "method");
+            let own = member.is_empty() || member == email;
+            blocks.push(Block::Paragraph(match (de, own, method.as_str()) {
+                (true, true, "code") => format!(
+                    "Ihr {instance}-Konto {email} wurde mit Ihrem Wiederherstellungscode wiederhergestellt."
+                ),
+                (true, true, _) => format!(
+                    "Ihr {instance}-Konto {email} wurde über Ihre Organisation wiederhergestellt (bestätigt von {approver})."
+                ),
+                (true, false, _) => format!(
+                    "Das {instance}-Konto von {member} wurde über die Organisation wiederhergestellt (bestätigt von {approver})."
+                ),
+                (false, true, "code") => {
+                    format!("Your {instance} account {email} was recovered with your recovery code.")
+                }
+                (false, true, _) => format!(
+                    "Your {instance} account {email} was recovered through your organization (approved by {approver})."
+                ),
+                (false, false, _) => format!(
+                    "The {instance} account of {member} was recovered through the organization (approved by {approver})."
+                ),
+            }));
+            blocks.push(device_details(params));
+            if own {
+                blocks.push(Block::Paragraph(if de {
+                    "Dabei wurden ein neues Master-Passwort und ein neuer Geheimschlüssel festgelegt und alle Geräte abgemeldet. Der alte Geheimschlüssel und ein alter Wiederherstellungscode funktionieren nicht mehr. Bewahren Sie das neue Notfall-Kit sicher auf."
+                        .to_owned()
+                } else {
+                    "A new master password and a new Secret Key were set and every device was signed out. The old Secret Key and an old recovery code no longer work. Keep the new Emergency Kit somewhere safe."
+                        .to_owned()
+                }));
+                blocks.push(Block::Paragraph(if de {
+                    "Wenn Sie das nicht waren, wenden Sie sich sofort an die Administration Ihrer Passbox-Instanz."
+                        .to_owned()
+                } else {
+                    "If this wasn't you, contact the administrators of your Passbox server right away."
+                        .to_owned()
+                }));
+            }
+            match (de, own) {
+                (true, true) => format!("Ihr {instance}-Konto wurde wiederhergestellt"),
+                (true, false) => format!("Konto wiederhergestellt: {member}"),
+                (false, true) => format!("Your {instance} account was recovered"),
+                (false, false) => format!("Account recovered: {member}"),
+            }
+        }
+        Template::RecoveryCodeCreated => {
+            blocks.push(Block::Paragraph(if de {
+                format!(
+                    "für Ihr {instance}-Konto {email} wurde ein neuer Wiederherstellungscode erstellt. Ein früherer Code funktioniert nicht mehr."
+                )
+            } else {
+                format!(
+                    "A new recovery code was created for your {instance} account {email}. Any earlier code no longer works."
+                )
+            }));
+            blocks.push(device_details(params));
+            blocks.push(Block::Paragraph(if de {
+                "Wenn Sie das nicht waren, ändern Sie sofort Ihr Master-Passwort und prüfen Sie Ihre Geräte."
+                    .to_owned()
+            } else {
+                "If this wasn't you, change your master password right away and review your devices."
+                    .to_owned()
+            }));
+            if de {
+                format!("Neuer Wiederherstellungscode für {instance}")
+            } else {
+                format!("New recovery code for {instance}")
             }
         }
         Template::Test => {
@@ -563,13 +859,22 @@ mod tests {
         public_url: Some("https://vault.example.com"),
     };
 
-    const ALL: [Template; 7] = [
+    const ALL: [Template; 16] = [
         Template::Invitation,
         Template::NewDevice,
         Template::MasterPasswordChanged,
         Template::TwoFactorChanged,
         Template::EmergencyAccess,
+        Template::EmergencyAccessInvited,
+        Template::EmergencyAccessApproved,
+        Template::EmergencyAccessDenied,
+        Template::EmergencyAccessUsed,
         Template::Recovery,
+        Template::RecoveryRequested,
+        Template::RecoveryApproved,
+        Template::RecoveryDenied,
+        Template::RecoveryUsed,
+        Template::RecoveryCodeCreated,
         Template::Test,
     ];
 

@@ -1054,6 +1054,15 @@ pub async fn update_member(
     .bind(&account_id)
     .execute(&mut *tx)
     .await?;
+    if !role.is_admin() {
+        // Only admins hold the recovery key; this deletes the server's copy
+        // (rotating the recovery key removes the former admin's access).
+        sqlx::query("DELETE FROM org_recovery_grants WHERE org_id = $1 AND account_id = $2")
+            .bind(&org_id)
+            .bind(&account_id)
+            .execute(&mut *tx)
+            .await?;
+    }
     tx.commit().await?;
     if role != target.role {
         event(&state, &account_id, "org_role_changed", &session, &ip).await?;
@@ -1212,6 +1221,9 @@ pub async fn remove_member(
         "DELETE FROM group_members WHERE account_id = $1 \
          AND group_id IN (SELECT id FROM org_groups WHERE org_id = $2)",
         "DELETE FROM org_keys WHERE account_id = $1 AND org_id = $2",
+        "DELETE FROM org_recovery_escrows WHERE account_id = $1 AND org_id = $2",
+        "DELETE FROM org_recovery_grants WHERE account_id = $1 AND org_id = $2",
+        "DELETE FROM org_recovery_requests WHERE account_id = $1 AND org_id = $2",
         "DELETE FROM org_members WHERE account_id = $1 AND org_id = $2",
     ] {
         sqlx::query(statement)

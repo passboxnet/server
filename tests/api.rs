@@ -20,6 +20,8 @@ use tower::ServiceExt;
 
 #[path = "api/admin.rs"]
 mod admin;
+#[path = "api/recovery.rs"]
+mod recovery;
 
 struct TestServer {
     app: Router,
@@ -261,6 +263,10 @@ async fn run_all(database_url: &str) {
     two_factor_rate_limits(&server).await;
     key_pairs_and_directory(&server).await;
     organizations_and_shared_vaults(&server).await;
+    recovery::recovery_code(&server).await;
+    recovery::organization_recovery(&server).await;
+    recovery::emergency_access(&server).await;
+    recovery::device_links(&server).await;
     // Last: it locks out an email and counts failures for the test IP.
     failed_logins_are_rate_limited(&server).await;
 }

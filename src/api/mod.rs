@@ -4,12 +4,16 @@ pub mod access;
 pub mod account;
 pub mod admin;
 pub mod auth;
+pub mod device_links;
+pub mod emergency;
 pub mod groups;
 pub mod items;
 pub mod keys;
 pub mod notify;
+pub mod org_recovery;
 pub mod orgs;
 pub mod preferences;
+pub mod recovery;
 pub mod sessions;
 pub mod shared;
 pub mod signed;
@@ -159,4 +163,65 @@ pub fn router() -> Router<AppState> {
             put(shared::put_wrapped_key),
         )
         .route("/vaults/{id}/items/batch", post(shared::batch_items))
+        // Account recovery: recovery code (signed in and signed out).
+        .route("/account/recovery", get(recovery::status))
+        .route(
+            "/account/recovery-code",
+            post(recovery::code_finish).delete(recovery::code_delete),
+        )
+        .route("/account/recovery-code/start", post(recovery::code_start))
+        .route("/recovery/code/start", post(recovery::login_start))
+        .route("/recovery/code/finish", post(recovery::login_finish))
+        .route("/recovery/two-factor", post(recovery::two_factor))
+        .route("/recovery/complete/start", post(recovery::complete_start))
+        .route("/recovery/complete/finish", post(recovery::complete_finish))
+        // Organization recovery: the requesting device.
+        .route("/recovery/org/request", post(recovery::org_request))
+        .route("/recovery/org/status", post(recovery::org_status))
+        .route("/recovery/org/cancel", post(recovery::org_cancel))
+        // Organization recovery: the organization.
+        .route("/orgs/{org_id}/recovery", get(org_recovery::get))
+        .route(
+            "/orgs/{org_id}/recovery/keys",
+            post(org_recovery::create_key),
+        )
+        .route(
+            "/orgs/{org_id}/recovery/grants",
+            post(org_recovery::add_grant),
+        )
+        .route(
+            "/orgs/{org_id}/recovery/escrow",
+            put(org_recovery::put_escrow).delete(org_recovery::delete_escrow),
+        )
+        .route(
+            "/orgs/{org_id}/recovery/requests",
+            get(org_recovery::requests),
+        )
+        .route(
+            "/orgs/{org_id}/recovery/requests/{request_id}/approve",
+            post(org_recovery::approve),
+        )
+        .route(
+            "/orgs/{org_id}/recovery/requests/{request_id}/deny",
+            post(org_recovery::deny),
+        )
+        // Emergency access.
+        .route("/emergency", get(emergency::list))
+        .route("/emergency/grants", post(emergency::create))
+        .route("/emergency/grants/{id}", delete(emergency::delete))
+        .route("/emergency/grants/{id}/accept", post(emergency::accept))
+        .route("/emergency/grants/{id}/confirm", post(emergency::confirm))
+        .route("/emergency/grants/{id}/request", post(emergency::request))
+        .route("/emergency/grants/{id}/approve", post(emergency::approve))
+        .route("/emergency/grants/{id}/deny", post(emergency::deny))
+        .route("/emergency/grants/{id}/access", get(emergency::access))
+        // Adding a device by code.
+        .route("/device-links", post(device_links::create))
+        .route("/device-links/claim", post(device_links::claim))
+        .route("/device-links/poll", post(device_links::poll))
+        .route(
+            "/device-links/{id}",
+            get(device_links::get).delete(device_links::delete),
+        )
+        .route("/device-links/{id}/approve", post(device_links::approve))
 }

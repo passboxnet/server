@@ -280,7 +280,7 @@ fn fake_bytes(state: &AppState, purpose: &str, email: &str) -> [u8; 32] {
     mac.finalize().into_bytes().into()
 }
 
-fn fake_account_id(state: &AppState, email: &str) -> String {
+pub(crate) fn fake_account_id(state: &AppState, email: &str) -> String {
     let bytes = fake_bytes(state, "account-id", email);
     let mut id_bytes = [0u8; 16];
     id_bytes.copy_from_slice(&bytes[..16]);

@@ -1363,6 +1363,62 @@ pub async fn disable(
     Ok(StatusCode::NO_CONTENT)
 }
 
+// --- Account recovery -----------------------------------------------------------------
+
+/// The second factors a recovery by code can be finished with, or `None`
+/// when the account has no two-factor sign-in. Security keys are not offered
+/// there yet (see `docs/architecture/recovery.md`).
+pub(crate) async fn recovery_methods(
+    state: &AppState,
+    account_id: &str,
+) -> ApiResult<Option<Vec<&'static str>>> {
+    let factors = load_factors(&state.db, account_id).await?;
+    if !factors.enabled() {
+        return Ok(None);
+    }
+    Ok(Some(
+        factors
+            .methods()
+            .into_iter()
+            .filter(|m| *m != "webauthn")
+            .collect(),
+    ))
+}
+
+/// Checks a code (`totp` or `recovery`) for a recovery by code, with the
+/// same lockout and replay rules as a sign-in.
+pub(crate) async fn verify_recovery_factor(
+    state: &AppState,
+    account_id: &str,
+    ip: &str,
+    method: &str,
+    code: &str,
+) -> ApiResult<()> {
+    let limits = failure_limits(account_id, ip);
+    check_lockout(state, &limits)?;
+    if method != "totp" && method != "recovery" {
+        return Err(ApiError::bad_request("method must be totp or recovery"));
+    }
+    let factor = FactorInput {
+        method: method.to_owned(),
+        code: code.to_owned(),
+        webauthn: None,
+    };
+    match verify_factor(state, account_id, &factor, None).await {
+        Ok(Verified::Recovery) => {
+            record_event(state, account_id, "recovery_code_used", "", "", ip).await?;
+            Ok(())
+        }
+        Ok(_) => Ok(()),
+        Err(ApiError::InvalidTwoFactorCode) => {
+            record_failure(state, &limits);
+            record_event(state, account_id, "two_factor_failed", "", "", ip).await?;
+            Err(ApiError::InvalidTwoFactorCode)
+        }
+        Err(other) => Err(other),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
