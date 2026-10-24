@@ -302,11 +302,18 @@ fn redirect(location: &str) -> Response {
         .into_response()
 }
 
-fn error_page(state: &AppState, code: &str) -> Response {
+/// `&test=1` marks redirects of a connection test (they end in the
+/// popup the admin opened).
+fn test_marker(test: bool) -> &'static str {
+    if test { "&test=1" } else { "" }
+}
+
+fn error_page(state: &AppState, code: &str, test: bool) -> Response {
     match state.mailer.public_url() {
         Some(base) => redirect(&format!(
-            "{}/#/sso?error={code}",
-            base.trim_end_matches('/')
+            "{}/#/sso?error={code}{}",
+            base.trim_end_matches('/'),
+            test_marker(test)
         )),
         None => (
             StatusCode::BAD_REQUEST,
@@ -593,6 +600,7 @@ async fn handle_callback(
     state: &AppState,
     ip: &str,
     query: CallbackQuery,
+    test: &mut bool,
 ) -> ApiResult<Result<String, &'static str>> {
     let Some(state_value) = query.state.filter(|s| s.len() <= 128) else {
         return Ok(Err("sso_expired"));
@@ -610,6 +618,7 @@ async fn handle_callback(
     else {
         return Ok(Err("sso_expired"));
     };
+    *test = purpose == "test";
     if expires_at < now_ms() {
         return Ok(Err("sso_expired"));
     }
@@ -720,7 +729,10 @@ async fn handle_callback(
     .bind(now + TICKET_TTL_MS)
     .execute(&state.db)
     .await?;
-    Ok(Ok(format!("{return_to}#/sso?ticket={ticket}")))
+    Ok(Ok(format!(
+        "{return_to}#/sso?ticket={ticket}{}",
+        test_marker(purpose == "test")
+    )))
 }
 
 /// `GET /sso/callback`: the provider's redirect. Answers with a redirect
@@ -733,12 +745,13 @@ pub async fn callback(
     if let Err(error) = limit(&state, format!("sso-callback:{ip}"), 60, 60) {
         return error.into_response();
     }
-    match handle_callback(&state, &ip, query).await {
+    let mut test = false;
+    match handle_callback(&state, &ip, query, &mut test).await {
         Ok(Ok(location)) => redirect(&location),
-        Ok(Err(code)) => error_page(&state, code),
+        Ok(Err(code)) => error_page(&state, code, test),
         Err(error) => {
             let _ = error.into_response();
-            error_page(&state, "sso_failed")
+            error_page(&state, "sso_failed", test)
         }
     }
 }
