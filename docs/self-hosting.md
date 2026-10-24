@@ -26,6 +26,7 @@ Every option can be set as a command-line flag or an environment variable.
 | `PASSBOX_PUBLIC_URL` | unset | Address users open Passbox at, for example `https://passbox.example.com`. Used for links in mails |
 | `PASSBOX_ADMIN_EMAILS` | unset | Comma-separated emails of accounts that are always instance admins, see [Administration](#administration) |
 | `PASSBOX_ICONS` | `on` | `on` lets signed-in apps load website icons through the server, `off` turns this off. See [Website icons](#website-icons) |
+| `PASSBOX_WEBHOOK_ALLOW_PRIVATE` | `false` | Allow organization webhooks to private and loopback addresses (and plain HTTP), for a SIEM in the same network. See [Administration](architecture/administration.md) |
 | `PASSBOX_LOG_FORMAT` | `pretty` | `pretty` or `json` |
 | `RUST_LOG` | `info` | Log level, for example `debug` or `passbox_server=debug` |
 
