@@ -203,3 +203,77 @@ fn watchtower_on_synced_items() {
     assert_eq!(health.weak.len(), 2);
     assert_eq!(health.reused.len(), 1);
 }
+
+#[test]
+fn devices_activity_and_master_password_change() {
+    let server = start_server();
+    let email = email();
+    let laptop = Client::new(&server, Arc::new(MemoryStore::new()));
+    laptop.set_device("Work laptop", "desktop");
+    let secret_key = laptop.sign_up(&email, PASSWORD).unwrap();
+
+    let phone_store: Arc<dyn Store> = Arc::new(MemoryStore::new());
+    let phone = Client::new(&server, phone_store.clone());
+    phone.set_device("Anna's phone", "android");
+    phone.sign_in(&email, PASSWORD, &secret_key).unwrap();
+
+    let sessions = laptop.sessions().unwrap();
+    let current = sessions.iter().find(|s| s.current).unwrap();
+    assert_eq!(
+        (current.device_name.as_str(), current.client_kind.as_str()),
+        ("Work laptop", "desktop")
+    );
+    let phone_session = sessions
+        .iter()
+        .find(|s| s.device_name == "Anna's phone")
+        .unwrap();
+    assert_eq!(phone_session.client_kind, "android");
+
+    // A revoked device locks on its next request.
+    laptop.revoke_session(&phone_session.id).unwrap();
+    assert!(matches!(phone.sync(), Err(Error::Locked)));
+    assert_eq!(phone.status().unwrap(), Status::Locked);
+    let kinds: Vec<String> = laptop
+        .activity(50)
+        .unwrap()
+        .into_iter()
+        .map(|e| e.kind)
+        .collect();
+    assert!(kinds.contains(&"session_revoked".to_owned()));
+    assert!(kinds.contains(&"login".to_owned()));
+
+    // Changing the master password keeps the data and signs out the phone.
+    let vault = laptop.vaults().unwrap().remove(0).id;
+    let item = laptop
+        .create_item(&vault, &login_item("GitHub", "s3cret"))
+        .unwrap();
+    assert!(matches!(
+        laptop.change_master_password("wrong", "new password 123"),
+        Err(Error::InvalidCredentials)
+    ));
+    phone.unlock(PASSWORD).unwrap();
+    laptop
+        .change_master_password(PASSWORD, "new password 123")
+        .unwrap();
+    assert!(matches!(laptop.unlock_key(), Ok(key) if key.len() == 65));
+    assert!(matches!(phone.sync(), Err(Error::Locked)));
+    assert!(matches!(
+        phone.unlock(PASSWORD),
+        Err(Error::InvalidCredentials)
+    ));
+
+    laptop.lock();
+    assert!(matches!(
+        laptop.unlock(PASSWORD),
+        Err(Error::InvalidCredentials)
+    ));
+    laptop.unlock("new password 123").unwrap();
+    assert_eq!(laptop.item(&item).unwrap().data.title, "GitHub");
+    assert!(
+        laptop
+            .activity(50)
+            .unwrap()
+            .iter()
+            .any(|e| e.kind == "password_changed")
+    );
+}
