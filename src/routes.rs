@@ -83,6 +83,10 @@ struct Meta {
     password_policy: PasswordPolicy,
     /// Whether `/api/v1/icons/{domain}` serves website icons.
     icons: bool,
+    /// Whether `/api/v1/breach/range/{prefix}` proxies Have I Been Pwned.
+    breach_proxy: bool,
+    /// Whether email breach monitoring is available (`/api/v1/breach/emails`).
+    email_monitoring: bool,
 }
 
 async fn meta(State(state): State<AppState>) -> ApiResult<Json<Meta>> {
@@ -103,6 +107,8 @@ async fn meta(State(state): State<AppState>) -> ApiResult<Json<Meta>> {
         default_locale: settings.default_locale,
         password_policy: settings.password_policy,
         icons: state.icons.enabled,
+        breach_proxy: state.breach.proxy,
+        email_monitoring: state.breach.monitoring,
     }))
 }
 
@@ -150,6 +156,8 @@ mod tests {
         assert_eq!(body["passwordPolicy"]["minScore"], 3);
         assert_eq!(body["supportUrl"], Value::Null);
         assert_eq!(body["icons"], true);
+        assert_eq!(body["breachProxy"], true);
+        assert_eq!(body["emailMonitoring"], false);
     }
 
     #[tokio::test]

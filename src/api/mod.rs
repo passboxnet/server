@@ -4,6 +4,7 @@ pub mod access;
 pub mod account;
 pub mod admin;
 pub mod auth;
+pub mod breach;
 pub mod device_links;
 pub mod emergency;
 pub mod groups;
@@ -277,6 +278,21 @@ pub fn router() -> Router<AppState> {
         )
         .route("/org-events", get(org_events::pull))
         .merge(sso_routes())
+        .merge(breach_routes())
+}
+
+/// Have I Been Pwned through this server: password range proxy and email
+/// breach monitoring (G6, G11).
+fn breach_routes() -> Router<AppState> {
+    Router::new()
+        .route("/breach/range/{prefix}", get(breach::range))
+        .route(
+            "/breach/emails",
+            get(breach::emails).post(breach::add_email),
+        )
+        .route("/breach/emails/{id}", delete(breach::delete_email))
+        .route("/breach/emails/{id}/verify", post(breach::verify_email))
+        .route("/breach/emails/{id}/check", post(breach::check_now))
 }
 
 /// Single sign-on, trusted devices and SCIM provisioning (wave E).

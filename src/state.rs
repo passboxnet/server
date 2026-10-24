@@ -7,6 +7,7 @@ use passbox_core::encoding;
 use passbox_core::opaque::ServerKeys;
 use passbox_core::random;
 
+use crate::api::breach::BreachService;
 use crate::api::icons::IconService;
 use crate::db::Db;
 use crate::mail::Mailer;
@@ -37,6 +38,9 @@ pub struct AppState {
     pub webhook_allow_private: bool,
     /// Website icons (`PASSBOX_ICONS`), with their fetcher and cache.
     pub icons: Arc<IconService>,
+    /// Have I Been Pwned proxy and email monitoring (`PASSBOX_BREACH_PROXY`,
+    /// `PASSBOX_HIBP_API_KEY`).
+    pub breach: Arc<BreachService>,
 }
 
 impl AppState {
@@ -81,6 +85,7 @@ impl AppState {
             admin_emails: Arc::new(Vec::new()),
             webhook_allow_private: false,
             icons: Arc::new(IconService::http()),
+            breach: Arc::new(BreachService::http()),
             db,
             opaque: Arc::new(opaque),
             prelogin_key: Arc::new(prelogin_key),

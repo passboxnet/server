@@ -70,6 +70,37 @@ pub struct Config {
     /// organization admins cannot make the server call internal services.
     #[arg(long, env = "PASSBOX_WEBHOOK_ALLOW_PRIVATE", default_value_t = false)]
     pub webhook_allow_private: bool,
+
+    /// Have I Been Pwned "Pwned Passwords" through this server: `on` lets
+    /// signed-in clients check passwords via `/api/v1/breach/range/{prefix}`
+    /// (k-anonymity; the server sees only 5-character hash prefixes and Have
+    /// I Been Pwned sees the server's IP instead of the user's), `off`
+    /// disables the endpoint.
+    #[arg(long, env = "PASSBOX_BREACH_PROXY", value_enum, default_value_t = Switch::On)]
+    pub breach_proxy: Switch,
+
+    /// Have I Been Pwned API key for email breach monitoring. Without it,
+    /// monitoring is off. Users opt in per confirmed address; the addresses
+    /// are sent to Have I Been Pwned.
+    #[arg(long, env = "PASSBOX_HIBP_API_KEY", hide_env_values = true)]
+    pub hibp_api_key: Option<String>,
+
+    /// Hours between checks of each monitored email address.
+    #[arg(long, env = "PASSBOX_HIBP_CHECK_HOURS", default_value_t = 24)]
+    pub hibp_check_hours: u64,
+
+    /// Breached-account requests per minute your Have I Been Pwned
+    /// subscription allows.
+    #[arg(long, env = "PASSBOX_HIBP_RPM", default_value_t = 10)]
+    pub hibp_rpm: u32,
+
+    /// Pwned Passwords range endpoint (for mirrors and tests).
+    #[arg(long, env = "PASSBOX_PWNED_PASSWORDS_URL", default_value = crate::api::breach::DEFAULT_RANGE_URL, hide = true)]
+    pub pwned_passwords_url: String,
+
+    /// Have I Been Pwned API base (for tests).
+    #[arg(long, env = "PASSBOX_HIBP_API_URL", default_value = crate::api::breach::DEFAULT_API_URL, hide = true)]
+    pub hibp_api_url: String,
 }
 
 /// Hides the database and SMTP credentials.
@@ -88,6 +119,15 @@ impl std::fmt::Debug for Config {
             .field("icons", &self.icons)
             .field("log_format", &self.log_format)
             .field("webhook_allow_private", &self.webhook_allow_private)
+            .field("breach_proxy", &self.breach_proxy)
+            .field(
+                "hibp_api_key",
+                &self.hibp_api_key.as_ref().map(|_| "<redacted>"),
+            )
+            .field("hibp_check_hours", &self.hibp_check_hours)
+            .field("hibp_rpm", &self.hibp_rpm)
+            .field("pwned_passwords_url", &self.pwned_passwords_url)
+            .field("hibp_api_url", &self.hibp_api_url)
             .finish()
     }
 }
@@ -119,6 +159,12 @@ impl Default for Config {
             icons: Switch::On,
             log_format: LogFormat::Pretty,
             webhook_allow_private: false,
+            breach_proxy: Switch::On,
+            hibp_api_key: None,
+            hibp_check_hours: 24,
+            hibp_rpm: 10,
+            pwned_passwords_url: crate::api::breach::DEFAULT_RANGE_URL.to_owned(),
+            hibp_api_url: crate::api::breach::DEFAULT_API_URL.to_owned(),
         }
     }
 }
