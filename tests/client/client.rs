@@ -333,3 +333,19 @@ fn trash_and_password_history() {
     assert!(client.trashed_items().unwrap().is_empty());
     assert!(matches!(client.item(&id), Err(Error::NotFound(_))));
 }
+
+#[test]
+fn unlock_key_after_master_password_change() {
+    let server = start_server();
+    let client = Client::new(&server, Arc::new(MemoryStore::new()));
+    client.sign_up(&email(), PASSWORD).unwrap();
+    client
+        .change_master_password(PASSWORD, "violet anchor meadow trumpet 42")
+        .unwrap();
+    let key = client.unlock_key().unwrap();
+    client.lock();
+    client.unlock_with_key(&key).unwrap();
+    client.sync().unwrap();
+    client.lock();
+    client.unlock("violet anchor meadow trumpet 42").unwrap();
+}
