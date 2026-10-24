@@ -1615,7 +1615,8 @@ paths:
               properties:
                 email: { type: string }
                 orgId: { $ref: "#/components/schemas/Id" }
-                ephemeralKey: { $ref: "#/components/schemas/Base64Url", description: X-Wing public key of the requesting device. }
+                ephemeralKey:
+                  { $ref: "#/components/schemas/Base64Url", description: X-Wing public key of the requesting device. }
                 deviceName: { type: string }
       responses:
         "201":
@@ -1919,7 +1920,8 @@ paths:
               type: object
               required: [grant, grantSignature, sealedKeys, vaultIds, version, fingerprint]
               properties:
-                grant: { type: string, description: Signed `EmergencyGrant` (grantee, waiting period, vaults, version). }
+                grant:
+                  { type: string, description: Signed `EmergencyGrant` (grantee, waiting period, vaults, version). }
                 grantSignature: { type: string }
                 sealedKeys: { type: string }
                 vaultIds: { type: array, items: { $ref: "#/components/schemas/Id" } }
@@ -1975,7 +1977,10 @@ paths:
                   sealedKeys: { type: string }
                   vaults: { type: array, items: { type: object, additionalProperties: true } }
                   items: { type: array, items: { type: object, additionalProperties: true } }
-        "403": { description: "`emergency_access_waiting`: no request, the waiting period has not ended, or the owner denied it." }
+        "403":
+          {
+            description: "`emergency_access_waiting`: no request, the waiting period has not ended, or the owner denied it.",
+          }
   /api/v1/device-links:
     post:
       summary: Start adding a device by code (signed-in device)
@@ -2483,7 +2488,12 @@ components:
         granteeEmail: { type: string }
         scope: { type: string, enum: [read] }
         waitDays: { type: integer }
-        status: { type: string, enum: [invited, accepted, confirmed], description: "A request shows in `requestedAt`; `released` says whether access is open now." }
+        status:
+          {
+            type: string,
+            enum: [invited, accepted, confirmed],
+            description: "A request shows in `requestedAt`; `released` says whether access is open now.",
+          }
         vaultIds: { type: array, items: { $ref: "#/components/schemas/Id" } }
         version: { type: integer }
         grant: { type: string }
