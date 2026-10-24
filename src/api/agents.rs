@@ -419,6 +419,15 @@ pub async fn decide(
 ) -> ApiResult<Json<GrantStatus>> {
     validate::base64("decision", &req.decision, validate::MAX_SMALL_LEN)?;
     validate::base64("decisionSignature", &req.decision_signature, 256)?;
+    // Defense in depth: approvals come from the apps, not from the command
+    // line an agent may be driving. (The client kind is self-declared; the
+    // real protection is that pbx offers no way to approve.)
+    if session.client_kind == "cli" {
+        return Err(ApiError::forbidden(
+            "forbidden",
+            "approve agent requests in the Passbox web or desktop app",
+        ));
+    }
     let mut tx = db::begin_write(&state.db).await?;
     let row: Option<(String, String, i64)> = sqlx::query_as(
         "SELECT request, status, expires_at FROM agent_grants WHERE id = $1 AND account_id = $2",
