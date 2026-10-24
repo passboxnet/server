@@ -18,6 +18,7 @@ Passbox is developed as one monorepo. It will be split into separate repositorie
 | [`apps/desktop`](apps/desktop) | Desktop app for Windows, macOS and Linux (Tauri 2), wraps the web client. See [docs/desktop.md](docs/desktop.md) |
 | [`apps/extension`](apps/extension) | Chrome extension (Manifest V3) |
 | [`apps/ios`](apps/ios) | iOS and iPadOS app (SwiftUI) with AutoFill extension; see [docs/ios.md](docs/ios.md) |
+| [`apps/android`](apps/android) | Android app (Kotlin, Jetpack Compose) with an autofill service; see [docs/android.md](docs/android.md) |
 | [`apps/website`](apps/website) | Marketing website (Next.js, static export) |
 | [`packages/ui`](packages/ui) | Shared design system (React, Tailwind CSS tokens) |
 | [`packages/api-client`](packages/api-client) | Typed TypeScript client for the server API |
