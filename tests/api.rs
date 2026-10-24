@@ -258,6 +258,8 @@ async fn run_all(database_url: &str) {
     sessions_and_activity_log(&server).await;
     master_password_change(&server).await;
     known_devices_survive_email_lockout(&server).await;
+    item_history(&server).await;
+    website_icons(&server).await;
     security_headers_are_set(&server).await;
     two_factor_totp_and_recovery_codes(&server).await;
     two_factor_remember_device(&server).await;
@@ -1365,6 +1367,46 @@ async fn organizations_and_shared_vaults(server: &TestServer) {
             item["encryptedData"].as_str().unwrap(),
         )
         .unwrap();
+    // The history keeps the earlier versions with their own key epoch;
+    // members read it, people without access do not.
+    let (status, history) = carol
+        .call(
+            server,
+            Method::GET,
+            &format!("/api/v1/items/{item_id}/versions"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{history}");
+    let versions = history["versions"].as_array().unwrap();
+    assert_eq!(versions.len(), 2);
+    assert_eq!(versions[0]["revision"], 2);
+    assert_eq!(versions[0]["keyEpoch"], 1);
+    assert_eq!(versions[1]["revision"], 1);
+    assert!(versions[0]["updatedBy"].is_string());
+    if carol.keyring.has_vault_key(&vault_id, 1) {
+        carol
+            .keyring
+            .decrypt_item_at(
+                &vault_id,
+                1,
+                &item_id,
+                2,
+                versions[0]["encryptedData"].as_str().unwrap(),
+            )
+            .unwrap();
+    }
+    for outsider in [&bob, &mallory] {
+        let (status, _) = outsider
+            .call(
+                server,
+                Method::GET,
+                &format!("/api/v1/items/{item_id}/versions"),
+                None,
+            )
+            .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
     let (status, members) = carol
         .call(
             server,
@@ -1810,6 +1852,194 @@ async fn items_sync_and_conflicts(server: &TestServer) {
         )
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+async fn item_history(server: &TestServer) {
+    // Own IPs keep the auth rate limit of the other tests untouched.
+    let member = Member::new(server, "10.9.5.1").await;
+    let (keyring, token) = (&member.keyring, member.token.clone());
+    let (_, initial) = server
+        .request(Method::GET, "/api/v1/sync", Some(&token), None)
+        .await;
+    let vault_id = initial["vaults"][0]["id"].as_str().unwrap().to_owned();
+    let item_id = id::new_id().unwrap();
+    let uri = format!("/api/v1/items/{item_id}");
+    let versions_uri = format!("{uri}/versions");
+    for revision in 1..=23u64 {
+        let data = format!(r#"{{"title":"v{revision}"}}"#);
+        let (status, body) = server
+            .request(
+                Method::PUT,
+                &uri,
+                Some(&token),
+                Some(json!({
+                    "vaultId": vault_id,
+                    "revision": revision,
+                    "encryptedData": keyring.encrypt_item(&vault_id, &item_id, revision, &data).unwrap(),
+                })),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+
+    // The creation time stays while the item changes.
+    let (_, sync) = server
+        .request(Method::GET, "/api/v1/sync", Some(&token), None)
+        .await;
+    let item = sync["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["id"] == item_id.as_str())
+        .unwrap();
+    let created_at = item["createdAt"].as_i64().unwrap();
+    assert!(created_at > 0 && created_at <= item["updatedAt"].as_i64().unwrap());
+
+    // The newest 20 earlier versions, newest first, each decryptable with
+    // its own revision.
+    let (status, history) = server
+        .request(Method::GET, &versions_uri, Some(&token), None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{history}");
+    let versions = history["versions"].as_array().unwrap();
+    assert_eq!(versions.len(), 20);
+    assert_eq!(versions[0]["revision"], 22);
+    assert_eq!(versions[19]["revision"], 3);
+    assert_eq!(versions[0]["keyEpoch"], 0);
+    for version in versions {
+        let revision = version["revision"].as_u64().unwrap();
+        let data = keyring
+            .decrypt_item(
+                &vault_id,
+                &item_id,
+                revision,
+                version["encryptedData"].as_str().unwrap(),
+            )
+            .unwrap();
+        assert_eq!(data, format!(r#"{{"title":"v{revision}"}}"#));
+    }
+
+    // Other accounts cannot read it; without a session it is refused.
+    let other_token = Member::new(server, "10.9.5.2").await.token;
+    let (status, _) = server
+        .request(Method::GET, &versions_uri, Some(&other_token), None)
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = server.request(Method::GET, &versions_uri, None, None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    // A permanent deletion removes the history.
+    let (status, _) = server
+        .request(
+            Method::DELETE,
+            &format!("{uri}?revision=24"),
+            Some(&token),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = server
+        .request(Method::GET, &versions_uri, Some(&token), None)
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM item_versions WHERE item_id = $1")
+        .bind(&item_id)
+        .fetch_one(server.db())
+        .await
+        .unwrap();
+    assert_eq!(left, 0);
+}
+
+/// Serves a PNG for `icon.example` and nothing else, without network access.
+struct FakeIcons;
+
+impl passbox_server::api::icons::IconFetcher for FakeIcons {
+    fn fetch(&self, domain: &str) -> Option<passbox_server::api::icons::Icon> {
+        (domain == "icon.example").then(|| passbox_server::api::icons::Icon {
+            content_type: "image/png",
+            bytes: b"\x89PNG\r\n\x1a\nfake".to_vec(),
+        })
+    }
+}
+
+async fn website_icons(server: &TestServer) {
+    use passbox_server::api::icons::IconService;
+    use std::sync::Arc;
+
+    let token = Member::new(server, "10.9.5.3").await.token;
+    let with_icons = |enabled: bool| {
+        let mut state = server.state.clone();
+        state.icons = Arc::new(IconService::new(enabled, Arc::new(FakeIcons)));
+        TestServer {
+            app: passbox_server::routes::router(&Config::default(), state.clone()),
+            state,
+            env_admin_email: server.env_admin_email.clone(),
+        }
+    };
+    let icons = with_icons(true);
+    let get = |server: &TestServer, uri: String, token: Option<String>| {
+        let app = server.app.clone();
+        async move {
+            let mut request = Request::get(uri);
+            if let Some(token) = token {
+                request = request.header("authorization", format!("Bearer {token}"));
+            }
+            let response = app
+                .oneshot(request.body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            let status = response.status();
+            let headers = response.headers().clone();
+            let body = response.into_body().collect().await.unwrap().to_bytes();
+            (status, headers, body)
+        }
+    };
+
+    let (status, headers, body) = get(
+        &icons,
+        "/api/v1/icons/Icon.Example".into(),
+        Some(token.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers["content-type"], "image/png");
+    assert_eq!(headers["cache-control"], "private, max-age=604800");
+    assert_eq!(headers["x-content-type-options"], "nosniff");
+    assert!(headers.get("set-cookie").is_none());
+    assert!(body.starts_with(b"\x89PNG"));
+
+    // Unknown sites answer 404 (cached); internal targets are refused
+    // before anything is fetched.
+    let (status, headers, _) = get(
+        &icons,
+        "/api/v1/icons/missing.example".into(),
+        Some(token.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(headers["cache-control"], "private, max-age=86400");
+    for bad in [
+        "127.0.0.1",
+        "localhost",
+        "10.0.0.1",
+        "%5B%3A%3A1%5D",
+        "example.com:8443",
+        "intranet",
+    ] {
+        let (status, _, _) = get(&icons, format!("/api/v1/icons/{bad}"), Some(token.clone())).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}");
+    }
+    let (status, _, _) = get(&icons, "/api/v1/icons/icon.example".into(), None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    // PASSBOX_ICONS=off: the endpoint is gone and /meta says so.
+    let off = with_icons(false);
+    let (status, _, _) = get(&off, "/api/v1/icons/icon.example".into(), Some(token)).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (_, meta) = off.request(Method::GET, "/api/v1/meta", None, None).await;
+    assert_eq!(meta["icons"], false);
+    let (_, meta) = icons.request(Method::GET, "/api/v1/meta", None, None).await;
+    assert_eq!(meta["icons"], true);
 }
 
 async fn accounts_are_isolated(server: &TestServer) {

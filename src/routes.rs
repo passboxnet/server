@@ -81,6 +81,8 @@ struct Meta {
     default_locale: Locale,
     /// Minimum strength of new master passwords; clients enforce it.
     password_policy: PasswordPolicy,
+    /// Whether `/api/v1/icons/{domain}` serves website icons.
+    icons: bool,
 }
 
 async fn meta(State(state): State<AppState>) -> ApiResult<Json<Meta>> {
@@ -100,6 +102,7 @@ async fn meta(State(state): State<AppState>) -> ApiResult<Json<Meta>> {
         support_url: Some(settings.support_url).filter(|url| !url.is_empty()),
         default_locale: settings.default_locale,
         password_policy: settings.password_policy,
+        icons: state.icons.enabled,
     }))
 }
 
@@ -146,6 +149,7 @@ mod tests {
         assert_eq!(body["instanceName"], "Passbox");
         assert_eq!(body["passwordPolicy"]["minScore"], 3);
         assert_eq!(body["supportUrl"], Value::Null);
+        assert_eq!(body["icons"], true);
     }
 
     #[tokio::test]

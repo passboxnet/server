@@ -859,16 +859,18 @@ pub async fn batch_items(
         let status = match row {
             Some((v, _)) if v != vault_id => return Err(ApiError::NotFound),
             Some((_, revision)) if item.revision == revision + 1 => {
+                super::items::record_version(&mut tx, &item.id).await?;
                 let seq = db::next_seq(&mut tx).await?;
                 sqlx::query(
                     "UPDATE items SET encrypted_data = $1, revision = $2, deleted = 0, seq = $3, \
-                     updated_at = $4, key_epoch = $5 WHERE id = $6",
+                     updated_at = $4, key_epoch = $5, updated_by = $6 WHERE id = $7",
                 )
                 .bind(&item.encrypted_data)
                 .bind(item.revision)
                 .bind(seq)
                 .bind(now)
                 .bind(item.key_epoch)
+                .bind(&session.id)
                 .bind(&item.id)
                 .execute(&mut *tx)
                 .await?;
@@ -878,7 +880,7 @@ pub async fn batch_items(
                 let seq = db::next_seq(&mut tx).await?;
                 sqlx::query(
                     "INSERT INTO items (id, vault_id, encrypted_data, revision, deleted, seq, created_at, \
-                     updated_at, key_epoch) VALUES ($1, $2, $3, 1, 0, $4, $5, $6, $7)",
+                     updated_at, key_epoch, updated_by) VALUES ($1, $2, $3, 1, 0, $4, $5, $6, $7, $8)",
                 )
                 .bind(&item.id)
                 .bind(&vault_id)
@@ -887,6 +889,7 @@ pub async fn batch_items(
                 .bind(now)
                 .bind(now)
                 .bind(item.key_epoch)
+                .bind(&session.id)
                 .execute(&mut *tx)
                 .await?;
                 "ok"

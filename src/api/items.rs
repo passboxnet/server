@@ -5,7 +5,7 @@
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use super::access;
@@ -84,6 +84,37 @@ fn shared_org(access: &access::VaultAccess) -> Option<&str> {
     }
 }
 
+/// Number of earlier versions the server keeps per item.
+pub const MAX_ITEM_VERSIONS: i64 = 20;
+
+/// Copies the stored version of an item into `item_versions` before it is
+/// replaced, and drops versions beyond the newest [`MAX_ITEM_VERSIONS`].
+/// Tombstones (no data) are not kept.
+pub(crate) async fn record_version(
+    tx: &mut sqlx::Transaction<'_, sqlx::Any>,
+    item_id: &str,
+) -> ApiResult<()> {
+    sqlx::query(
+        "INSERT INTO item_versions (item_id, revision, key_epoch, encrypted_data, updated_at, updated_by) \
+         SELECT id, revision, key_epoch, encrypted_data, updated_at, updated_by FROM items \
+         WHERE id = $1 AND encrypted_data IS NOT NULL AND deleted = 0 \
+         ON CONFLICT (item_id, revision) DO NOTHING",
+    )
+    .bind(item_id)
+    .execute(&mut **tx)
+    .await?;
+    sqlx::query(
+        "DELETE FROM item_versions WHERE item_id = $1 AND revision NOT IN \
+         (SELECT revision FROM item_versions WHERE item_id = $2 ORDER BY revision DESC LIMIT $3)",
+    )
+    .bind(item_id)
+    .bind(item_id)
+    .bind(MAX_ITEM_VERSIONS)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
 fn revision_conflict(current: i64) -> ApiError {
     ApiError::conflict(
         "item was changed by another device",
@@ -125,7 +156,7 @@ pub async fn put(
             let seq = db::next_seq(&mut tx).await?;
             sqlx::query(
                 "INSERT INTO items (id, vault_id, encrypted_data, revision, deleted, seq, created_at, updated_at, \
-                 key_epoch) VALUES ($1, $2, $3, 1, 0, $4, $5, $6, $7)",
+                 key_epoch, updated_by) VALUES ($1, $2, $3, 1, 0, $4, $5, $6, $7, $8)",
             )
             .bind(&item_id)
             .bind(&req.vault_id)
@@ -134,6 +165,7 @@ pub async fn put(
             .bind(now)
             .bind(now)
             .bind(req.key_epoch)
+            .bind(&session.id)
             .execute(&mut *tx)
             .await?;
             if let Some(org_id) = &audit_org {
@@ -159,16 +191,18 @@ pub async fn put(
             if req.revision != current + 1 {
                 return Err(revision_conflict(current));
             }
+            record_version(&mut tx, &item_id).await?;
             let seq = db::next_seq(&mut tx).await?;
             sqlx::query(
                 "UPDATE items SET encrypted_data = $1, revision = $2, deleted = 0, seq = $3, updated_at = $4, \
-                 key_epoch = $5 WHERE id = $6",
+                 key_epoch = $5, updated_by = $6 WHERE id = $7",
             )
             .bind(&req.encrypted_data)
             .bind(req.revision)
             .bind(seq)
             .bind(now)
             .bind(req.key_epoch)
+            .bind(&session.id)
             .bind(&item_id)
             .execute(&mut *tx)
             .await?;
@@ -217,13 +251,20 @@ pub async fn delete(
     if query.revision != current + 1 {
         return Err(revision_conflict(current));
     }
+    // A permanent deletion takes the version history with it.
+    sqlx::query("DELETE FROM item_versions WHERE item_id = $1")
+        .bind(&item_id)
+        .execute(&mut *tx)
+        .await?;
     let seq = db::next_seq(&mut tx).await?;
     sqlx::query(
-        "UPDATE items SET encrypted_data = NULL, revision = $1, deleted = 1, seq = $2, updated_at = $3 WHERE id = $4",
+        "UPDATE items SET encrypted_data = NULL, revision = $1, deleted = 1, seq = $2, updated_at = $3, \
+         updated_by = $4 WHERE id = $5",
     )
     .bind(query.revision)
     .bind(seq)
     .bind(now_ms())
+    .bind(&session.id)
     .bind(&item_id)
     .execute(&mut *tx)
     .await?;
@@ -242,5 +283,66 @@ pub async fn delete(
     Ok(Json(WriteResponse {
         revision: query.revision,
         seq,
+    }))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ItemVersion {
+    revision: i64,
+    /// The vault key epoch of `encrypted_data`.
+    key_epoch: i64,
+    encrypted_data: String,
+    updated_at: i64,
+    /// Public ID of the session (device) that wrote this version, if known.
+    updated_by: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct VersionsResponse {
+    versions: Vec<ItemVersion>,
+}
+
+/// Earlier versions of an item, newest first. Anyone who can read the item
+/// (including view-only members of a shared vault) can read its history.
+pub async fn versions(
+    State(state): State<AppState>,
+    session: Session,
+    Path(item_id): Path<String>,
+) -> ApiResult<Json<VersionsResponse>> {
+    validate::id("item id", &item_id)?;
+    let mut conn = state.db.acquire().await?;
+    let vault_id: Option<String> =
+        sqlx::query_scalar("SELECT vault_id FROM items WHERE id = $1 AND deleted = 0")
+            .bind(&item_id)
+            .fetch_optional(&mut *conn)
+            .await?;
+    let vault_id = vault_id.ok_or(ApiError::NotFound)?;
+    if access::vault_access(&mut conn, &vault_id, &session.account_id)
+        .await?
+        .is_none()
+    {
+        return Err(ApiError::NotFound);
+    }
+    let rows: Vec<(i64, i64, String, i64, Option<String>)> = sqlx::query_as(
+        "SELECT revision, key_epoch, encrypted_data, updated_at, updated_by FROM item_versions \
+         WHERE item_id = $1 ORDER BY revision DESC",
+    )
+    .bind(&item_id)
+    .fetch_all(&mut *conn)
+    .await?;
+    Ok(Json(VersionsResponse {
+        versions: rows
+            .into_iter()
+            .map(
+                |(revision, key_epoch, encrypted_data, updated_at, updated_by)| ItemVersion {
+                    revision,
+                    key_epoch,
+                    encrypted_data,
+                    updated_at,
+                    updated_by,
+                },
+            )
+            .collect(),
     }))
 }

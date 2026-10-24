@@ -66,6 +66,8 @@ pub struct SyncItem {
     updated_at: i64,
     /// The vault key epoch the item is encrypted with.
     key_epoch: i64,
+    /// When the item was created (Unix ms).
+    created_at: i64,
 }
 
 #[derive(Serialize)]
@@ -78,10 +80,10 @@ pub struct SyncResponse {
     sharing: Option<SharingDelta>,
 }
 
-type ItemRow = (String, String, i64, Option<String>, i64, i64, i64);
+type ItemRow = (String, String, i64, Option<String>, i64, i64, i64, i64);
 
 fn item(row: ItemRow) -> SyncItem {
-    let (id, vault_id, revision, encrypted_data, deleted, updated_at, key_epoch) = row;
+    let (id, vault_id, revision, encrypted_data, deleted, updated_at, key_epoch, created_at) = row;
     SyncItem {
         id,
         vault_id,
@@ -90,6 +92,7 @@ fn item(row: ItemRow) -> SyncItem {
         deleted: deleted != 0,
         updated_at,
         key_epoch,
+        created_at,
     }
 }
 
@@ -118,7 +121,7 @@ pub async fn sync(
 
     let items: Vec<ItemRow> = sqlx::query_as(
         "SELECT items.id, items.vault_id, items.revision, items.encrypted_data, items.deleted, items.updated_at, \
-         items.key_epoch FROM items JOIN vaults ON vaults.id = items.vault_id \
+         items.key_epoch, items.created_at FROM items JOIN vaults ON vaults.id = items.vault_id \
          WHERE vaults.account_id = $1 AND vaults.org_id IS NULL AND items.seq > $2 AND items.seq <= $3 \
          ORDER BY items.seq",
     )
@@ -326,7 +329,7 @@ async fn sync_sharing(
                 });
             }
             let items: Vec<ItemRow> = sqlx::query_as(
-                "SELECT id, vault_id, revision, encrypted_data, deleted, updated_at, key_epoch FROM items \
+                "SELECT id, vault_id, revision, encrypted_data, deleted, updated_at, key_epoch, created_at FROM items \
                  WHERE vault_id = $1 AND seq > $2 AND seq <= $3 ORDER BY seq",
             )
             .bind(&vault_id)

@@ -55,6 +55,12 @@ pub struct Config {
     #[arg(long, env = "PASSBOX_ADMIN_EMAILS", value_delimiter = ',')]
     pub admin_emails: Vec<String>,
 
+    /// Website icons: `on` lets signed-in clients load icons through
+    /// `/api/v1/icons/{domain}` (the server then learns which domains are in
+    /// vaults), `off` disables the endpoint.
+    #[arg(long, env = "PASSBOX_ICONS", value_enum, default_value_t = Switch::On)]
+    pub icons: Switch,
+
     /// Log output format.
     #[arg(long, env = "PASSBOX_LOG_FORMAT", value_enum, default_value_t = LogFormat::Pretty)]
     pub log_format: LogFormat,
@@ -79,10 +85,17 @@ impl std::fmt::Debug for Config {
             .field("mail_from", &self.mail_from)
             .field("public_url", &self.public_url)
             .field("admin_emails", &self.admin_emails)
+            .field("icons", &self.icons)
             .field("log_format", &self.log_format)
             .field("webhook_allow_private", &self.webhook_allow_private)
             .finish()
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum Switch {
+    On,
+    Off,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -103,6 +116,7 @@ impl Default for Config {
             mail_from: None,
             public_url: None,
             admin_emails: Vec::new(),
+            icons: Switch::On,
             log_format: LogFormat::Pretty,
             webhook_allow_private: false,
         }
