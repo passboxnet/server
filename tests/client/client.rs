@@ -104,6 +104,32 @@ fn full_lifecycle_with_two_devices_and_offline_unlock() {
         .collect();
     assert_eq!(names, ["Office", "Private"]);
 
+    // Icon and color live in the encrypted metadata; renaming keeps them.
+    phone
+        .set_vault_appearance(&work, Some("briefcase"), Some("green"))
+        .unwrap();
+    laptop.sync().unwrap();
+    laptop.rename_vault(&work, "Büro").unwrap();
+    phone.sync().unwrap();
+    let office = phone
+        .vaults()
+        .unwrap()
+        .into_iter()
+        .find(|v| v.id == work)
+        .unwrap();
+    assert_eq!(office.name, "Büro");
+    assert_eq!(office.icon.as_deref(), Some("briefcase"));
+    assert_eq!(office.color.as_deref(), Some("green"));
+    phone.set_vault_appearance(&work, None, Some("")).unwrap();
+    let office = phone
+        .vaults()
+        .unwrap()
+        .into_iter()
+        .find(|v| v.id == work)
+        .unwrap();
+    assert_eq!((office.icon, office.color), (None, None));
+    assert_eq!(office.name, "Büro");
+
     // Lock, wrong password, unlock online.
     phone.lock();
     assert_eq!(phone.status().unwrap(), Status::Locked);
