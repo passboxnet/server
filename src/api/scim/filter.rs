@@ -67,10 +67,18 @@ fn tokenize(input: &str) -> Result<Vec<Token>, String> {
                 tokens.push(Token::Str(value));
             }
             _ => {
+                // An attribute path may carry a value filter in brackets
+                // (`emails[type eq "work"].value`), kept as part of the word.
                 let mut word = String::new();
+                let mut depth = 0usize;
                 while let Some(&c) = chars.peek() {
-                    if c.is_whitespace() || c == '(' || c == ')' || c == '"' {
+                    if depth == 0 && (c.is_whitespace() || c == '(' || c == ')' || c == '"') {
                         break;
+                    }
+                    match c {
+                        '[' => depth += 1,
+                        ']' => depth = depth.saturating_sub(1),
+                        _ => {}
                     }
                     word.push(c);
                     chars.next();
