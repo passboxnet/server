@@ -1010,6 +1010,7 @@ async fn organizations_and_shared_vaults(server: &TestServer) {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(preview["email"], bob.client.email);
     assert_eq!(preview["orgKind"], "family");
+    assert_eq!(preview["inviterEmail"], alice.client.email);
     let (status, invitations) = alice
         .call(
             server,

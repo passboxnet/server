@@ -746,6 +746,8 @@ pub struct InvitationPreview {
     email: String,
     role: String,
     expires_at: i64,
+    /// Email of the admin who invited (also named in the invitation mail).
+    inviter_email: String,
 }
 
 /// What an invitation link is for, before signing in. Unknown, used,
@@ -762,10 +764,11 @@ pub async fn preview(
         60,
     )?;
     valid_token(&token)?;
-    let row: Option<(String, String, String, String, i64)> = sqlx::query_as(
+    let row: Option<(String, String, String, String, i64, String)> = sqlx::query_as(
         "SELECT org_invitations.org_id, organizations.kind, org_invitations.email, org_invitations.role, \
-         org_invitations.expires_at FROM org_invitations \
+         org_invitations.expires_at, accounts.email FROM org_invitations \
          JOIN organizations ON organizations.id = org_invitations.org_id \
+         JOIN accounts ON accounts.id = org_invitations.created_by \
          WHERE org_invitations.token_hash = $1 AND org_invitations.status = 'pending' \
          AND org_invitations.expires_at > $2",
     )
@@ -773,13 +776,15 @@ pub async fn preview(
     .bind(now_ms())
     .fetch_optional(&state.db)
     .await?;
-    let (org_id, org_kind, email, role, expires_at) = row.ok_or(ApiError::NotFound)?;
+    let (org_id, org_kind, email, role, expires_at, inviter_email) =
+        row.ok_or(ApiError::NotFound)?;
     Ok(Json(InvitationPreview {
         org_id,
         org_kind,
         email,
         role,
         expires_at,
+        inviter_email,
     }))
 }
 
