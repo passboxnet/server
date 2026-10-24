@@ -15,6 +15,8 @@ pub enum ApiError {
     InvalidCredentials,
     #[error("not found")]
     NotFound,
+    #[error("{0}")]
+    Forbidden(String),
     #[error("sign in again to confirm this change")]
     ReauthenticationRequired,
     #[error("too many attempts; try again later")]
@@ -28,6 +30,10 @@ pub enum ApiError {
 impl ApiError {
     pub fn bad_request(message: impl Into<String>) -> Self {
         Self::BadRequest(message.into())
+    }
+
+    pub fn forbidden(message: impl Into<String>) -> Self {
+        Self::Forbidden(message.into())
     }
 
     pub fn conflict(message: impl Into<String>, details: Value) -> Self {
@@ -59,6 +65,7 @@ impl IntoResponse for ApiError {
             Self::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized"),
             Self::InvalidCredentials => (StatusCode::UNAUTHORIZED, "invalid_credentials"),
             Self::NotFound => (StatusCode::NOT_FOUND, "not_found"),
+            Self::Forbidden(_) => (StatusCode::FORBIDDEN, "forbidden"),
             Self::ReauthenticationRequired => (StatusCode::FORBIDDEN, "reauthentication_required"),
             Self::RateLimited(_) => (StatusCode::TOO_MANY_REQUESTS, "rate_limited"),
             Self::Conflict { .. } => (StatusCode::CONFLICT, "conflict"),

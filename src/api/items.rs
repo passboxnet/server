@@ -8,6 +8,7 @@ use axum::extract::{Path, Query, State};
 use serde::Deserialize;
 use serde_json::json;
 
+use super::access;
 use super::auth::Session;
 use super::validate;
 use super::vaults::WriteResponse;
@@ -21,27 +22,57 @@ pub struct PutItemRequest {
     vault_id: String,
     revision: i64,
     encrypted_data: String,
+    /// The vault key epoch the data is encrypted with (0 for personal vaults).
+    #[serde(default)]
+    key_epoch: i64,
 }
 
-/// Returns the vault and revision of an item, if the caller owns it.
+/// Returns the vault and revision of an item, if the caller may see it.
 async fn current_item(
     tx: &mut sqlx::Transaction<'_, sqlx::Any>,
     account_id: &str,
     item_id: &str,
 ) -> ApiResult<Option<(String, i64)>> {
-    let row: Option<(String, i64, String)> = sqlx::query_as(
-        "SELECT items.vault_id, items.revision, vaults.account_id FROM items \
-         JOIN vaults ON vaults.id = items.vault_id WHERE items.id = $1",
-    )
-    .bind(item_id)
-    .fetch_optional(&mut **tx)
-    .await?;
+    let row: Option<(String, i64)> =
+        sqlx::query_as("SELECT vault_id, revision FROM items WHERE id = $1")
+            .bind(item_id)
+            .fetch_optional(&mut **tx)
+            .await?;
     match row {
-        // Item IDs are random; treat foreign items like missing ones but never overwrite them.
-        Some((_, _, owner)) if owner != account_id => Err(ApiError::NotFound),
-        Some((vault_id, revision, _)) => Ok(Some((vault_id, revision))),
+        Some((vault_id, revision)) => {
+            // Item IDs are random; treat foreign items like missing ones but
+            // never overwrite them.
+            if access::vault_access(tx, &vault_id, account_id)
+                .await?
+                .is_none()
+            {
+                return Err(ApiError::NotFound);
+            }
+            Ok(Some((vault_id, revision)))
+        }
         None => Ok(None),
     }
+}
+
+/// Requires write access to the vault and the vault's current key epoch.
+async fn require_write(
+    tx: &mut sqlx::Transaction<'_, sqlx::Any>,
+    account_id: &str,
+    vault_id: &str,
+    key_epoch: i64,
+) -> ApiResult<()> {
+    let access = access::require_vault_write(tx, vault_id, account_id).await?;
+    let current = match access {
+        access::VaultAccess::Personal => 0,
+        access::VaultAccess::Shared { key_epoch, .. } => key_epoch,
+    };
+    if key_epoch != current {
+        return Err(ApiError::conflict(
+            "the vault's key was rotated; encrypt with the current key epoch",
+            json!({ "currentKeyEpoch": current }),
+        ));
+    }
+    Ok(())
 }
 
 fn revision_conflict(current: i64) -> ApiError {
@@ -64,15 +95,7 @@ pub async fn put(
     validate::base64("encryptedData", &req.encrypted_data, validate::MAX_ITEM_LEN)?;
 
     let mut tx = crate::db::begin_write(&state.db).await?;
-    let owns_vault: Option<i64> =
-        sqlx::query_scalar("SELECT 1 FROM vaults WHERE id = $1 AND account_id = $2")
-            .bind(&req.vault_id)
-            .bind(&session.account_id)
-            .fetch_optional(&mut *tx)
-            .await?;
-    if owns_vault.is_none() {
-        return Err(ApiError::NotFound);
-    }
+    require_write(&mut tx, &session.account_id, &req.vault_id, req.key_epoch).await?;
 
     let now = now_ms();
     match current_item(&mut tx, &session.account_id, &item_id).await? {
@@ -82,8 +105,8 @@ pub async fn put(
             }
             let seq = db::next_seq(&mut tx).await?;
             sqlx::query(
-                "INSERT INTO items (id, vault_id, encrypted_data, revision, deleted, seq, created_at, updated_at) \
-                 VALUES ($1, $2, $3, 1, 0, $4, $5, $6)",
+                "INSERT INTO items (id, vault_id, encrypted_data, revision, deleted, seq, created_at, updated_at, \
+                 key_epoch) VALUES ($1, $2, $3, 1, 0, $4, $5, $6, $7)",
             )
             .bind(&item_id)
             .bind(&req.vault_id)
@@ -91,6 +114,7 @@ pub async fn put(
             .bind(seq)
             .bind(now)
             .bind(now)
+            .bind(req.key_epoch)
             .execute(&mut *tx)
             .await?;
             tx.commit().await?;
@@ -107,13 +131,14 @@ pub async fn put(
             }
             let seq = db::next_seq(&mut tx).await?;
             sqlx::query(
-                "UPDATE items SET encrypted_data = $1, revision = $2, deleted = 0, seq = $3, updated_at = $4 \
-                 WHERE id = $5",
+                "UPDATE items SET encrypted_data = $1, revision = $2, deleted = 0, seq = $3, updated_at = $4, \
+                 key_epoch = $5 WHERE id = $6",
             )
             .bind(&req.encrypted_data)
             .bind(req.revision)
             .bind(seq)
             .bind(now)
+            .bind(req.key_epoch)
             .bind(&item_id)
             .execute(&mut *tx)
             .await?;
@@ -143,9 +168,10 @@ pub async fn delete(
     validate::revision(query.revision)?;
 
     let mut tx = crate::db::begin_write(&state.db).await?;
-    let (_, current) = current_item(&mut tx, &session.account_id, &item_id)
+    let (vault_id, current) = current_item(&mut tx, &session.account_id, &item_id)
         .await?
         .ok_or(ApiError::NotFound)?;
+    access::require_vault_write(&mut tx, &vault_id, &session.account_id).await?;
     if query.revision != current + 1 {
         return Err(revision_conflict(current));
     }
