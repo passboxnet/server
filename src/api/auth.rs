@@ -283,6 +283,9 @@ pub struct RegisterStartRequest {
     account_id: String,
     email: String,
     registration_request: String,
+    /// Token from an invitation link; needed when registration is not open.
+    #[serde(default)]
+    invite_token: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -300,6 +303,7 @@ pub async fn register_start(
     validate::id("accountId", &req.account_id)?;
     let email = validate::email(&req.email)?;
     ensure_account_is_new(&state, &req.account_id, &email).await?;
+    crate::instance::check_registration(&state, &email, req.invite_token.as_deref()).await?;
     let request = validate::base64(
         "registrationRequest",
         &req.registration_request,
@@ -349,6 +353,11 @@ pub struct RegisterFinishRequest {
     encrypted_account_key: String,
     /// The account's first (personal) vault.
     vault: NewVaultRequest,
+    #[serde(default)]
+    invite_token: Option<String>,
+    /// Language for mails (`en`, `de`); defaults to `Accept-Language`.
+    #[serde(default)]
+    locale: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -360,6 +369,7 @@ pub struct RegisterFinishResponse {
 pub async fn register_finish(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
+    headers: axum::http::HeaderMap,
     Json(req): Json<RegisterFinishRequest>,
 ) -> ApiResult<(StatusCode, Json<RegisterFinishResponse>)> {
     limit_ip(&state, &ip)?;
@@ -379,6 +389,9 @@ pub async fn register_finish(
     )?;
     let record = opaque::registration_record(&upload)
         .map_err(|_| ApiError::bad_request("invalid registrationUpload"))?;
+    let grant =
+        crate::instance::check_registration(&state, &email, req.invite_token.as_deref()).await?;
+    let locale = crate::mail::request_locale(req.locale.as_deref(), &headers);
 
     let now = now_ms();
     let mut tx = crate::db::begin_write(&state.db).await?;
@@ -405,10 +418,14 @@ pub async fn register_finish(
         ));
     }
     super::vaults::insert_vault(&mut tx, &req.account_id, &req.vault, now).await?;
+    let first_admin =
+        crate::instance::on_account_created(&mut tx, &req.account_id, &grant, locale, now).await?;
     tx.commit().await?;
 
     tracing::info!(account_id = %req.account_id, "account registered");
     record_event(&state, &req.account_id, "account_created", "", "", &ip).await?;
+    super::admin::account_registered(&state, &req.account_id, &email, &grant, first_admin, &ip)
+        .await?;
     Ok((
         StatusCode::CREATED,
         Json(RegisterFinishResponse {
@@ -587,6 +604,7 @@ pub async fn login_finish(
             return Err(ApiError::InvalidCredentials);
         }
     };
+    crate::instance::ensure_active(&state, &account_id).await?;
 
     let token = encoding::encode(&random::bytes::<32>().map_err(|e| ApiError::Internal(e.into()))?);
     let session_id = id::new_id().map_err(|e| ApiError::Internal(e.into()))?;
@@ -609,6 +627,15 @@ pub async fn login_finish(
     .bind(&new_device_token_hash)
     .execute(&state.db)
     .await?;
+    super::notify::signed_in(
+        &state,
+        &account_id,
+        device_token_hash.is_some(),
+        &device_name,
+        &ip,
+        now,
+    )
+    .await;
     record_event(
         &state,
         &account_id,
@@ -660,6 +687,8 @@ pub struct AccountResponse {
     kdf_salt: String,
     kdf_params: KdfParams,
     encrypted_account_key: String,
+    /// Whether the account may use the instance administration.
+    instance_admin: bool,
 }
 
 pub async fn account(
@@ -680,7 +709,9 @@ pub async fn account(
     .bind(&session.account_id)
     .fetch_one(&state.db)
     .await?;
+    let instance_admin = crate::instance::is_admin(&state, &session.account_id).await?;
     Ok(Json(AccountResponse {
+        instance_admin,
         account_id: session.account_id,
         email,
         kdf_salt,
@@ -741,9 +772,12 @@ impl FromRequestParts<AppState> for Session {
         }
         let token_hash = hash_token(token);
         let now = db::now_ms();
+        // Sessions of disabled accounts are deleted when the account is
+        // disabled; the join also covers a login finishing at that moment.
         let row: Option<(String, String, String, String, i64, i64)> = sqlx::query_as(
-            "SELECT account_id, id, device_name, client_kind, created_at, last_used_at FROM sessions \
-             WHERE token_hash = $1 AND expires_at > $2",
+            "SELECT s.account_id, s.id, s.device_name, s.client_kind, s.created_at, s.last_used_at \
+             FROM sessions s JOIN accounts a ON a.id = s.account_id \
+             WHERE s.token_hash = $1 AND s.expires_at > $2 AND a.disabled_at = 0",
         )
         .bind(&token_hash)
         .bind(now)

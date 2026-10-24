@@ -17,20 +17,40 @@ use passbox_server::state::AppState;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
+#[path = "api/admin.rs"]
+mod admin;
+
 struct TestServer {
     app: Router,
+    state: AppState,
+    /// Listed in `PASSBOX_ADMIN_EMAILS`.
+    env_admin_email: String,
 }
 
 impl TestServer {
     async fn new(database_url: &str) -> Self {
         let db = passbox_server::db::connect(database_url).await.unwrap();
+        Self::with_db(db).await
+    }
+
+    /// A second server process on the same database, with its own rate
+    /// limits.
+    async fn with_db(db: passbox_server::db::Db) -> Self {
         let mut state = AppState::load(db).await.unwrap();
         // Lets tests pick the client IP with `X-Forwarded-For`. Requests
         // without it count as IP "unknown".
         state.trust_proxy = true;
+        let env_admin_email = format!("{}@env-admin.example", id::new_id().unwrap());
+        state.admin_emails = std::sync::Arc::new(vec![env_admin_email.clone()]);
         Self {
-            app: passbox_server::routes::router(&Config::default(), state),
+            app: passbox_server::routes::router(&Config::default(), state.clone()),
+            state,
+            env_admin_email,
         }
+    }
+
+    fn db(&self) -> &passbox_server::db::Db {
+        &self.state.db
     }
 
     async fn request(
@@ -222,6 +242,8 @@ impl Client {
 
 async fn run_all(database_url: &str) {
     let server = TestServer::new(database_url).await;
+    // First: the first account on a fresh server becomes instance admin.
+    admin::instance_administration(&TestServer::with_db(server.db().clone()).await).await;
     registration_and_login(&server).await;
     prelogin_does_not_reveal_accounts(&server).await;
     items_sync_and_conflicts(&server).await;

@@ -21,6 +21,10 @@ pub enum ApiError {
     RateLimited(std::time::Duration),
     #[error("{message}")]
     Conflict { message: String, details: Value },
+    /// The request is understood but not allowed, with a specific code such
+    /// as `forbidden`, `account_disabled` or `registration_closed`.
+    #[error("{message}")]
+    Forbidden { code: &'static str, message: String },
     #[error(transparent)]
     Internal(#[from] anyhow::Error),
 }
@@ -28,6 +32,13 @@ pub enum ApiError {
 impl ApiError {
     pub fn bad_request(message: impl Into<String>) -> Self {
         Self::BadRequest(message.into())
+    }
+
+    pub fn forbidden(code: &'static str, message: impl Into<String>) -> Self {
+        Self::Forbidden {
+            code,
+            message: message.into(),
+        }
     }
 
     pub fn conflict(message: impl Into<String>, details: Value) -> Self {
@@ -62,6 +73,7 @@ impl IntoResponse for ApiError {
             Self::ReauthenticationRequired => (StatusCode::FORBIDDEN, "reauthentication_required"),
             Self::RateLimited(_) => (StatusCode::TOO_MANY_REQUESTS, "rate_limited"),
             Self::Conflict { .. } => (StatusCode::CONFLICT, "conflict"),
+            Self::Forbidden { code, .. } => (StatusCode::FORBIDDEN, *code),
             Self::Internal(err) => {
                 tracing::error!(error = ?err, "internal error");
                 (StatusCode::INTERNAL_SERVER_ERROR, "internal")
