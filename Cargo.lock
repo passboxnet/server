@@ -3373,7 +3373,7 @@ dependencies = [
 name = "passbox-ffi"
 version = "0.1.0"
 dependencies = [
- "jni",
+ "jni 0.22.4",
  "passbox-client",
  "passbox-core",
  "rustls-platform-verifier",
