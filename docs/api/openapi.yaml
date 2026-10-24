@@ -1100,6 +1100,7 @@ paths:
                   email: { type: string }
                   role: { type: string }
                   expiresAt: { type: integer }
+                  inviterEmail: { type: string, description: Email of the inviting admin. }
         "404": { description: Invalid invitation. }
         "429": { $ref: "#/components/responses/RateLimited" }
   /api/v1/invitations/accept:
