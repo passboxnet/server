@@ -343,10 +343,12 @@ pub struct MonitorOverview {
 }
 
 type EmailRow = (String, String, i64, i64, String, i64);
+/// name, title, domain, breach date, added date, count, data classes (JSON), first seen.
+type BreachRow = (String, String, String, String, String, i64, String, i64);
 
 async fn load_email(state: &AppState, row: EmailRow) -> ApiResult<MonitoredEmail> {
     let (id, email, verified_at, checked_at, check_error, created_at) = row;
-    let breaches: Vec<(String, String, String, String, String, i64, String, i64)> = sqlx::query_as(
+    let breaches: Vec<BreachRow> = sqlx::query_as(
         "SELECT name, title, domain, breach_date, added_date, pwn_count, data_classes, first_seen_at \
          FROM breach_monitor_results WHERE email_id = $1 ORDER BY breach_date DESC, name",
     )
