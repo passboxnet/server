@@ -1,0 +1,12 @@
+# Advisories that `cargo audit` reports but that do not affect Passbox.
+# Every entry needs a reason and should be removed as soon as possible.
+
+[advisories]
+ignore = [
+    # crypto-bigint 0.5 timing issues. It is pulled in by opaque-ke 4.0 through
+    # elliptic-curve 0.13, which opaque-ke only uses for NIST-curve cipher
+    # suites. Passbox uses ristretto255 (curve25519-dalek), so the affected code
+    # never runs. Remove once opaque-ke ships a stable release on
+    # elliptic-curve 0.14 / crypto-bigint 0.7.
+    "RUSTSEC-2026-0387",
+]
