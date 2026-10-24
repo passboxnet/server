@@ -15,7 +15,9 @@ Passbox is developed as one monorepo. It will be split into separate repositorie
 | [`crates/server`](crates/server) | Headless server (axum). Stores and syncs encrypted data and serves the web client |
 | [`crates/cli`](crates/cli) | `pbx` command-line client |
 | [`apps/web`](apps/web) | Web client (React, Vite) |
+| [`apps/desktop`](apps/desktop) | Desktop app for Windows, macOS and Linux (Tauri 2), wraps the web client. See [docs/desktop.md](docs/desktop.md) |
 | [`apps/extension`](apps/extension) | Chrome extension (Manifest V3) |
+| [`apps/ios`](apps/ios) | iOS and iPadOS app (SwiftUI) with AutoFill extension; see [docs/ios.md](docs/ios.md) |
 | [`apps/website`](apps/website) | Marketing website (Next.js, static export) |
 | [`packages/ui`](packages/ui) | Shared design system (React, Tailwind CSS tokens) |
 | [`packages/api-client`](packages/api-client) | Typed TypeScript client for the server API |
@@ -67,6 +69,7 @@ Other entry points:
 ```sh
 pnpm dev:website                       # website on http://localhost:3000
 pnpm --filter @passbox/extension build # extension in apps/extension/dist, load it via chrome://extensions
+pnpm dev:desktop                       # desktop app (Tauri), see docs/desktop.md
 cargo run -p passbox-cli -- totp JBSWY3DPEHPK3PXP
 ```
 

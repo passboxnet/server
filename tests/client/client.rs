@@ -114,6 +114,26 @@ fn full_lifecycle_with_two_devices_and_offline_unlock() {
     ));
     assert_eq!(phone.unlock(PASSWORD).unwrap(), Connectivity::Online);
 
+    // Biometric-style unlock with the exported key, also without Argon2.
+    let unlock_key = phone.unlock_key().unwrap();
+    phone.lock();
+    assert!(matches!(phone.unlock_key(), Err(Error::Locked)));
+    assert_eq!(
+        phone.unlock_with_key(&unlock_key).unwrap(),
+        Connectivity::Online
+    );
+    let mut tampered = unlock_key.to_vec();
+    tampered[5] ^= 1;
+    phone.lock();
+    assert!(matches!(
+        phone.unlock_with_key(&tampered),
+        Err(Error::InvalidCredentials)
+    ));
+    assert!(matches!(
+        phone.unlock_with_key(&[1, 2, 3]),
+        Err(Error::InvalidCredentials)
+    ));
+
     // Offline: a client pointing at an unreachable server unlocks from the cache.
     phone.lock();
     let offline = Client::new("http://127.0.0.1:9", phone_store.clone());
