@@ -63,7 +63,7 @@ pub async fn put(
     validate::revision(req.revision)?;
     validate::base64("encryptedData", &req.encrypted_data, validate::MAX_ITEM_LEN)?;
 
-    let mut tx = state.db.begin().await?;
+    let mut tx = crate::db::begin_write(&state.db).await?;
     let owns_vault: Option<i64> =
         sqlx::query_scalar("SELECT 1 FROM vaults WHERE id = $1 AND account_id = $2")
             .bind(&req.vault_id)
@@ -142,7 +142,7 @@ pub async fn delete(
     validate::id("item id", &item_id)?;
     validate::revision(query.revision)?;
 
-    let mut tx = state.db.begin().await?;
+    let mut tx = crate::db::begin_write(&state.db).await?;
     let (_, current) = current_item(&mut tx, &session.account_id, &item_id)
         .await?
         .ok_or(ApiError::NotFound)?;

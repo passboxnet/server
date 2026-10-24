@@ -70,7 +70,7 @@ pub async fn create(
     Json(req): Json<NewVaultRequest>,
 ) -> ApiResult<(StatusCode, Json<WriteResponse>)> {
     validate_new_vault(&req)?;
-    let mut tx = state.db.begin().await?;
+    let mut tx = crate::db::begin_write(&state.db).await?;
     let seq = insert_vault(&mut tx, &session.account_id, &req, now_ms()).await?;
     tx.commit().await?;
     Ok((
@@ -101,7 +101,7 @@ pub async fn update(
         validate::MAX_SMALL_LEN,
     )?;
 
-    let mut tx = state.db.begin().await?;
+    let mut tx = crate::db::begin_write(&state.db).await?;
     let current: Option<i64> =
         sqlx::query_scalar("SELECT revision FROM vaults WHERE id = $1 AND account_id = $2")
             .bind(&vault_id)

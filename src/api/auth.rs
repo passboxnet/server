@@ -141,7 +141,7 @@ async fn issue_device_token(
 ) -> ApiResult<(String, String)> {
     let token = encoding::encode(&random::bytes::<32>().map_err(|e| ApiError::Internal(e.into()))?);
     let token_hash = hash_token(&token);
-    let mut tx = state.db.begin().await?;
+    let mut tx = crate::db::begin_write(&state.db).await?;
     sqlx::query(
         "DELETE FROM device_tokens WHERE account_id = $1 AND (expires_at <= $2 OR token_hash = $3)",
     )
@@ -381,7 +381,7 @@ pub async fn register_finish(
         .map_err(|_| ApiError::bad_request("invalid registrationUpload"))?;
 
     let now = now_ms();
-    let mut tx = state.db.begin().await?;
+    let mut tx = crate::db::begin_write(&state.db).await?;
     let inserted = sqlx::query(
         "INSERT INTO accounts (id, email, opaque_record, kdf_salt, kdf_memory_kib, kdf_iterations, \
          kdf_parallelism, encrypted_account_key, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) \

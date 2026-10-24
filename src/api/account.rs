@@ -142,7 +142,7 @@ pub async fn password_finish(
     let record = opaque::registration_record(&upload)
         .map_err(|_| ApiError::bad_request("invalid registrationUpload"))?;
 
-    let mut tx = state.db.begin().await?;
+    let mut tx = crate::db::begin_write(&state.db).await?;
     sqlx::query(
         "UPDATE accounts SET opaque_record = $1, kdf_salt = $2, kdf_memory_kib = $3, kdf_iterations = $4, \
          kdf_parallelism = $5, encrypted_account_key = $6 WHERE id = $7",

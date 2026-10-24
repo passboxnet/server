@@ -11,10 +11,27 @@ use sqlx::{AnyPool, Executor};
 
 pub type Db = AnyPool;
 
+/// Whether the server runs on SQLite (set once in [`connect`]).
+static IS_SQLITE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+/// Begins a transaction that will write. On SQLite it takes the write lock
+/// up front (`BEGIN IMMEDIATE`): a deferred transaction that reads first
+/// fails with "database is locked" when another writer committed meanwhile,
+/// and the busy timeout does not help in that case.
+pub async fn begin_write(db: &Db) -> Result<sqlx::Transaction<'static, sqlx::Any>, sqlx::Error> {
+    if IS_SQLITE.get().copied().unwrap_or(false) {
+        db.begin_with("BEGIN IMMEDIATE").await
+    } else {
+        db.begin().await
+    }
+}
+
 /// Opens the database and applies pending migrations.
 pub async fn connect(url: &str) -> anyhow::Result<Db> {
     sqlx::any::install_default_drivers();
     let is_sqlite = url.starts_with("sqlite:");
+    // Tests may connect several times; the backend is the same for all.
+    let _ = IS_SQLITE.set(is_sqlite);
     // An in-memory SQLite database exists once per connection, so it must not be pooled.
     let max_connections = if is_sqlite && url.contains(":memory:") {
         1
