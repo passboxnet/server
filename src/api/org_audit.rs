@@ -345,7 +345,8 @@ pub struct AuditQuery {
     /// Entries with a higher sequence number (paging forwards, events API).
     pub after: Option<i64>,
     pub limit: Option<i64>,
-    /// Exact action, or a prefix ending in `*` (`member_*`).
+    /// Exact action, a prefix ending in `*` (`member_*`), or a
+    /// comma-separated list of exact actions.
     pub action: Option<String>,
     /// Actor account ID.
     pub actor: Option<String>,
@@ -393,15 +394,28 @@ pub async fn query(
         push(&mut sql, &mut binds, "seq >", json!(after));
     }
     if let Some(action) = q.action.as_deref().filter(|a| !a.is_empty()) {
-        if action.len() > 64 {
+        if action.len() > 2048 {
             return Err(ApiError::bad_request("action is too long"));
         }
-        match action.strip_suffix('*') {
-            Some(prefix) => {
-                binds.push(json!(like_prefix(prefix)));
-                sql.push_str(&format!(" AND action LIKE ${} ESCAPE '\\'", binds.len()));
+        let list: Vec<&str> = action.split(',').filter(|a| !a.is_empty()).collect();
+        if list.len() > 1 {
+            if list.len() > 50 || list.iter().any(|a| a.len() > 64 || a.contains('*')) {
+                return Err(ApiError::bad_request("list at most 50 exact actions"));
             }
-            None => push(&mut sql, &mut binds, "action =", json!(action)),
+            let mut placeholders = Vec::with_capacity(list.len());
+            for item in list {
+                binds.push(json!(item));
+                placeholders.push(format!("${}", binds.len()));
+            }
+            sql.push_str(&format!(" AND action IN ({})", placeholders.join(", ")));
+        } else {
+            match action.strip_suffix('*') {
+                Some(prefix) => {
+                    binds.push(json!(like_prefix(prefix)));
+                    sql.push_str(&format!(" AND action LIKE ${} ESCAPE '\\'", binds.len()));
+                }
+                None => push(&mut sql, &mut binds, "action =", json!(action)),
+            }
         }
     }
     if let Some(actor) = q.actor.as_deref().filter(|a| !a.is_empty()) {
