@@ -473,6 +473,14 @@ paths:
         - name: since
           in: query
           schema: { type: integer, minimum: 0, default: 0 }
+        - name: sharing
+          in: query
+          schema: { type: integer, enum: [0, 1], default: 0 }
+          description: |
+            `1` includes shared vaults (rows with `orgId` and `keyEpoch`), their
+            items and the `sharing` object. A shared vault the account gained
+            access to after `since` is sent in full. Without it the response
+            covers personal vaults only, as before.
       responses:
         "200":
           description: Vaults and items changed after `since`, and the new cursor.
@@ -489,6 +497,7 @@ paths:
                   items:
                     type: array
                     items: { $ref: "#/components/schemas/SyncItem" }
+                  sharing: { $ref: "#/components/schemas/SharingDelta" }
         "401": { $ref: "#/components/responses/Unauthorized" }
   /api/v1/vaults:
     post:
@@ -522,6 +531,7 @@ paths:
               properties:
                 revision: { type: integer, description: Stored revision + 1 }
                 encryptedMeta: { $ref: "#/components/schemas/Base64Url" }
+                keyEpoch: { type: integer, default: 0, description: "Shared vaults (managers): the current key epoch" }
       responses:
         "200":
           description: Updated.
@@ -547,14 +557,21 @@ paths:
                 vaultId: { $ref: "#/components/schemas/Id" }
                 revision: { type: integer, description: 1 for new items, otherwise stored revision + 1 }
                 encryptedData: { $ref: "#/components/schemas/Base64Url" }
+                keyEpoch:
+                  {
+                    type: integer,
+                    default: 0,
+                    description: "Vault key epoch of the data; must be the vault's current epoch",
+                  }
       responses:
         "200":
           description: Saved.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/WriteResponse" }
+        "403": { description: "`forbidden`: view-only member of a shared vault." }
         "404": { description: Unknown vault or item. }
-        "409": { $ref: "#/components/responses/Conflict" }
+        "409": { description: "Revision conflict, or `details.currentKeyEpoch` when the vault key was rotated." }
     delete:
       summary: Delete an item (keeps a tombstone)
       operationId: deleteItem
@@ -569,6 +586,542 @@ paths:
               schema: { $ref: "#/components/schemas/WriteResponse" }
         "404": { description: Unknown item. }
         "409": { $ref: "#/components/responses/Conflict" }
+  /api/v1/account/keys:
+    get:
+      summary: The account's own key pairs
+      description: Public bundle and private keys encrypted with the account key. 404 until published.
+      operationId: ownKeys
+      responses:
+        "200":
+          description: The key pairs.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AccountKeys" }
+        "404": { description: No key pairs published yet; the client creates them. }
+    put:
+      summary: Publish the account's key pairs
+      description: |
+        Appends the bundle to the key log. The bundle must be self-signed and
+        belong to the session's account. Publishing the same bundle again is
+        accepted; a different one is a conflict (key rotation is not supported
+        yet). Records `keys_published`.
+      operationId: publishKeys
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AccountKeys" }
+      responses:
+        "204": { description: Published. }
+        "400": { description: Invalid bundle or signature. }
+        "409": { description: Other key pairs are already published. }
+  /api/v1/keys/head:
+    get:
+      summary: Signed head of the key log
+      operationId: keyLogHead
+      responses:
+        "200":
+          description: The current head, signed with the server's log key.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SignedHead" }
+  /api/v1/keys/log:
+    get:
+      summary: Entries of the key log
+      operationId: keyLog
+      parameters:
+        - { name: from, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 1000, default: 1000 } }
+      responses:
+        "200":
+          description: Entries in order, with the head they lead to.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [entries, head]
+                properties:
+                  entries: { type: array, items: { $ref: "#/components/schemas/KeyLogEntry" } }
+                  head: { $ref: "#/components/schemas/SignedHead" }
+  /api/v1/keys/{accountId}:
+    get:
+      summary: Look up an account's current key with a proof
+      description: |
+        Returns the bundle and the log entries from its entry (or from
+        `since + 1`, whichever is lower; from the entry itself when `since` is
+        0) to the signed head, so the client can verify inclusion, that no
+        newer key exists and that the log extends the head it verified before.
+      operationId: lookupKey
+      parameters:
+        - { name: accountId, in: path, required: true, schema: { $ref: "#/components/schemas/Id" } }
+        - {
+            name: since,
+            in: query,
+            schema: { type: integer, minimum: 0, default: 0 },
+            description: Size of the last head the client verified,
+          }
+      responses:
+        "200":
+          description: Bundle and proof.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/KeyLookup" }
+        "404": { description: The account has no published keys. }
+  /api/v1/orgs:
+    get:
+      summary: The account's organizations
+      operationId: listOrgs
+      responses:
+        "200":
+          description: Organizations with the account's own role and status.
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: "#/components/schemas/OrgRecord" } }
+    post:
+      summary: Create an organization
+      description: |
+        The caller becomes owner. Body built by `Keyring.createOrg`: genesis
+        signed with the caller's key, encrypted metadata, the organization
+        key sealed for the caller and, for `family` (required) or optionally
+        `team`, the first shared vault. Records `org_created`.
+      operationId: createOrg
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/NewOrg" }
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { $ref: "#/components/schemas/Id" }
+                  seq: { type: integer }
+                  defaultVaultId: { type: [string, "null"] }
+        "400": { description: Invalid or forged objects, or a family without its vault. }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /api/v1/orgs/{orgId}:
+    parameters:
+      - { name: orgId, in: path, required: true, schema: { $ref: "#/components/schemas/Id" } }
+    get:
+      summary: An organization with its members
+      description: Members only (404 otherwise). Guests and unconfirmed members see themselves and the admins.
+      operationId: getOrg
+      responses:
+        "200":
+          description: Organization and roster.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - { $ref: "#/components/schemas/OrgRecord" }
+                  - type: object
+                    properties:
+                      members: { type: array, items: { $ref: "#/components/schemas/RosterMember" } }
+        "404": { description: Not a member. }
+    put:
+      summary: Update encrypted metadata (admins)
+      operationId: updateOrg
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [revision, metaEpoch, encryptedMeta]
+              properties:
+                revision: { type: integer }
+                metaEpoch: { type: integer }
+                encryptedMeta: { $ref: "#/components/schemas/Base64Url" }
+      responses:
+        "204": { description: Updated. }
+        "403": { $ref: "#/components/responses/SharingForbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+    delete:
+      summary: Delete the organization and its vaults (owner)
+      operationId: deleteOrg
+      responses:
+        "204": { description: Deleted. }
+        "403": { $ref: "#/components/responses/SharingForbidden" }
+  /api/v1/orgs/{orgId}/rotate-key:
+    post:
+      summary: Rotate the organization key (admins)
+      description: New epoch sealed for every confirmed member; organization and group metadata re-encrypted.
+      operationId: rotateOrgKey
+      parameters:
+        - { name: orgId, in: path, required: true, schema: { $ref: "#/components/schemas/Id" } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SharingRequest" }
+      responses:
+        "204": { description: Rotated. }
+        "400": { description: Not sealed for every confirmed member, or metadata missing. }
+        "409": { description: Rotated meanwhile. }
+  /api/v1/orgs/{orgId}/invitations:
+    parameters:
+      - { name: orgId, in: path, required: true, schema: { $ref: "#/components/schemas/Id" } }
+    get:
+      summary: Pending invitations (admins)
+      operationId: listInvitations
+      responses:
+        "200":
+          description: Invitations without tokens (only hashes are stored).
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: "#/components/schemas/InvitationInfo" } }
+    post:
+      summary: Invite by email (admins; admins only by the owner)
+      description: |
+        Stores the SHA-256 hash of a new 256-bit token (valid 7 days), queues
+        an `invitation` mail through the mailer (link `{publicUrl}{path}#{linkFragment}`)
+        and returns the token once. Rate limited per IP and account (50 per hour).
+      operationId: invite
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, role]
+              properties:
+                email: { type: string }
+                role: { type: string, enum: [admin, member, guest] }
+                linkFragment: { type: string, description: "`org=<organization root hash>` for the mailed link" }
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, token, path, expiresAt]
+                properties:
+                  id: { $ref: "#/components/schemas/Id" }
+                  token: { type: string }
+                  path: { type: string, description: "`/invite/{token}`" }
+                  expiresAt: { type: integer }
+        "403": { $ref: "#/components/responses/SharingForbidden" }
+        "409": { description: Already a member. }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /api/v1/orgs/{orgId}/invitations/{invitationId}:
+    delete:
+      summary: Revoke a pending invitation (admins)
+      operationId: revokeInvitation
+      parameters:
+        - { name: orgId, in: path, required: true, schema: { $ref: "#/components/schemas/Id" } }
+        - { name: invitationId, in: path, required: true, schema: { $ref: "#/components/schemas/Id" } }
+      responses:
+        "204": { description: Revoked. }
+        "404": { description: Unknown or not pending. }
+  /api/v1/invitations/{token}:
+    get:
+      summary: What an invitation is for (no session needed)
+      description: Unknown, used, revoked and expired tokens answer 404. Rate limited per IP.
+      operationId: previewInvitation
+      security: []
+      parameters:
+        - { name: token, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Preview.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  orgId: { $ref: "#/components/schemas/Id" }
+                  orgKind: { type: string, enum: [family, team] }
+                  email: { type: string }
+                  role: { type: string }
+                  expiresAt: { type: integer }
+        "404": { description: Invalid invitation. }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /api/v1/invitations/accept:
+    post:
+      summary: Accept an invitation
+      description: |
+        The account must have the invited email and published keys. The
+        membership is `accepted` until an admin confirms it. A pending
+        invitation also allows registering on invite-only servers
+        (`inviteToken` at registration).
+      operationId: acceptInvitation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [token], properties: { token: { type: string } } }
+      responses:
+        "200":
+          description: Accepted.
+          content:
+            application/json:
+              schema: { type: object, properties: { orgId: { type: string }, role: { type: string } } }
+        "403": { description: The invitation is for another email address. }
+        "404": { description: Invalid invitation. }
+        "409": { description: Already a member. }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /api/v1/orgs/{orgId}/members/{accountId}:
+    parameters:
+      - { name: orgId, in: path, required: true, schema: { $ref: "#/components/schemas/Id" } }
+      - { name: accountId, in: path, required: true, schema: { $ref: "#/components/schemas/Id" } }
+    put:
+      summary: Change a member's role or re-attest (admins; admin rights by the owner)
+      operationId: updateMember
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SharingRequest" }
+      responses:
+        "204": { description: Updated. }
+        "403": { $ref: "#/components/responses/SharingForbidden" }
+    delete:
+      summary: Remove a member (admins) or leave
+      description: |
+        Access ends immediately: memberships of the organization's vaults and
+        groups and sealed keys are deleted; affected vaults get
+        `rotationPending`. Returns the vaults and groups whose keys a manager
+        must rotate.
+      operationId: removeMember
+      responses:
+        "200":
+          description: Removed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  vaults: { type: array, items: { type: string } }
+                  groups: { type: array, items: { type: string } }
+        "403": { $ref: "#/components/responses/SharingForbidden" }
+  /api/v1/orgs/{orgId}/members/{accountId}/confirm:
+    post:
+      summary: Confirm an accepted member (admins)
+      description: Stores the admin's signed attestation of the member's key and the organization key sealed for them.
+      operationId: confirmMember
+      parameters:
+        - { name: orgId, in: path, required: true, schema: { $ref: "#/components/schemas/Id" } }
+        - { name: accountId, in: path, required: true, schema: { $ref: "#/components/schemas/Id" } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SharingRequest" }
+      responses:
+        "204": { description: Confirmed. }
+        "400": { description: Forged or mismatching attestation or key. }
+        "403": { $ref: "#/components/responses/SharingForbidden" }
+        "409": { description: Not waiting for confirmation. }
+  /api/v1/orgs/{orgId}/members/{accountId}/suspend:
+    post:
+      summary: Suspend a member (admins; not cryptographic)
+      operationId: suspendMember
+      parameters:
+        - { name: orgId, in: path, required: true, schema: { $ref: "#/components/schemas/Id" } }
+        - { name: accountId, in: path, required: true, schema: { $ref: "#/components/schemas/Id" } }
+      responses:
+        "204": { description: Suspended. }
+  /api/v1/orgs/{orgId}/members/{accountId}/reactivate:
+    post:
+      summary: Reactivate a suspended member (admins)
+      operationId: reactivateMember
+      parameters:
+        - { name: orgId, in: path, required: true, schema: { $ref: "#/components/schemas/Id" } }
+        - { name: accountId, in: path, required: true, schema: { $ref: "#/components/schemas/Id" } }
+      responses:
+        "204": { description: Reactivated. }
+  /api/v1/orgs/{orgId}/groups:
+    parameters:
+      - { name: orgId, in: path, required: true, schema: { $ref: "#/components/schemas/Id" } }
+    get:
+      summary: Groups of an organization (confirmed members)
+      operationId: listGroups
+      responses:
+        "200":
+          description: Groups; member grants only for groups the caller belongs to.
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: "#/components/schemas/SharingRequest" } }
+    post:
+      summary: Create a group (admins; the creator is a member)
+      operationId: createGroup
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SharingRequest" }
+      responses:
+        "201": { description: Created. }
+        "403": { $ref: "#/components/responses/SharingForbidden" }
+  /api/v1/orgs/{orgId}/groups/{groupId}:
+    parameters:
+      - { name: orgId, in: path, required: true, schema: { $ref: "#/components/schemas/Id" } }
+      - { name: groupId, in: path, required: true, schema: { $ref: "#/components/schemas/Id" } }
+    put:
+      summary: Rename a group (admins)
+      operationId: updateGroup
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [metaEpoch, encryptedMeta]
+              properties:
+                metaEpoch: { type: integer }
+                encryptedMeta: { $ref: "#/components/schemas/Base64Url" }
+      responses:
+        "204": { description: Renamed. }
+    delete:
+      summary: Delete a group (admins)
+      operationId: deleteGroup
+      responses:
+        "204": { description: Deleted. }
+        "409": { description: Vaults are still shared with the group. }
+  /api/v1/orgs/{orgId}/groups/{groupId}/members:
+    post:
+      summary: Add a group member (one sealing of the group key)
+      operationId: addGroupMember
+      parameters:
+        - { name: orgId, in: path, required: true, schema: { $ref: "#/components/schemas/Id" } }
+        - { name: groupId, in: path, required: true, schema: { $ref: "#/components/schemas/Id" } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SharingRequest" }
+      responses:
+        "200": { description: Added. }
+  /api/v1/orgs/{orgId}/groups/{groupId}/rotate:
+    post:
+      summary: Rotate a group's key, removing members (admins)
+      description: Returns the vaults shared with the group, now marked for rotation.
+      operationId: rotateGroup
+      parameters:
+        - { name: orgId, in: path, required: true, schema: { $ref: "#/components/schemas/Id" } }
+        - { name: groupId, in: path, required: true, schema: { $ref: "#/components/schemas/Id" } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SharingRequest" }
+      responses:
+        "200": { description: Rotated. }
+  /api/v1/orgs/{orgId}/vaults:
+    post:
+      summary: Create a shared vault (owners and admins)
+      operationId: createSharedVault
+      parameters:
+        - { name: orgId, in: path, required: true, schema: { $ref: "#/components/schemas/Id" } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SharingRequest" }
+      responses:
+        "201": { description: Created. }
+        "403": { $ref: "#/components/responses/SharingForbidden" }
+  /api/v1/vaults/{id}/members:
+    parameters:
+      - { name: id, in: path, required: true, schema: { $ref: "#/components/schemas/Id" } }
+    get:
+      summary: Members and manifest chain of a shared vault (members)
+      operationId: vaultMembers
+      responses:
+        "200": { description: Members, accounts with access and the manifest chain. }
+        "404": { description: No access. }
+    post:
+      summary: Share with an account or group, or change a role (managers)
+      description: |
+        Body built by `Keyring.shareVault`: the next manifest version, signed
+        by the caller and equal to the current members plus the change, and
+        the vault key of the current epoch sealed for the principal with a
+        signed grant.
+      operationId: putVaultMember
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SharingRequest" }
+      responses:
+        "200": { description: Shared. }
+        "400": { description: Manifest or grant invalid or not matching. }
+        "403": { $ref: "#/components/responses/SharingForbidden" }
+        "409": { description: The members changed meanwhile. }
+  /api/v1/vaults/{id}/rotate:
+    post:
+      summary: Rotate the vault key, removing members (managers)
+      description: |
+        New key epoch sealed for every remaining member, a new signed
+        manifest and the metadata re-encrypted. The only way to remove a
+        member. Writes with older epochs are refused afterwards; re-encrypt
+        items with `items/batch`.
+      operationId: rotateVault
+      parameters:
+        - { name: id, in: path, required: true, schema: { $ref: "#/components/schemas/Id" } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SharingRequest" }
+      responses:
+        "200": { description: Rotated; `keyEpoch` is the new epoch. }
+        "403": { $ref: "#/components/responses/SharingForbidden" }
+        "409": { description: Rotated meanwhile (`details.currentKeyEpoch`). }
+  /api/v1/vaults/{id}/keys/{epoch}/wrapped:
+    put:
+      summary: Store the caller's own wrapped copy of a vault key
+      operationId: putWrappedKey
+      parameters:
+        - { name: id, in: path, required: true, schema: { $ref: "#/components/schemas/Id" } }
+        - { name: epoch, in: path, required: true, schema: { type: integer } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              {
+                type: object,
+                required: [wrappedKey],
+                properties: { wrappedKey: { $ref: "#/components/schemas/Base64Url" } },
+              }
+      responses:
+        "204": { description: Stored. }
+        "404": { description: No key for the caller in that epoch. }
+  /api/v1/vaults/{id}/items/batch:
+    post:
+      summary: Write up to 100 items of a vault (re-encryption after rotation)
+      operationId: reencryptItems
+      parameters:
+        - { name: id, in: path, required: true, schema: { $ref: "#/components/schemas/Id" } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [items]
+              properties:
+                items:
+                  type: array
+                  maxItems: 100
+                  items:
+                    type: object
+                    required: [id, revision, keyEpoch, encryptedData]
+                    properties:
+                      id: { $ref: "#/components/schemas/Id" }
+                      revision: { type: integer }
+                      keyEpoch: { type: integer }
+                      encryptedData: { $ref: "#/components/schemas/Base64Url" }
+      responses:
+        "200": { description: "Per item: `ok` or `conflict` (changed meanwhile)." }
+        "403": { $ref: "#/components/responses/SharingForbidden" }
+        "409": { description: Not the current key epoch. }
 components:
   securitySchemes:
     session:
@@ -585,6 +1138,8 @@ components:
       description: The revision does not follow the stored one. `details.currentRevision` holds the stored revision.
     Forbidden:
       description: "`forbidden`: the account is not an instance admin."
+    SharingForbidden:
+      description: "`forbidden`: the caller's role in the organization or vault does not allow this."
     RegistrationRefused:
       description: |
         `registration_closed` (invite-only server), `domain_not_allowed`
@@ -714,10 +1269,12 @@ components:
       required: [id, encryptedKey, encryptedMeta, revision, updatedAt]
       properties:
         id: { $ref: "#/components/schemas/Id" }
-        encryptedKey: { $ref: "#/components/schemas/Base64Url" }
+        encryptedKey: { type: string, description: Empty for shared vaults (keys come in `sharing.vaultKeys`) }
         encryptedMeta: { $ref: "#/components/schemas/Base64Url" }
         revision: { type: integer }
         updatedAt: { type: integer }
+        orgId: { type: string, description: Shared vaults only }
+        keyEpoch: { type: integer, description: Key epoch of `encryptedMeta`; absent for personal vaults }
     SyncItem:
       type: object
       required: [id, vaultId, revision, encryptedData, deleted, updatedAt]
@@ -731,9 +1288,119 @@ components:
             - { type: "null" }
         deleted: { type: boolean }
         updatedAt: { type: integer }
+        keyEpoch: { type: integer, description: Vault key epoch of `encryptedData` (0 for personal vaults) }
     WriteResponse:
       type: object
       required: [revision, seq]
       properties:
         revision: { type: integer }
         seq: { type: integer }
+    AccountKeys:
+      type: object
+      required: [keyVersion, bundle, bundleSignature, encryptedPrivate]
+      properties:
+        keyVersion: { type: integer }
+        bundle:
+          {
+            $ref: "#/components/schemas/Base64Url",
+            description: Canonical public bundle (account ID,
+            key version,
+            X-Wing and Ed25519 public keys,
+            creation time),
+          }
+        bundleSignature: { $ref: "#/components/schemas/Base64Url" }
+        encryptedPrivate:
+          { $ref: "#/components/schemas/Base64Url", description: Private keys encrypted with the account key }
+    SignedHead:
+      type: object
+      required: [head, signature, logKey]
+      properties:
+        head: { $ref: "#/components/schemas/Base64Url", description: Canonical head (size, root hash, timestamp) }
+        signature: { $ref: "#/components/schemas/Base64Url" }
+        logKey: { $ref: "#/components/schemas/Base64Url", description: Ed25519 log public key, pinned by clients }
+    KeyLogEntry:
+      type: object
+      required: [seq, accountId, keyVersion, bundleHash, prevHash]
+      properties:
+        seq: { type: integer }
+        accountId: { type: string }
+        keyVersion: { type: integer }
+        bundleHash: { $ref: "#/components/schemas/Base64Url" }
+        prevHash: { $ref: "#/components/schemas/Base64Url" }
+    KeyLookup:
+      type: object
+      required: [bundle, bundleSignature, seq, entries, head]
+      properties:
+        bundle: { $ref: "#/components/schemas/Base64Url" }
+        bundleSignature: { $ref: "#/components/schemas/Base64Url" }
+        seq: { type: integer }
+        entries: { type: array, items: { $ref: "#/components/schemas/KeyLogEntry" } }
+        head: { $ref: "#/components/schemas/SignedHead" }
+    OrgRecord:
+      type: object
+      required: [id, kind, role, status, genesis, genesisSignature, encryptedMeta, metaEpoch, revision]
+      properties:
+        id: { $ref: "#/components/schemas/Id" }
+        kind: { type: string, enum: [family, team] }
+        role: { type: string, enum: [owner, admin, member, guest], description: The caller's role }
+        status: { type: string, enum: [accepted, confirmed, suspended] }
+        genesis: { $ref: "#/components/schemas/Base64Url" }
+        genesisSignature: { $ref: "#/components/schemas/Base64Url" }
+        encryptedMeta: { $ref: "#/components/schemas/Base64Url" }
+        metaEpoch: { type: integer }
+        revision: { type: integer }
+        defaultVaultId: { type: [string, "null"] }
+    RosterMember:
+      type: object
+      required: [accountId, role, status]
+      properties:
+        accountId: { type: string }
+        role: { type: string }
+        status: { type: string }
+        email: { type: [string, "null"] }
+        bundle: { type: [string, "null"] }
+        bundleSignature: { type: [string, "null"] }
+        attestation: { type: [string, "null"] }
+        attestationSignature: { type: [string, "null"] }
+    InvitationInfo:
+      type: object
+      properties:
+        id: { type: string }
+        email: { type: string }
+        role: { type: string }
+        status: { type: string }
+        createdBy: { type: string }
+        createdAt: { type: integer }
+        expiresAt: { type: integer }
+    NewOrg:
+      type: object
+      description: Built by `Keyring.createOrg` (`passbox_core::sharing::build::NewOrg`).
+      required: [id, kind, genesis, genesisSignature, encryptedMeta, metaEpoch, orgKey]
+      properties:
+        id: { $ref: "#/components/schemas/Id" }
+        kind: { type: string, enum: [family, team] }
+        genesis: { $ref: "#/components/schemas/Base64Url" }
+        genesisSignature: { $ref: "#/components/schemas/Base64Url" }
+        encryptedMeta: { $ref: "#/components/schemas/Base64Url" }
+        metaEpoch: { type: integer, enum: [1] }
+        orgKey: { type: object }
+        vault: { type: object }
+    SharingRequest:
+      type: object
+      description: |
+        A body built by the core's sharing builders
+        (`passbox_core::sharing::build`, exposed as `Keyring.*` in
+        `@passbox/core-wasm`): canonical signed objects (Base64url) with their
+        Ed25519 signatures and sealed keys. The server checks that objects
+        parse, name the right IDs, match its member lists and are signed by
+        the caller's published key; clients verify them independently.
+      additionalProperties: true
+    SharingDelta:
+      type: object
+      description: |
+        `passbox_core::sharing::data::SharingDelta`. Full lists: `orgs`,
+        `groups`, `vaultAccess`. Changed rows: `rosters` (full member list per
+        changed organization), `orgKeys`, `groupKeys`, `vaultKeys` (keys sealed
+        for the caller or its groups), `manifests` (full chain of vaults whose
+        members changed), `signers` (bundles of manifest signers).
+      additionalProperties: true
