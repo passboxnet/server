@@ -349,3 +349,134 @@ fn unlock_key_after_master_password_change() {
     client.lock();
     client.unlock("violet anchor meadow trumpet 42").unwrap();
 }
+
+fn totp_code(secret: &str, steps: i64) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    passbox_core::totp::Totp::from_base32(secret)
+        .unwrap()
+        .generate(now.saturating_add_signed(steps * 30))
+}
+
+#[test]
+fn two_factor_sign_in_unlock_and_reconnect() {
+    let server = start_server();
+    let email = email();
+    let laptop = Client::new(&server, Arc::new(MemoryStore::new()));
+    let secret_key = laptop.sign_up(&email, PASSWORD).unwrap();
+    assert!(!laptop.two_factor_status().unwrap().enabled);
+
+    let setup = laptop.start_totp_setup().unwrap();
+    assert!(setup.uri.contains(&setup.secret));
+    assert!(matches!(
+        laptop.confirm_totp_setup("000000"),
+        Err(Error::InvalidTwoFactorCode)
+    ));
+    let recovery = laptop
+        .confirm_totp_setup(&totp_code(&setup.secret, 0))
+        .unwrap()
+        .unwrap();
+    assert_eq!(recovery.len(), 10);
+    let status = laptop.two_factor_status().unwrap();
+    assert!(status.enabled && status.totp);
+    assert_eq!(status.recovery_codes_remaining, 10);
+
+    // A new device stops after the password.
+    let phone_store: Arc<dyn Store> = Arc::new(MemoryStore::new());
+    let phone = Client::new(&server, phone_store.clone());
+    match phone.sign_in(&email, PASSWORD, &secret_key) {
+        Err(Error::TwoFactorRequired { methods }) => assert_eq!(methods, ["totp", "recovery"]),
+        other => panic!("expected TwoFactorRequired, got {other:?}"),
+    }
+    assert_eq!(phone.status().unwrap(), Status::SignedOut);
+    assert_eq!(
+        phone.pending_two_factor(),
+        Some(vec!["totp".to_owned(), "recovery".to_owned()])
+    );
+    assert!(matches!(
+        phone.complete_two_factor("totp", "000000", false),
+        Err(Error::InvalidTwoFactorCode)
+    ));
+    // Still pending after a wrong code; the next step's code works.
+    assert_eq!(
+        phone
+            .complete_two_factor("totp", &totp_code(&setup.secret, 1), true)
+            .unwrap(),
+        None
+    );
+    assert_eq!(phone.status().unwrap(), Status::Unlocked);
+    assert!(phone.pending_two_factor().is_none());
+
+    // The phone was remembered: unlocking needs no code.
+    phone.lock();
+    assert_eq!(phone.unlock(PASSWORD).unwrap(), Connectivity::Online);
+
+    // The laptop was not: unlocking from the offline cache asks for a
+    // factor and stays locked until it is given.
+    laptop.lock();
+    assert!(matches!(
+        laptop.unlock(PASSWORD),
+        Err(Error::TwoFactorRequired { .. })
+    ));
+    assert_eq!(laptop.status().unwrap(), Status::Locked);
+    assert_eq!(
+        laptop
+            .complete_two_factor("recovery", &recovery[0], false)
+            .unwrap(),
+        Some(9)
+    );
+    assert_eq!(laptop.status().unwrap(), Status::Unlocked);
+    assert!(laptop.is_online());
+    assert!(!laptop.vaults().unwrap().is_empty());
+
+    // A recent login is enough for a master password change.
+    laptop
+        .change_master_password(PASSWORD, "new horse battery staple")
+        .unwrap();
+    laptop
+        .change_master_password("new horse battery staple", PASSWORD)
+        .unwrap();
+    assert!(matches!(
+        laptop.reauthenticate("wrong"),
+        Err(Error::InvalidCredentials)
+    ));
+    assert!(matches!(
+        laptop.reauthenticate(PASSWORD),
+        Err(Error::TwoFactorRequired { .. })
+    ));
+    laptop
+        .complete_two_factor("recovery", &recovery[1], false)
+        .unwrap();
+    assert_eq!(laptop.status().unwrap(), Status::Unlocked);
+
+    // A cancelled login has to start over.
+    assert!(matches!(
+        laptop.reauthenticate(PASSWORD),
+        Err(Error::TwoFactorRequired { .. })
+    ));
+    laptop.cancel_two_factor();
+    assert!(matches!(
+        laptop.complete_two_factor("totp", "123456", false),
+        Err(Error::TwoFactorExpired)
+    ));
+
+    let fresh = laptop.regenerate_recovery_codes().unwrap();
+    assert_eq!(fresh.len(), 10);
+    let kinds: Vec<String> = laptop
+        .activity(50)
+        .unwrap()
+        .into_iter()
+        .map(|e| e.kind)
+        .collect();
+    assert!(kinds.iter().any(|k| k == "recovery_code_used"), "{kinds:?}");
+    assert!(matches!(
+        laptop.disable_two_factor("recovery", &recovery[2]),
+        Err(Error::InvalidTwoFactorCode)
+    ));
+    laptop.disable_two_factor("recovery", &fresh[0]).unwrap();
+    assert!(!laptop.two_factor_status().unwrap().enabled);
+    laptop.lock();
+    assert_eq!(laptop.unlock(PASSWORD).unwrap(), Connectivity::Online);
+}
