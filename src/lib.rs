@@ -44,6 +44,7 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
         );
     }
     state.mailer.spawn_worker();
+    api::sso::oidc::init_from_env();
     let app = routes::router(&config, state);
     let listener = TcpListener::bind(config.bind)
         .await

@@ -14,9 +14,11 @@ pub mod org_recovery;
 pub mod orgs;
 pub mod preferences;
 pub mod recovery;
+pub mod scim;
 pub mod sessions;
 pub mod shared;
 pub mod signed;
+pub mod sso;
 pub mod sync;
 pub mod two_factor;
 pub mod validate;
@@ -224,4 +226,88 @@ pub fn router() -> Router<AppState> {
             get(device_links::get).delete(device_links::delete),
         )
         .route("/device-links/{id}/approve", post(device_links::approve))
+        .merge(sso_routes())
+}
+
+/// Single sign-on, trusted devices and SCIM provisioning (wave E).
+fn sso_routes() -> Router<AppState> {
+    Router::new()
+        // OIDC configuration of an organization (owners and admins).
+        .route(
+            "/orgs/{org_id}/sso",
+            get(sso::get).put(sso::put).delete(sso::delete),
+        )
+        .route("/orgs/{org_id}/sso/check", post(sso::check))
+        .route(
+            "/orgs/{org_id}/sso/test/start",
+            post(sso::login::test_start),
+        )
+        .route(
+            "/orgs/{org_id}/sso/test/result",
+            post(sso::login::test_result),
+        )
+        // Signing in with SSO.
+        .route("/sso/discover", post(sso::login::discover))
+        .route("/sso/start", post(sso::login::start))
+        .route("/sso/callback", get(sso::login::callback))
+        .route("/sso/redeem", post(sso::login::redeem))
+        // Unlocking with SSO on trusted devices.
+        .route("/sso/unlock", post(sso::devices::unlock))
+        .route("/sso/device-requests", post(sso::devices::create_request))
+        .route(
+            "/sso/device-requests/status",
+            post(sso::devices::request_status),
+        )
+        .route(
+            "/account/trusted-devices",
+            get(sso::devices::list).post(sso::devices::enroll),
+        )
+        .route(
+            "/account/trusted-devices/{id}",
+            delete(sso::devices::remove),
+        )
+        .route(
+            "/account/trusted-devices/requests/{id}/approve",
+            post(sso::devices::approve),
+        )
+        .route(
+            "/account/trusted-devices/requests/{id}/deny",
+            post(sso::devices::deny),
+        )
+        // SCIM tokens and provisioned users (owners and admins).
+        .route("/orgs/{org_id}/scim", get(scim::overview))
+        .route("/orgs/{org_id}/scim/tokens", post(scim::create_token))
+        .route(
+            "/orgs/{org_id}/scim/tokens/{id}",
+            delete(scim::revoke_token),
+        )
+        // SCIM 2.0 (bearer token of the organization).
+        .route(
+            "/scim/v2/ServiceProviderConfig",
+            get(scim::service_provider_config),
+        )
+        .route("/scim/v2/ResourceTypes", get(scim::resource_types))
+        .route("/scim/v2/Schemas", get(scim::schemas))
+        .route(
+            "/scim/v2/Users",
+            get(scim::list_users).post(scim::create_user),
+        )
+        .route(
+            "/scim/v2/Users/{id}",
+            get(scim::get_user)
+                .put(scim::replace_user)
+                .patch(scim::patch_user)
+                .delete(scim::delete_user),
+        )
+        .route(
+            "/scim/v2/Groups",
+            get(scim::list_groups).post(scim::create_group),
+        )
+        .route(
+            "/scim/v2/Groups/{id}",
+            get(scim::get_group)
+                .put(scim::replace_group)
+                .patch(scim::patch_group)
+                .delete(scim::delete_group),
+        )
 }

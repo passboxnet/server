@@ -13,7 +13,7 @@ name = "passbox-server"
 path = "src/main.rs"
 
 [dependencies]
-passbox-core.workspace = true
+passbox-core = { workspace = true, features = ["oidc"] }
 anyhow.workspace = true
 axum.workspace = true
 clap.workspace = true
@@ -27,12 +27,14 @@ sqlx.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["time", "sync", "io-util"] }
 tower-http.workspace = true
+ureq.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
 [dev-dependencies]
 tower = { workspace = true, features = ["util"] }
 http-body-util = "0.1"
+passbox-core = { workspace = true, features = ["oidc", "test-issuer"] }
 
 [lints]
 workspace = true

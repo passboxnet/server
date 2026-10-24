@@ -143,8 +143,8 @@ async fn issue_device_token(
     let token = encoding::encode(&random::bytes::<32>().map_err(|e| ApiError::Internal(e.into()))?);
     let token_hash = hash_token(&token);
     let mut tx = crate::db::begin_write(&state.db).await?;
-    let carried: Option<i64> = sqlx::query_scalar(
-        "SELECT two_factor_until FROM device_tokens WHERE token_hash = $1 AND account_id = $2 \
+    let carried: Option<(i64, i64)> = sqlx::query_as(
+        "SELECT two_factor_until, sso_until FROM device_tokens WHERE token_hash = $1 AND account_id = $2 \
          AND expires_at > $3",
     )
     .bind(previous_hash.unwrap_or(""))
@@ -152,7 +152,8 @@ async fn issue_device_token(
     .bind(now)
     .fetch_optional(&mut *tx)
     .await?;
-    let two_factor_until = carried.unwrap_or(0).max(remember_until);
+    let (carried_two_factor, sso_until) = carried.unwrap_or((0, 0));
+    let two_factor_until = carried_two_factor.max(remember_until);
     sqlx::query(
         "DELETE FROM device_tokens WHERE account_id = $1 AND (expires_at <= $2 OR token_hash = $3)",
     )
@@ -162,14 +163,15 @@ async fn issue_device_token(
     .execute(&mut *tx)
     .await?;
     sqlx::query(
-        "INSERT INTO device_tokens (token_hash, account_id, created_at, expires_at, two_factor_until) \
-         VALUES ($1, $2, $3, $4, $5)",
+        "INSERT INTO device_tokens (token_hash, account_id, created_at, expires_at, two_factor_until, sso_until) \
+         VALUES ($1, $2, $3, $4, $5, $6)",
     )
     .bind(&token_hash)
     .bind(account_id)
     .bind(now)
     .bind(now + DEVICE_TOKEN_TTL_MS)
     .bind(two_factor_until)
+    .bind(sso_until)
     .execute(&mut *tx)
     .await?;
     sqlx::query(
@@ -543,6 +545,10 @@ pub struct LoginFinishRequest {
     /// offer the security keys registered for it. Optional.
     #[serde(default)]
     origin: String,
+    /// Proof of an SSO sign-in (`/sso/redeem`), for organizations that
+    /// require single sign-on.
+    #[serde(default)]
+    sso_proof: Option<String>,
 }
 
 /// A new session.
@@ -559,6 +565,12 @@ pub struct SessionResponse {
     /// Unused recovery codes left, after signing in with one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) recovery_codes_remaining: Option<i64>,
+}
+
+impl SessionResponse {
+    pub(crate) fn device_token(&self) -> &str {
+        &self.device_token
+    }
 }
 
 /// The answer to `login/finish`: a session, or the request for a second
@@ -637,21 +649,31 @@ pub async fn login_finish(
         }
     };
     crate::instance::ensure_active(&state, &account_id).await?;
+    // Organizations can require single sign-on; a fresh or remembered SSO
+    // sign-in also stands in for the second factor.
+    let sso = super::sso::login::login_gate(
+        &state,
+        &account_id,
+        req.sso_proof.as_deref(),
+        device_token_hash,
+    )
+    .await?;
 
     // The password was right. With two-factor authentication on, a device
     // that is not remembered gets a challenge instead of a session.
-    if let Some(challenge) = super::two_factor::login_challenge(
-        &state,
-        &account_id,
-        super::two_factor::PendingLogin {
-            device_token_hash,
-            device_name: &device_name,
-            client_kind: &client_kind,
-            ip: &ip,
-            origin: &req.origin,
-        },
-    )
-    .await?
+    if !sso.satisfied
+        && let Some(challenge) = super::two_factor::login_challenge(
+            &state,
+            &account_id,
+            super::two_factor::PendingLogin {
+                device_token_hash,
+                device_name: &device_name,
+                client_kind: &client_kind,
+                ip: &ip,
+                origin: &req.origin,
+            },
+        )
+        .await?
     {
         tracing::info!(account_id = %account_id, "login needs a second factor");
         return Ok(Json(LoginFinishResponse::TwoFactor(challenge)));
@@ -665,11 +687,12 @@ pub async fn login_finish(
             device_name: &device_name,
             client_kind: &client_kind,
             ip: &ip,
-            event: "login",
+            event: if sso.satisfied { "login_sso" } else { "login" },
             remember_until: 0,
         },
     )
     .await?;
+    super::sso::login::remember(&state, session.device_token(), sso.remember_until).await?;
     Ok(Json(LoginFinishResponse::Session(session)))
 }
 
