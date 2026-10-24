@@ -19,17 +19,19 @@ use tower::ServiceExt;
 
 struct TestServer {
     app: Router,
+    db: passbox_server::db::Db,
 }
 
 impl TestServer {
     async fn new(database_url: &str) -> Self {
         let db = passbox_server::db::connect(database_url).await.unwrap();
-        let mut state = AppState::load(db).await.unwrap();
+        let mut state = AppState::load(db.clone()).await.unwrap();
         // Lets tests pick the client IP with `X-Forwarded-For`. Requests
         // without it count as IP "unknown".
         state.trust_proxy = true;
         Self {
             app: passbox_server::routes::router(&Config::default(), state),
+            db,
         }
     }
 
@@ -232,6 +234,10 @@ async fn run_all(database_url: &str) {
     master_password_change(&server).await;
     known_devices_survive_email_lockout(&server).await;
     security_headers_are_set(&server).await;
+    two_factor_totp_and_recovery_codes(&server).await;
+    two_factor_remember_device(&server).await;
+    two_factor_security_keys(&server).await;
+    two_factor_rate_limits(&server).await;
     // Last: it locks out an email and counts failures for the test IP.
     failed_logins_are_rate_limited(&server).await;
 }
@@ -914,4 +920,638 @@ async fn cross_origin_requests_are_allowed_without_credentials(server: &TestServ
             .headers()
             .contains_key("access-control-allow-credentials")
     );
+}
+
+// --- Two-factor authentication -------------------------------------------------------
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+}
+
+/// The code of the authenticator app `steps` time steps from now.
+fn totp_code(secret: &str, steps: i64) -> String {
+    let totp = passbox_core::totp::Totp::from_base32(secret).unwrap();
+    totp.generate(unix_now().saturating_add_signed(steps * 30))
+}
+
+impl Client {
+    /// Runs the password step of a login from `ip` and returns the
+    /// `login/finish` body: a session, or a two-factor challenge.
+    async fn password_step(
+        &self,
+        server: &TestServer,
+        ip: &str,
+        device_token: Option<&str>,
+        origin: Option<&str>,
+    ) -> Value {
+        let (flow, request) = ClientLoginFlow::start(&self.auth_secret).unwrap();
+        let mut start =
+            json!({ "email": self.email, "credentialRequest": encoding::encode(&request) });
+        if let Some(device_token) = device_token {
+            start["deviceToken"] = json!(device_token);
+        }
+        let (status, body) = server
+            .request_from(
+                Some(ip),
+                Method::POST,
+                "/api/v1/auth/login/start",
+                None,
+                Some(start),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let response = encoding::decode(body["credentialResponse"].as_str().unwrap()).unwrap();
+        let finish = flow.finish(&response).unwrap();
+        let mut request = json!({
+            "loginId": body["loginId"],
+            "credentialFinalization": encoding::encode(&finish.finalization),
+            "deviceName": "Test device",
+            "clientKind": "cli",
+        });
+        if let Some(origin) = origin {
+            request["origin"] = json!(origin);
+        }
+        let (status, body) = server
+            .request_from(
+                Some(ip),
+                Method::POST,
+                "/api/v1/auth/login/finish",
+                None,
+                Some(request),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        body
+    }
+
+    /// A password step that must end in a two-factor challenge.
+    async fn challenge(&self, server: &TestServer, ip: &str, device_token: Option<&str>) -> Value {
+        let body = self.password_step(server, ip, device_token, None).await;
+        assert_eq!(body["twoFactorRequired"], true, "{body}");
+        assert!(
+            body.get("token").is_none(),
+            "no session before the second factor"
+        );
+        body
+    }
+}
+
+async fn second_factor(server: &TestServer, ip: &str, body: Value) -> (StatusCode, Value) {
+    server
+        .request_from(
+            Some(ip),
+            Method::POST,
+            "/api/v1/auth/login/two-factor",
+            None,
+            Some(body),
+        )
+        .await
+}
+
+async fn event_kinds(server: &TestServer, token: &str) -> Vec<String> {
+    let (status, events) = server
+        .request(Method::GET, "/api/v1/account/events", Some(token), None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    events
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["kind"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+fn strings(value: &Value) -> Vec<String> {
+    value
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c.as_str().unwrap().to_owned())
+        .collect()
+}
+
+/// Turns TOTP on with a fresh login and returns (session, secret, recovery codes).
+async fn enable_totp(
+    server: &TestServer,
+    client: &Client,
+    ip: &str,
+) -> (String, String, Vec<String>) {
+    let body = client.password_step(server, ip, None, None).await;
+    let token = body["token"].as_str().unwrap().to_owned();
+    let (status, started) = server
+        .post(
+            "/api/v1/account/two-factor/totp/start",
+            Some(&token),
+            json!({}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{started}");
+    let secret = started["secret"].as_str().unwrap().to_owned();
+    let (status, confirmed) = server
+        .post(
+            "/api/v1/account/two-factor/totp/confirm",
+            Some(&token),
+            json!({ "code": totp_code(&secret, 0) }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{confirmed}");
+    (token, secret, strings(&confirmed["recoveryCodes"]))
+}
+
+fn with_code(challenge: &Value, method: &str, code: &str) -> Value {
+    json!({ "challengeToken": challenge["challengeToken"], "method": method, "code": code })
+}
+
+async fn two_factor_totp_and_recovery_codes(server: &TestServer) {
+    let ip = "10.20.0.1";
+    let client = Client::new();
+    client.register(server).await;
+    let body = client.password_step(server, ip, None, None).await;
+    let token = body["token"].as_str().unwrap().to_owned();
+
+    let (status, state) = server
+        .request(
+            Method::GET,
+            "/api/v1/account/two-factor",
+            Some(&token),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(state["enabled"], false);
+    assert_eq!(state["recoveryCodesRemaining"], 0);
+
+    // Confirming needs a pending secret; a wrong first code is refused.
+    let (status, _) = server
+        .post(
+            "/api/v1/account/two-factor/totp/confirm",
+            Some(&token),
+            json!({ "code": "123456" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, started) = server
+        .post(
+            "/api/v1/account/two-factor/totp/start",
+            Some(&token),
+            json!({}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let secret = started["secret"].as_str().unwrap().to_owned();
+    let uri = started["uri"].as_str().unwrap();
+    assert!(uri.starts_with("otpauth://totp/Passbox:"), "{uri}");
+    assert!(uri.contains(&format!("secret={secret}")));
+    // Differs from every code of the window (almost surely).
+    let wrong = format!(
+        "{:06}",
+        (totp_code(&secret, 0).parse::<u32>().unwrap() + 500_000) % 1_000_000
+    );
+    let (status, body) = server
+        .post(
+            "/api/v1/account/two-factor/totp/confirm",
+            Some(&token),
+            json!({ "code": wrong }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(body["error"], "invalid_two_factor_code");
+    // Until confirmed, logins need no second factor.
+    let body = client.password_step(server, ip, None, None).await;
+    assert!(body["token"].is_string());
+
+    // The secret is not stored in plain text.
+    let (sealed,): (String,) =
+        sqlx::query_as("SELECT sealed_secret FROM two_factor_totp WHERE account_id = $1")
+            .bind(&client.account_id)
+            .fetch_one(&server.db)
+            .await
+            .unwrap();
+    assert!(!sealed.contains(&secret));
+
+    let first_code = totp_code(&secret, 0);
+    let (status, confirmed) = server
+        .post(
+            "/api/v1/account/two-factor/totp/confirm",
+            Some(&token),
+            json!({ "code": first_code }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{confirmed}");
+    let recovery = strings(&confirmed["recoveryCodes"]);
+    assert_eq!(recovery.len(), 10);
+    let (_, state) = server
+        .request(
+            Method::GET,
+            "/api/v1/account/two-factor",
+            Some(&token),
+            None,
+        )
+        .await;
+    assert_eq!(state["enabled"], true);
+    assert_eq!(state["totp"], true);
+    assert_eq!(state["recoveryCodesRemaining"], 10);
+    // A second setup is refused while one is active.
+    let (status, _) = server
+        .post(
+            "/api/v1/account/two-factor/totp/start",
+            Some(&token),
+            json!({}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+
+    // Logins now stop after the password with a challenge.
+    let challenge = client.challenge(server, ip, None).await;
+    assert_eq!(challenge["methods"], json!(["totp", "recovery"]));
+    assert!(challenge.get("webauthn").is_none());
+    // Wrong code, then the confirmation code again (replay): both refused.
+    let (status, body) = second_factor(server, ip, with_code(&challenge, "totp", &wrong)).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(body["error"], "invalid_two_factor_code");
+    let (status, _) = second_factor(server, ip, with_code(&challenge, "totp", &first_code)).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _) = second_factor(server, ip, with_code(&challenge, "sms", "1")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // The next step's code works (±1 step) and creates a session.
+    let next_code = totp_code(&secret, 1);
+    let (status, session) =
+        second_factor(server, ip, with_code(&challenge, "totp", &next_code)).await;
+    assert_eq!(status, StatusCode::OK, "{session}");
+    let token = session["token"].as_str().unwrap().to_owned();
+    assert!(session["deviceToken"].is_string());
+    let (status, _) = server
+        .request(Method::GET, "/api/v1/account", Some(&token), None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    // A challenge completes once.
+    let (status, body) = second_factor(server, ip, with_code(&challenge, "totp", &next_code)).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(body["error"], "two_factor_expired");
+    // The same code cannot sign in again on a new challenge.
+    let again = client.challenge(server, ip, None).await;
+    let (status, _) = second_factor(server, ip, with_code(&again, "totp", &next_code)).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    // Recovery codes work once each, in any format.
+    let typed = recovery[0].to_lowercase().replace('-', " ");
+    let (status, session) = second_factor(server, ip, with_code(&again, "recovery", &typed)).await;
+    assert_eq!(status, StatusCode::OK, "{session}");
+    assert_eq!(session["recoveryCodesRemaining"], 9);
+    let token = session["token"].as_str().unwrap().to_owned();
+    let challenge = client.challenge(server, ip, None).await;
+    let (status, _) =
+        second_factor(server, ip, with_code(&challenge, "recovery", &recovery[0])).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    // Changes need a recent login.
+    sqlx::query("UPDATE sessions SET created_at = $1 WHERE account_id = $2")
+        .bind(0i64)
+        .bind(&client.account_id)
+        .execute(&server.db)
+        .await
+        .unwrap();
+    let (status, body) = server
+        .post(
+            "/api/v1/account/two-factor/recovery-codes",
+            Some(&token),
+            json!({}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["error"], "reauthentication_required");
+    let challenge = client.challenge(server, ip, None).await;
+    let (_, session) =
+        second_factor(server, ip, with_code(&challenge, "recovery", &recovery[1])).await;
+    let token = session["token"].as_str().unwrap().to_owned();
+    let (status, regenerated) = server
+        .post(
+            "/api/v1/account/two-factor/recovery-codes",
+            Some(&token),
+            json!({}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let fresh = strings(&regenerated["recoveryCodes"]);
+    assert_eq!(fresh.len(), 10);
+    // The old codes are gone.
+    let challenge = client.challenge(server, ip, None).await;
+    let (status, _) =
+        second_factor(server, ip, with_code(&challenge, "recovery", &recovery[2])).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    // Turning 2FA off needs a valid second factor.
+    let (status, _) = server
+        .post(
+            "/api/v1/account/two-factor/disable",
+            Some(&token),
+            json!({ "method": "recovery", "code": recovery[3] }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _) = server
+        .post(
+            "/api/v1/account/two-factor/disable",
+            Some(&token),
+            json!({ "method": "recovery", "code": fresh[0] }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, state) = server
+        .request(
+            Method::GET,
+            "/api/v1/account/two-factor",
+            Some(&token),
+            None,
+        )
+        .await;
+    assert_eq!(state["enabled"], false);
+    assert_eq!(state["recoveryCodesRemaining"], 0);
+    let body = client.password_step(server, ip, None, None).await;
+    assert!(body["token"].is_string(), "{body}");
+
+    let kinds = event_kinds(server, &token).await;
+    for kind in [
+        "two_factor_enabled",
+        "login_two_factor",
+        "two_factor_failed",
+        "recovery_code_used",
+        "recovery_codes_regenerated",
+        "two_factor_disabled",
+    ] {
+        assert!(
+            kinds.iter().any(|k| k == kind),
+            "missing {kind} in {kinds:?}"
+        );
+    }
+}
+
+async fn two_factor_remember_device(server: &TestServer) {
+    let ip = "10.21.0.1";
+    let client = Client::new();
+    client.register(server).await;
+    let (_, _, recovery) = enable_totp(server, &client, ip).await;
+
+    // Without "remember", the device token alone does not skip the step.
+    let challenge = client.challenge(server, ip, None).await;
+    let (_, session) =
+        second_factor(server, ip, with_code(&challenge, "recovery", &recovery[0])).await;
+    let device_token = session["deviceToken"].as_str().unwrap().to_owned();
+    let challenge = client.challenge(server, ip, Some(&device_token)).await;
+
+    // With "remember", the device skips it for 30 days, also after the
+    // device token is rotated by the next login.
+    let mut remember = with_code(&challenge, "recovery", &recovery[1]);
+    remember["rememberDevice"] = json!(true);
+    let (status, session) = second_factor(server, ip, remember).await;
+    assert_eq!(status, StatusCode::OK);
+    let remembered = session["deviceToken"].as_str().unwrap().to_owned();
+    let body = client
+        .password_step(server, ip, Some(&remembered), None)
+        .await;
+    assert!(body["token"].is_string(), "{body}");
+    let rotated = body["deviceToken"].as_str().unwrap().to_owned();
+    let body = client.password_step(server, ip, Some(&rotated), None).await;
+    assert!(body["token"].is_string(), "{body}");
+    let token = body["token"].as_str().unwrap().to_owned();
+    let current = body["deviceToken"].as_str().unwrap().to_owned();
+    // The replaced token and other devices still need the second factor.
+    client.challenge(server, ip, Some(&remembered)).await;
+    client.challenge(server, ip, None).await;
+
+    // Turning 2FA off and on again forgets remembered devices.
+    let (status, _) = server
+        .post(
+            "/api/v1/account/two-factor/disable",
+            Some(&token),
+            json!({ "method": "recovery", "code": recovery[2] }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let body = client.password_step(server, ip, Some(&current), None).await;
+    let current = body["deviceToken"].as_str().unwrap().to_owned();
+    enable_totp(server, &client, ip).await;
+    client.challenge(server, ip, Some(&current)).await;
+}
+
+async fn two_factor_security_keys(server: &TestServer) {
+    use passbox_core::passkey::{self, Flags};
+    let ip = "10.22.0.1";
+    let origin = "https://passbox.example";
+    let client = Client::new();
+    client.register(server).await;
+    let body = client.password_step(server, ip, None, None).await;
+    let token = body["token"].as_str().unwrap().to_owned();
+
+    // Security keys need https (or localhost).
+    let (status, _) = server
+        .post(
+            "/api/v1/account/two-factor/webauthn/register/start",
+            Some(&token),
+            json!({ "origin": "http://127.0.0.1:8080" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    let (status, options) = server
+        .post(
+            "/api/v1/account/two-factor/webauthn/register/start",
+            Some(&token),
+            json!({ "origin": origin }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{options}");
+    let public_key = &options["publicKey"];
+    assert_eq!(public_key["rp"]["id"], "passbox.example");
+    assert_eq!(public_key["attestation"], "none");
+    assert_eq!(public_key["pubKeyCredParams"][0]["alg"], -7);
+    assert_eq!(public_key["pubKeyCredParams"][1]["alg"], -8);
+    let client_data = |kind: &str, challenge: &Value| {
+        json!({ "type": kind, "challenge": challenge, "origin": origin, "crossOrigin": false })
+            .to_string()
+            .into_bytes()
+    };
+
+    // The authenticator: Passbox's own passkey implementation.
+    let key = passkey::create("passbox.example", Flags::synced(false)).unwrap();
+    let register = |registration_id: &Value, client_data_json: &[u8]| {
+        json!({
+            "registrationId": registration_id,
+            "name": "YubiKey 5C",
+            "credential": {
+                "clientDataJson": encoding::encode(client_data_json),
+                "attestationObject": encoding::encode(&key.attestation_object),
+            },
+        })
+    };
+    // A response for another challenge is refused (and spends the registration).
+    let (status, _) = server
+        .post(
+            "/api/v1/account/two-factor/webauthn/register/finish",
+            Some(&token),
+            register(
+                &options["registrationId"],
+                &client_data("webauthn.create", &json!(encoding::encode(&[0; 32]))),
+            ),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (_, options) = server
+        .post(
+            "/api/v1/account/two-factor/webauthn/register/start",
+            Some(&token),
+            json!({ "origin": origin }),
+        )
+        .await;
+    let (status, added) = server
+        .post(
+            "/api/v1/account/two-factor/webauthn/register/finish",
+            Some(&token),
+            register(
+                &options["registrationId"],
+                &client_data("webauthn.create", &options["publicKey"]["challenge"]),
+            ),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{added}");
+    assert_eq!(added["recoveryCodes"].as_array().unwrap().len(), 10);
+    let key_id = added["id"].as_str().unwrap().to_owned();
+    let (_, state) = server
+        .request(
+            Method::GET,
+            "/api/v1/account/two-factor",
+            Some(&token),
+            None,
+        )
+        .await;
+    assert_eq!(state["enabled"], true);
+    assert_eq!(state["totp"], false);
+    assert_eq!(state["securityKeys"][0]["name"], "YubiKey 5C");
+    // The last factor cannot be removed on its own.
+    let (status, _) = server
+        .request(
+            Method::DELETE,
+            &format!("/api/v1/account/two-factor/webauthn/{key_id}"),
+            Some(&token),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+
+    // Signing in: the challenge carries the WebAuthn request options.
+    let challenge = client.password_step(server, ip, None, Some(origin)).await;
+    assert_eq!(challenge["methods"], json!(["webauthn", "recovery"]));
+    let request = &challenge["webauthn"];
+    assert_eq!(request["rpId"], "passbox.example");
+    assert_eq!(
+        request["allowCredentials"][0]["id"],
+        encoding::encode(&key.credential_id)
+    );
+    let sign = |challenge: &Value, other_origin: Option<&str>| {
+        let mut data = client_data("webauthn.get", challenge);
+        if let Some(other) = other_origin {
+            data = String::from_utf8(data)
+                .unwrap()
+                .replace(origin, other)
+                .into_bytes();
+        }
+        let assertion = passkey::assert(
+            &key.private_key_pkcs8,
+            "passbox.example",
+            &data,
+            0,
+            Flags::synced(false),
+        )
+        .unwrap();
+        json!({
+            "credentialId": encoding::encode(&key.credential_id),
+            "clientDataJson": encoding::encode(&data),
+            "authenticatorData": encoding::encode(&assertion.authenticator_data),
+            "signature": encoding::encode(&assertion.signature),
+        })
+    };
+    // A phishing page's assertion (other origin) is refused.
+    let (status, _) = second_factor(
+        server,
+        ip,
+        json!({
+            "challengeToken": challenge["challengeToken"],
+            "method": "webauthn",
+            "webauthn": sign(&request["challenge"], Some("https://passbox.example.evil.test")),
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, session) = second_factor(
+        server,
+        ip,
+        json!({
+            "challengeToken": challenge["challengeToken"],
+            "method": "webauthn",
+            "webauthn": sign(&request["challenge"], None),
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{session}");
+    let token = session["token"].as_str().unwrap().to_owned();
+
+    // Turning 2FA off with the security key.
+    let (status, check) = server
+        .post(
+            "/api/v1/account/two-factor/challenge",
+            Some(&token),
+            json!({ "origin": origin }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{check}");
+    let (status, _) = server
+        .post(
+            "/api/v1/account/two-factor/disable",
+            Some(&token),
+            json!({
+                "method": "webauthn",
+                "challengeToken": check["challengeToken"],
+                "webauthn": sign(&check["webauthn"]["challenge"], None),
+            }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let body = client.password_step(server, ip, None, None).await;
+    assert!(body["token"].is_string());
+}
+
+async fn two_factor_rate_limits(server: &TestServer) {
+    let ip = "10.23.0.1";
+    let client = Client::new();
+    client.register(server).await;
+    let (_, _, recovery) = enable_totp(server, &client, ip).await;
+    // Ten wrong codes over two challenges lock the account's second step,
+    // even with a correct code and from another address.
+    for round in 0..2 {
+        let challenge = client.challenge(server, ip, None).await;
+        let attempt = with_code(&challenge, "recovery", "0000-0000-0000-0000");
+        for _ in 0..5 {
+            let (_, body) = second_factor(server, ip, attempt.clone()).await;
+            assert_eq!(body["error"], "invalid_two_factor_code");
+        }
+        if round == 0 {
+            // A challenge allows five attempts.
+            let (_, body) = second_factor(server, ip, attempt).await;
+            assert_eq!(body["error"], "two_factor_expired");
+        }
+    }
+    let other_ip = "10.23.0.2";
+    let challenge = client.challenge(server, other_ip, None).await;
+    let (status, body) = second_factor(
+        server,
+        other_ip,
+        with_code(&challenge, "recovery", &recovery[0]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    assert!(body["details"]["retryAfterSeconds"].as_u64().unwrap() > 0);
 }

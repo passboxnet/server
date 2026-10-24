@@ -29,7 +29,7 @@ const MAX_FAILED_LOGINS_PER_EMAIL: u32 = 50;
 /// Failed logins per IP within the lockout window. Higher, because many
 /// people can share one address (offices, mobile carriers).
 const MAX_FAILED_LOGINS_PER_IP: u32 = 100;
-const LOCKOUT_WINDOW: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+pub(crate) const LOCKOUT_WINDOW: std::time::Duration = std::time::Duration::from_secs(15 * 60);
 
 /// Device tokens are valid for a year after they were issued. Each
 /// successful login replaces the presented token with a new one.
@@ -38,7 +38,7 @@ const DEVICE_TOKEN_TTL_MS: i64 = 365 * 24 * 60 * 60 * 1000;
 const MAX_DEVICE_TOKENS_PER_ACCOUNT: i64 = 50;
 
 /// Throttles authentication requests from one IP address.
-fn limit_ip(state: &AppState, ip: &str) -> ApiResult<()> {
+pub(crate) fn limit_ip(state: &AppState, ip: &str) -> ApiResult<()> {
     match state.limiter.hit(
         &format!("auth-ip:{ip}"),
         AUTH_REQUESTS_PER_MINUTE,
@@ -72,7 +72,7 @@ fn failure_limits(email: &str, ip: &str, device_token_hash: Option<&str>) -> Vec
 /// Fails while any of the login's failure counters is exhausted. The error
 /// carries the longest remaining wait of the current windows, so clients
 /// know when to retry.
-fn check_lockout(state: &AppState, limits: &[(String, u32)]) -> ApiResult<()> {
+pub(crate) fn check_lockout(state: &AppState, limits: &[(String, u32)]) -> ApiResult<()> {
     let wait = limits
         .iter()
         .filter_map(|(key, max)| state.limiter.blocked(key, *max, LOCKOUT_WINDOW))
@@ -83,7 +83,7 @@ fn check_lockout(state: &AppState, limits: &[(String, u32)]) -> ApiResult<()> {
     }
 }
 
-fn record_failure(state: &AppState, limits: &[(String, u32)]) {
+pub(crate) fn record_failure(state: &AppState, limits: &[(String, u32)]) {
     for (key, max) in limits {
         state.limiter.hit(key, *max, LOCKOUT_WINDOW);
     }
@@ -130,18 +130,30 @@ async fn valid_device_token(
 }
 
 /// Issues a new device token after a successful login and returns it with
-/// its hash. The token the login was started with is deleted. If the
-/// response gets lost, the device counts as unknown until its next
-/// successful login.
+/// its hash. The token the login was started with is deleted; whether the
+/// device is remembered for two-factor authentication carries over to the
+/// new token, and `remember_until` extends it. If the response gets lost,
+/// the device counts as unknown until its next successful login.
 async fn issue_device_token(
     state: &AppState,
     account_id: &str,
     previous_hash: Option<&str>,
+    remember_until: i64,
     now: i64,
 ) -> ApiResult<(String, String)> {
     let token = encoding::encode(&random::bytes::<32>().map_err(|e| ApiError::Internal(e.into()))?);
     let token_hash = hash_token(&token);
     let mut tx = crate::db::begin_write(&state.db).await?;
+    let carried: Option<i64> = sqlx::query_scalar(
+        "SELECT two_factor_until FROM device_tokens WHERE token_hash = $1 AND account_id = $2 \
+         AND expires_at > $3",
+    )
+    .bind(previous_hash.unwrap_or(""))
+    .bind(account_id)
+    .bind(now)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let two_factor_until = carried.unwrap_or(0).max(remember_until);
     sqlx::query(
         "DELETE FROM device_tokens WHERE account_id = $1 AND (expires_at <= $2 OR token_hash = $3)",
     )
@@ -151,13 +163,14 @@ async fn issue_device_token(
     .execute(&mut *tx)
     .await?;
     sqlx::query(
-        "INSERT INTO device_tokens (token_hash, account_id, created_at, expires_at) \
-         VALUES ($1, $2, $3, $4)",
+        "INSERT INTO device_tokens (token_hash, account_id, created_at, expires_at, two_factor_until) \
+         VALUES ($1, $2, $3, $4, $5)",
     )
     .bind(&token_hash)
     .bind(account_id)
     .bind(now)
     .bind(now + DEVICE_TOKEN_TTL_MS)
+    .bind(two_factor_until)
     .execute(&mut *tx)
     .await?;
     sqlx::query(
@@ -510,11 +523,16 @@ pub struct LoginFinishRequest {
     /// web, extension, desktop, ios, android or cli.
     #[serde(default)]
     client_kind: String,
+    /// The web origin of the client (`location.origin`), so the server can
+    /// offer the security keys registered for it. Optional.
+    #[serde(default)]
+    origin: String,
 }
 
+/// A new session.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct LoginFinishResponse {
+pub struct SessionResponse {
     token: String,
     account_id: String,
     session_id: String,
@@ -522,11 +540,23 @@ pub struct LoginFinishResponse {
     /// Store it on the device and send it with the next `login/start`. It
     /// replaces the device token the login was started with.
     device_token: String,
+    /// Unused recovery codes left, after signing in with one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) recovery_codes_remaining: Option<i64>,
 }
 
-const CLIENT_KINDS: [&str; 6] = ["web", "extension", "desktop", "ios", "android", "cli"];
+/// The answer to `login/finish`: a session, or the request for a second
+/// factor when the account has two-factor authentication turned on.
+#[derive(Serialize)]
+#[serde(untagged)]
+pub enum LoginFinishResponse {
+    Session(SessionResponse),
+    TwoFactor(super::two_factor::LoginChallenge),
+}
 
-fn clean_device_name(name: &str) -> String {
+pub(crate) const CLIENT_KINDS: [&str; 6] = ["web", "extension", "desktop", "ios", "android", "cli"];
+
+pub(crate) fn clean_device_name(name: &str) -> String {
     name.chars()
         .filter(|c| !c.is_control())
         .take(80)
@@ -540,6 +570,9 @@ pub async fn login_finish(
     ClientIp(ip): ClientIp,
     Json(req): Json<LoginFinishRequest>,
 ) -> ApiResult<Json<LoginFinishResponse>> {
+    if req.origin.len() > 256 {
+        return Err(ApiError::bad_request("origin is too long"));
+    }
     validate::id("loginId", &req.login_id)?;
     let finalization = validate::base64(
         "credentialFinalization",
@@ -588,45 +621,108 @@ pub async fn login_finish(
         }
     };
 
+    // The password was right. With two-factor authentication on, a device
+    // that is not remembered gets a challenge instead of a session.
+    if let Some(challenge) = super::two_factor::login_challenge(
+        &state,
+        &account_id,
+        super::two_factor::PendingLogin {
+            device_token_hash,
+            device_name: &device_name,
+            client_kind: &client_kind,
+            ip: &ip,
+            origin: &req.origin,
+        },
+    )
+    .await?
+    {
+        tracing::info!(account_id = %account_id, "login needs a second factor");
+        return Ok(Json(LoginFinishResponse::TwoFactor(challenge)));
+    }
+
+    let session = start_session(
+        &state,
+        &account_id,
+        NewSession {
+            device_token_hash,
+            device_name: &device_name,
+            client_kind: &client_kind,
+            ip: &ip,
+            event: "login",
+            remember_until: 0,
+        },
+    )
+    .await?;
+    Ok(Json(LoginFinishResponse::Session(session)))
+}
+
+/// How a session comes about.
+pub(crate) struct NewSession<'a> {
+    /// The valid device token the login was started with.
+    pub device_token_hash: Option<&'a str>,
+    pub device_name: &'a str,
+    pub client_kind: &'a str,
+    pub ip: &'a str,
+    /// The activity log entry: `login` or `login_two_factor`.
+    pub event: &'a str,
+    /// Remember the device for two-factor authentication until then (Unix
+    /// ms; 0 keeps what the device token had).
+    pub remember_until: i64,
+}
+
+/// Creates a session after a complete login and issues a new device token.
+pub(crate) async fn start_session(
+    state: &AppState,
+    account_id: &str,
+    new: NewSession<'_>,
+) -> ApiResult<SessionResponse> {
+    let now = now_ms();
     let token = encoding::encode(&random::bytes::<32>().map_err(|e| ApiError::Internal(e.into()))?);
     let session_id = id::new_id().map_err(|e| ApiError::Internal(e.into()))?;
     let expires_at = now + SESSION_TTL_MS;
-    let (device_token, new_device_token_hash) =
-        issue_device_token(&state, &account_id, device_token_hash, now).await?;
+    let (device_token, new_device_token_hash) = issue_device_token(
+        state,
+        account_id,
+        new.device_token_hash,
+        new.remember_until,
+        now,
+    )
+    .await?;
     sqlx::query(
         "INSERT INTO sessions (token_hash, account_id, created_at, expires_at, id, device_name, client_kind, ip, \
          last_used_at, device_token_hash) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
     )
     .bind(hash_token(&token))
-    .bind(&account_id)
+    .bind(account_id)
     .bind(now)
     .bind(expires_at)
     .bind(&session_id)
-    .bind(&device_name)
-    .bind(&client_kind)
-    .bind(&ip)
+    .bind(new.device_name)
+    .bind(new.client_kind)
+    .bind(new.ip)
     .bind(now)
     .bind(&new_device_token_hash)
     .execute(&state.db)
     .await?;
     record_event(
-        &state,
-        &account_id,
-        "login",
-        &device_name,
-        &client_kind,
-        &ip,
+        state,
+        account_id,
+        new.event,
+        new.device_name,
+        new.client_kind,
+        new.ip,
     )
     .await?;
     tracing::info!(account_id = %account_id, "login");
 
-    Ok(Json(LoginFinishResponse {
+    Ok(SessionResponse {
         token,
-        account_id,
+        account_id: account_id.to_owned(),
         session_id,
         expires_at,
         device_token,
-    }))
+        recovery_codes_remaining: None,
+    })
 }
 
 pub async fn logout(
@@ -717,7 +813,7 @@ impl Session {
 /// `last_used_at` is updated at most this often per session.
 const LAST_USED_RESOLUTION_MS: i64 = 60_000;
 
-fn hash_token(token: &str) -> String {
+pub(crate) fn hash_token(token: &str) -> String {
     HEXLOWER.encode(&Sha256::digest(token.as_bytes()))
 }
 

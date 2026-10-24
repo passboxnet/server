@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use anyhow::Context;
+use passbox_core::aead::SymmetricKey;
 use passbox_core::encoding;
 use passbox_core::opaque::ServerKeys;
 use passbox_core::random;
@@ -15,6 +16,8 @@ pub struct AppState {
     pub opaque: Arc<ServerKeys>,
     /// Key for deriving stable fake login parameters for unknown emails.
     pub prelogin_key: Arc<[u8; 32]>,
+    /// Encrypts login TOTP secrets at rest (see `api::two_factor`).
+    pub two_factor_key: Arc<SymmetricKey>,
     /// Limits for authentication endpoints.
     pub limiter: Arc<RateLimiter>,
     /// Trust `X-Forwarded-For` from a reverse proxy for client IPs.
@@ -38,10 +41,23 @@ impl AppState {
             .try_into()
             .context("corrupt prelogin key")?;
 
+        let two_factor_bytes =
+            load_or_create_secret(
+                &db,
+                "two_factor_key",
+                || Ok(random::bytes::<32>()?.to_vec()),
+            )
+            .await?;
+        let two_factor_key: [u8; 32] = two_factor_bytes
+            .as_slice()
+            .try_into()
+            .context("corrupt two-factor key")?;
+
         Ok(Self {
             db,
             opaque: Arc::new(opaque),
             prelogin_key: Arc::new(prelogin_key),
+            two_factor_key: Arc::new(SymmetricKey::from_bytes(two_factor_key)),
             limiter: Arc::new(RateLimiter::default()),
             trust_proxy: false,
         })

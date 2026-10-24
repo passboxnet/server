@@ -17,6 +17,10 @@ pub enum ApiError {
     NotFound,
     #[error("sign in again to confirm this change")]
     ReauthenticationRequired,
+    #[error("the two-factor code is incorrect")]
+    InvalidTwoFactorCode,
+    #[error("the sign-in expired; start again")]
+    TwoFactorExpired,
     #[error("too many attempts; try again later")]
     RateLimited(std::time::Duration),
     #[error("{message}")]
@@ -60,6 +64,8 @@ impl IntoResponse for ApiError {
             Self::InvalidCredentials => (StatusCode::UNAUTHORIZED, "invalid_credentials"),
             Self::NotFound => (StatusCode::NOT_FOUND, "not_found"),
             Self::ReauthenticationRequired => (StatusCode::FORBIDDEN, "reauthentication_required"),
+            Self::InvalidTwoFactorCode => (StatusCode::UNAUTHORIZED, "invalid_two_factor_code"),
+            Self::TwoFactorExpired => (StatusCode::UNAUTHORIZED, "two_factor_expired"),
             Self::RateLimited(_) => (StatusCode::TOO_MANY_REQUESTS, "rate_limited"),
             Self::Conflict { .. } => (StatusCode::CONFLICT, "conflict"),
             Self::Internal(err) => {

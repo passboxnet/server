@@ -69,7 +69,7 @@ pub async fn events(
     ))
 }
 
-fn require_recent_login(session: &Session) -> ApiResult<()> {
+pub(crate) fn require_recent_login(session: &Session) -> ApiResult<()> {
     if now_ms() - session.created_at > REAUTH_WINDOW_MS {
         return Err(ApiError::ReauthenticationRequired);
     }

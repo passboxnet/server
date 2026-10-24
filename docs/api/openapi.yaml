@@ -12,7 +12,16 @@ info:
 
     Errors have the shape `{ "error": "<code>", "message": "...", "details"?: {...} }`
     with the codes `bad_request`, `unauthorized`, `invalid_credentials`,
-    `not_found`, `conflict`, `rate_limited` and `internal`.
+    `reauthentication_required`, `invalid_two_factor_code`,
+    `two_factor_expired`, `not_found`, `conflict`, `rate_limited` and
+    `internal`.
+
+    Two-factor authentication: when an account has a second factor (TOTP
+    authenticator app or WebAuthn security key), `login/finish` answers with
+    a `TwoFactorChallenge` instead of a session, unless the device token sent
+    to `login/start` belongs to a device remembered within the last 30 days.
+    `login/two-factor` completes the login. The challenge only appears after
+    the password was verified, so unknown accounts stay indistinguishable.
 servers:
   - url: http://localhost:8080
 security:
@@ -180,30 +189,65 @@ paths:
               properties:
                 loginId: { $ref: "#/components/schemas/Id" }
                 credentialFinalization: { $ref: "#/components/schemas/Base64Url" }
+                deviceName: { type: string, description: 'Shown in the device list, for example "Chrome on macOS".' }
+                clientKind: { type: string, enum: [web, extension, desktop, ios, android, cli] }
+                origin:
+                  type: string
+                  description: |
+                    The web client's `location.origin`. Selects the security
+                    keys offered in `TwoFactorChallenge.webauthn`.
+      responses:
+        "200":
+          description: |
+            A session, or a second-factor challenge when two-factor
+            authentication is on and the device is not remembered.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/Session"
+                  - $ref: "#/components/schemas/TwoFactorChallenge"
+        "401":
+          description: Wrong credentials, unknown or expired login.
+  /api/v1/auth/login/two-factor:
+    post:
+      summary: Complete a login with its second factor
+      description: |
+        Wrong factors count against the account (10) and the client IP (100)
+        per 15 minutes; a challenge allows 5 attempts. A TOTP code is
+        accepted once (±1 time step of 30 seconds); a recovery code is
+        deleted when used.
+      operationId: loginTwoFactor
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/SecondFactor"
+                - type: object
+                  required: [challengeToken]
+                  properties:
+                    challengeToken: { type: string }
+                    rememberDevice:
+                      type: boolean
+                      description: |
+                        Skip the second step on this device for 30 days. Bound
+                        to the device token issued with this session (it
+                        carries over when the token is rotated).
       responses:
         "200":
           description: Session created.
           content:
             application/json:
-              schema:
-                type: object
-                required: [token, accountId, sessionId, expiresAt, deviceToken]
-                properties:
-                  token: { type: string }
-                  accountId: { $ref: "#/components/schemas/Id" }
-                  sessionId: { $ref: "#/components/schemas/Id" }
-                  expiresAt: { type: integer }
-                  deviceToken:
-                    type: string
-                    description: |
-                      Store it on the device and send it with the next
-                      `login/start`. Every successful login issues a new token
-                      and invalidates the one it was started with. Tokens grant
-                      no access by themselves, survive logout and session
-                      revocation, expire after a year, and are invalidated for
-                      all other devices by a master password change.
+              schema: { $ref: "#/components/schemas/Session" }
+        "400": { description: Unknown method. }
         "401":
-          description: Wrong credentials, unknown or expired login.
+          description: |
+            `invalid_two_factor_code` (try again) or `two_factor_expired`
+            (unknown, used or expired challenge; sign in again).
+        "429": { $ref: "#/components/responses/RateLimited" }
   /api/v1/auth/logout:
     post:
       summary: End the current session
@@ -230,6 +274,218 @@ paths:
                   kdfParams: { $ref: "#/components/schemas/KdfParams" }
                   encryptedAccountKey: { $ref: "#/components/schemas/Base64Url" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+  /api/v1/account/two-factor:
+    get:
+      summary: Two-factor authentication status
+      operationId: twoFactorStatus
+      responses:
+        "200":
+          description: Status.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [enabled, totp, securityKeys, recoveryCodesRemaining]
+                properties:
+                  enabled: { type: boolean }
+                  totp: { type: boolean }
+                  securityKeys:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, name, createdAt, lastUsedAt]
+                      properties:
+                        id: { $ref: "#/components/schemas/Id" }
+                        name: { type: string }
+                        createdAt: { type: integer }
+                        lastUsedAt: { type: integer, description: 0 if never used. }
+                  recoveryCodesRemaining: { type: integer }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /api/v1/account/two-factor/totp/start:
+    post:
+      summary: Create a TOTP secret for an authenticator app
+      description: |
+        Needs a session from a login in the last 10 minutes
+        (`reauthentication_required` otherwise). The secret stays pending
+        until `totp/confirm`; it is stored encrypted with the server's
+        two-factor key.
+      operationId: twoFactorTotpStart
+      responses:
+        "200":
+          description: The secret (Base32) and an `otpauth://` URI for a QR code.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [secret, uri]
+                properties:
+                  secret: { type: string }
+                  uri: { type: string }
+        "403": { description: "`reauthentication_required`" }
+        "409": { description: An authenticator app is already set up. }
+  /api/v1/account/two-factor/totp/confirm:
+    post:
+      summary: Turn the pending TOTP on with a first code
+      operationId: twoFactorTotpConfirm
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: { type: string }
+      responses:
+        "200":
+          description: Enabled. `recoveryCodes` (shown once) when the account had none.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RecoveryCodes" }
+        "400": { description: No pending secret. }
+        "401": { description: "`invalid_two_factor_code`" }
+        "403": { description: "`reauthentication_required`" }
+  /api/v1/account/two-factor/totp:
+    delete:
+      summary: Remove the authenticator app
+      description: Refused with 409 when it is the last second factor; use `disable`.
+      operationId: twoFactorTotpRemove
+      responses:
+        "204": { description: Removed. }
+        "403": { description: "`reauthentication_required`" }
+        "404": { description: No authenticator app. }
+        "409": { description: Last second factor. }
+  /api/v1/account/two-factor/webauthn/register/start:
+    post:
+      summary: Start registering a security key or passkey
+      description: |
+        The RP ID is the host of `origin`, which must be https (or http on
+        localhost). Needs a recent login.
+      operationId: twoFactorWebauthnRegisterStart
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [origin]
+              properties:
+                origin: { type: string, description: The page's `location.origin`. }
+      responses:
+        "200":
+          description: Options for `navigator.credentials.create` (binary values Base64url).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [registrationId, publicKey]
+                properties:
+                  registrationId: { type: string }
+                  publicKey: { type: object, description: PublicKeyCredentialCreationOptions. }
+        "400": { description: Origin not usable for WebAuthn. }
+        "403": { description: "`reauthentication_required`" }
+  /api/v1/account/two-factor/webauthn/register/finish:
+    post:
+      summary: Store a verified security key
+      description: |
+        Checks type, challenge, origin, RP ID hash, user presence and the
+        ES256 or Ed25519 public key. Attestation statements are not verified.
+      operationId: twoFactorWebauthnRegisterFinish
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [registrationId, credential]
+              properties:
+                registrationId: { type: string }
+                name: { type: string }
+                credential:
+                  type: object
+                  required: [clientDataJson, attestationObject]
+                  properties:
+                    clientDataJson: { $ref: "#/components/schemas/Base64Url" }
+                    attestationObject: { $ref: "#/components/schemas/Base64Url" }
+      responses:
+        "201":
+          description: Stored. `recoveryCodes` (shown once) when the account had none.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/RecoveryCodes"
+                  - type: object
+                    required: [id]
+                    properties:
+                      id: { $ref: "#/components/schemas/Id" }
+        "400": { description: Verification failed. }
+        "401": { description: "`two_factor_expired`: unknown or used registration." }
+        "409": { description: Key already registered. }
+  /api/v1/account/two-factor/webauthn/{id}:
+    delete:
+      summary: Remove a security key
+      description: Refused with 409 when it is the last second factor; use `disable`.
+      operationId: twoFactorWebauthnRemove
+      parameters:
+        - { name: id, in: path, required: true, schema: { $ref: "#/components/schemas/Id" } }
+      responses:
+        "204": { description: Removed. }
+        "403": { description: "`reauthentication_required`" }
+        "404": { description: Unknown key. }
+        "409": { description: Last second factor. }
+  /api/v1/account/two-factor/recovery-codes:
+    post:
+      summary: Replace the recovery codes
+      description: Needs a recent login and two-factor authentication on.
+      operationId: twoFactorRecoveryCodes
+      responses:
+        "200":
+          description: Ten new codes, shown once. The old ones stop working.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RecoveryCodes" }
+        "403": { description: "`reauthentication_required`" }
+  /api/v1/account/two-factor/challenge:
+    post:
+      summary: Start checking a second factor while signed in
+      description: Needed to turn two-factor authentication off with a security key.
+      operationId: twoFactorChallenge
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                origin: { type: string }
+      responses:
+        "200":
+          description: A challenge (same shape as at login, without `twoFactorRequired`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TwoFactorChallenge" }
+  /api/v1/account/two-factor/disable:
+    post:
+      summary: Turn two-factor authentication off
+      description: |
+        Needs a valid second factor or recovery code. Removes the
+        authenticator app, all security keys and recovery codes, and forgets
+        remembered devices.
+      operationId: twoFactorDisable
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: "#/components/schemas/SecondFactor"
+                - type: object
+                  properties:
+                    challengeToken: { type: string, description: From `two-factor/challenge`; required for `webauthn`. }
+      responses:
+        "204": { description: Turned off. }
+        "401": { description: "`invalid_two_factor_code`" }
+        "429": { $ref: "#/components/responses/RateLimited" }
   /api/v1/sync:
     get:
       summary: Changes since a cursor
@@ -349,6 +605,75 @@ components:
     Conflict:
       description: The revision does not follow the stored one. `details.currentRevision` holds the stored revision.
   schemas:
+    Session:
+      type: object
+      required: [token, accountId, sessionId, expiresAt, deviceToken]
+      properties:
+        token: { type: string }
+        accountId: { $ref: "#/components/schemas/Id" }
+        sessionId: { $ref: "#/components/schemas/Id" }
+        expiresAt: { type: integer }
+        deviceToken:
+          type: string
+          description: |
+            Store it on the device and send it with the next
+            `login/start`. Every successful login issues a new token
+            and invalidates the one it was started with. Tokens grant
+            no access by themselves, survive logout and session
+            revocation, expire after a year, and are invalidated for
+            all other devices by a master password change.
+        recoveryCodesRemaining:
+          type: integer
+          description: Present after signing in with a recovery code.
+    TwoFactorChallenge:
+      type: object
+      required: [twoFactorRequired, challengeToken, expiresAt, methods]
+      properties:
+        twoFactorRequired: { type: boolean, const: true }
+        challengeToken: { type: string, description: Valid for 5 minutes. }
+        expiresAt: { type: integer }
+        methods:
+          type: array
+          items: { type: string, enum: [totp, webauthn, recovery] }
+        webauthn:
+          type: object
+          description: |
+            PublicKeyCredentialRequestOptions for `navigator.credentials.get`
+            (binary values Base64url), present when the account has security
+            keys.
+          required: [challenge, rpId, allowCredentials, timeout, userVerification]
+          properties:
+            challenge: { $ref: "#/components/schemas/Base64Url" }
+            rpId: { type: string }
+            allowCredentials:
+              type: array
+              items:
+                type: object
+                properties:
+                  type: { type: string, const: public-key }
+                  id: { $ref: "#/components/schemas/Base64Url" }
+            timeout: { type: integer }
+            userVerification: { type: string }
+    SecondFactor:
+      type: object
+      required: [method]
+      properties:
+        method: { type: string, enum: [totp, recovery, webauthn] }
+        code: { type: string, description: 6-digit code or recovery code (case, spaces and dashes ignored). }
+        webauthn:
+          type: object
+          required: [credentialId, clientDataJson, authenticatorData, signature]
+          properties:
+            credentialId: { $ref: "#/components/schemas/Base64Url" }
+            clientDataJson: { $ref: "#/components/schemas/Base64Url" }
+            authenticatorData: { $ref: "#/components/schemas/Base64Url" }
+            signature: { $ref: "#/components/schemas/Base64Url" }
+    RecoveryCodes:
+      type: object
+      properties:
+        recoveryCodes:
+          type: array
+          items: { type: string, example: 7K2M-9QXD-4HPT-WZ3C }
     Id:
       type: string
       pattern: "^[0-7][0-9a-hjkmnp-tv-z]{25}$"
