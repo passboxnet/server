@@ -7,6 +7,7 @@ use passbox_core::opaque::ServerKeys;
 use passbox_core::random;
 
 use crate::db::Db;
+use crate::mail::Mailer;
 use crate::security::RateLimiter;
 
 /// Shared state of all request handlers.
@@ -22,6 +23,10 @@ pub struct AppState {
     pub trust_proxy: bool,
     /// Signs the head of the key directory log.
     pub log_signer: Arc<LogSigner>,
+    /// Queues outgoing mail. Logs mails until SMTP is configured.
+    pub mailer: Mailer,
+    /// Emails from `PASSBOX_ADMIN_EMAILS` (lower case): always instance admins.
+    pub admin_emails: Arc<Vec<String>>,
 }
 
 impl AppState {
@@ -51,6 +56,8 @@ impl AppState {
 
         Ok(Self {
             log_signer: Arc::new(LogSigner::from_seed(&log_seed)),
+            mailer: Mailer::log_only(db.clone()),
+            admin_emails: Arc::new(Vec::new()),
             db,
             opaque: Arc::new(opaque),
             prelogin_key: Arc::new(prelogin_key),

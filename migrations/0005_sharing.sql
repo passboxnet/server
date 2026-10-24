@@ -187,15 +187,3 @@ CREATE TABLE vault_manifests (
     created_at BIGINT NOT NULL,
     PRIMARY KEY (vault_id, version)
 );
-
--- Notifications for a mailer to deliver (see crates/server/src/notify.rs).
--- `params` (JSON, may contain an invitation link with its token) is cleared
--- once delivered.
-CREATE TABLE notification_outbox (
-    id TEXT PRIMARY KEY,
-    kind TEXT NOT NULL,
-    recipient TEXT NOT NULL,
-    params TEXT NOT NULL,
-    created_at BIGINT NOT NULL,
-    delivered_at BIGINT NOT NULL
-);

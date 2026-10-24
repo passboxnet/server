@@ -7,7 +7,8 @@ pub mod api;
 pub mod config;
 pub mod db;
 pub mod error;
-pub mod notify;
+pub mod instance;
+pub mod mail;
 pub mod routes;
 pub mod security;
 pub mod state;
@@ -25,6 +26,23 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
     let db = db::connect(&config.database_url).await?;
     let mut state = AppState::load(db).await?;
     state.trust_proxy = config.trust_proxy;
+    state.admin_emails = std::sync::Arc::new(admin_emails(&config.admin_emails));
+    state.mailer = mail::Mailer::new(
+        state.db.clone(),
+        &mail::MailConfig {
+            smtp_url: config.smtp_url.clone(),
+            from: config.mail_from.clone(),
+            public_url: config.public_url.clone(),
+        },
+    )?;
+    if state.mailer.is_configured() {
+        info!("mail is sent over SMTP");
+    } else {
+        tracing::warn!(
+            "PASSBOX_SMTP_URL is not set: mails are written to the log instead of being sent"
+        );
+    }
+    state.mailer.spawn_worker();
     let app = routes::router(&config, state);
     let listener = TcpListener::bind(config.bind)
         .await
@@ -37,6 +55,14 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
     .with_graceful_shutdown(shutdown_signal())
     .await
     .context("server error")
+}
+
+/// Normalizes `PASSBOX_ADMIN_EMAILS` entries like account emails.
+fn admin_emails(raw: &[String]) -> Vec<String> {
+    raw.iter()
+        .map(|email| email.trim().to_lowercase())
+        .filter(|email| !email.is_empty())
+        .collect()
 }
 
 async fn shutdown_signal() {

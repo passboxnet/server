@@ -68,7 +68,10 @@ pub async fn require_confirmed(
 ) -> ApiResult<Membership> {
     let m = require_member(conn, org_id, account_id).await?;
     if !m.is_confirmed() {
-        return Err(ApiError::forbidden("your membership is not confirmed"));
+        return Err(ApiError::forbidden(
+            "forbidden",
+            "your membership is not confirmed",
+        ));
     }
     Ok(m)
 }
@@ -81,6 +84,7 @@ pub async fn require_admin(
     let m = require_member(conn, org_id, account_id).await?;
     if !m.is_admin() {
         return Err(ApiError::forbidden(
+            "forbidden",
             "only owners and admins of the organization can do this",
         ));
     }
@@ -185,7 +189,10 @@ pub async fn require_vault_write(
         .await?
         .ok_or(ApiError::NotFound)?;
     if !access.can_write() {
-        return Err(ApiError::forbidden("you can only view this vault"));
+        return Err(ApiError::forbidden(
+            "forbidden",
+            "you can only view this vault",
+        ));
     }
     Ok(access)
 }
@@ -210,6 +217,7 @@ pub async fn require_vault_manager(
                 Ok((org_id, key_epoch))
             } else {
                 Err(ApiError::forbidden(
+                    "forbidden",
                     "only managers of the vault can do this",
                 ))
             }

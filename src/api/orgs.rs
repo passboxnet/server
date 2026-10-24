@@ -29,7 +29,7 @@ use super::signed::{self, bad};
 use super::validate;
 use crate::db::{self, now_ms};
 use crate::error::{ApiError, ApiResult};
-use crate::notify::{self, InvitationParams};
+use crate::mail::{Mailer, Template};
 use crate::security::ClientIp;
 use crate::state::AppState;
 
@@ -473,6 +473,7 @@ pub async fn delete(
     let m = access::require_member(&mut tx, &org_id, &session.account_id).await?;
     if m.role != OrgRole::Owner {
         return Err(ApiError::forbidden(
+            "forbidden",
             "only the owner can delete the organization",
         ));
     }
@@ -552,7 +553,10 @@ pub async fn invite(
     let mut tx = db::begin_write(&state.db).await?;
     let me = access::require_admin(&mut tx, &org_id, &session.account_id).await?;
     if role == OrgRole::Admin && me.role != OrgRole::Owner {
-        return Err(ApiError::forbidden("only the owner can invite admins"));
+        return Err(ApiError::forbidden(
+            "forbidden",
+            "only the owner can invite admins",
+        ));
     }
     let existing: Option<i64> = sqlx::query_scalar(
         "SELECT 1 FROM org_members JOIN accounts ON accounts.id = org_members.account_id \
@@ -609,22 +613,32 @@ pub async fn invite(
         Some(fragment) => format!("{path}#{fragment}"),
         None => path.clone(),
     };
-    notify::queue_org_invitation(
+    // The organization's name is encrypted, so the mail names the inviter
+    // only. Without a public URL the mail goes out without a link and the
+    // inviter passes on the link the client shows.
+    let link = state
+        .mailer
+        .public_url()
+        .map(|base| format!("{base}{mail_path}"))
+        .unwrap_or_default();
+    let locale = crate::instance::load_settings(&state.db)
+        .await?
+        .default_locale;
+    Mailer::enqueue_in(
         &mut tx,
         &email,
-        &InvitationParams {
-            invitation_id: &invitation_id,
-            org_id: &org_id,
-            org_kind: &kind,
-            inviter_email: &inviter_email,
-            role: role.as_str(),
-            path: &mail_path,
-            expires_at,
-        },
-        now,
+        Template::Invitation,
+        locale,
+        &json!({
+            "inviter": inviter_email,
+            "organizationKind": kind,
+            "link": link,
+            "expiresAt": expires_at,
+        }),
     )
     .await?;
     tx.commit().await?;
+    state.mailer.wake();
     event(
         &state,
         &session.account_id,
@@ -819,6 +833,7 @@ pub async fn accept(
         .await?;
     if account_email != email {
         return Err(ApiError::forbidden(
+            "forbidden",
             "this invitation is for another email address",
         ));
     }
@@ -930,7 +945,10 @@ pub async fn confirm(
         return Err(bad("the role does not match the invitation"));
     }
     if target.role == OrgRole::Admin && me_membership.role != OrgRole::Owner {
-        return Err(ApiError::forbidden("only the owner can confirm admins"));
+        return Err(ApiError::forbidden(
+            "forbidden",
+            "only the owner can confirm admins",
+        ));
     }
     let me = signed::own_bundle(&mut tx, &session.account_id).await?;
     let member = signed::own_bundle(&mut tx, &account_id).await?;
@@ -996,7 +1014,10 @@ pub async fn update_member(
     let me_membership = access::require_admin(&mut tx, &org_id, &session.account_id).await?;
     let target = target_member(&mut tx, &org_id, &account_id).await?;
     if target.role == OrgRole::Owner || role == OrgRole::Owner {
-        return Err(ApiError::forbidden("the owner's role cannot be changed"));
+        return Err(ApiError::forbidden(
+            "forbidden",
+            "the owner's role cannot be changed",
+        ));
     }
     if target.status == "accepted" {
         return Err(bad("confirm the member first"));
@@ -1005,6 +1026,7 @@ pub async fn update_member(
         && me_membership.role != OrgRole::Owner
     {
         return Err(ApiError::forbidden(
+            "forbidden",
             "only the owner can grant or revoke admin rights",
         ));
     }
@@ -1051,10 +1073,16 @@ async fn set_status(
     let me = access::require_admin(&mut tx, org_id, &session.account_id).await?;
     let target = target_member(&mut tx, org_id, account_id).await?;
     if target.role == OrgRole::Owner {
-        return Err(ApiError::forbidden("the owner cannot be suspended"));
+        return Err(ApiError::forbidden(
+            "forbidden",
+            "the owner cannot be suspended",
+        ));
     }
     if target.role == OrgRole::Admin && me.role != OrgRole::Owner {
-        return Err(ApiError::forbidden("only the owner can suspend admins"));
+        return Err(ApiError::forbidden(
+            "forbidden",
+            "only the owner can suspend admins",
+        ));
     }
     let from = if status == "suspended" {
         "confirmed"
@@ -1143,16 +1171,23 @@ pub async fn remove_member(
     let target = target_member(&mut tx, &org_id, &account_id).await?;
     let leaving = account_id == session.account_id;
     if target.role == OrgRole::Owner {
-        return Err(ApiError::forbidden("the owner cannot be removed"));
+        return Err(ApiError::forbidden(
+            "forbidden",
+            "the owner cannot be removed",
+        ));
     }
     if !leaving {
         if !me.is_admin() {
             return Err(ApiError::forbidden(
+                "forbidden",
                 "only owners and admins can remove members",
             ));
         }
         if target.role == OrgRole::Admin && me.role != OrgRole::Owner {
-            return Err(ApiError::forbidden("only the owner can remove admins"));
+            return Err(ApiError::forbidden(
+                "forbidden",
+                "only the owner can remove admins",
+            ));
         }
     }
     let groups: Vec<String> = sqlx::query_scalar(

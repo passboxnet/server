@@ -12,7 +12,9 @@ info:
 
     Errors have the shape `{ "error": "<code>", "message": "...", "details"?: {...} }`
     with the codes `bad_request`, `unauthorized`, `invalid_credentials`,
-    `not_found`, `conflict`, `rate_limited` and `internal`.
+    `not_found`, `conflict`, `rate_limited` and `internal`, and with status 403
+    `forbidden` (not an instance admin), `account_disabled`,
+    `registration_closed`, `domain_not_allowed` and `invitation_invalid`.
 servers:
   - url: http://localhost:8080
 security:
@@ -87,6 +89,9 @@ paths:
                 accountId: { $ref: "#/components/schemas/Id" }
                 email: { type: string }
                 registrationRequest: { $ref: "#/components/schemas/Base64Url" }
+                inviteToken:
+                  type: string
+                  description: Token from an invitation link. Needed when the registration mode is not `open` (in `domains` mode for other domains).
       responses:
         "200":
           description: OPAQUE registration response.
@@ -97,6 +102,7 @@ paths:
                 required: [registrationResponse]
                 properties:
                   registrationResponse: { $ref: "#/components/schemas/Base64Url" }
+        "403": { $ref: "#/components/responses/RegistrationRefused" }
         "409":
           description: The email or account ID is taken.
   /api/v1/auth/register/finish:
@@ -119,6 +125,11 @@ paths:
                 kdfParams: { $ref: "#/components/schemas/KdfParams" }
                 encryptedAccountKey: { $ref: "#/components/schemas/Base64Url" }
                 vault: { $ref: "#/components/schemas/NewVault" }
+                inviteToken: { type: string }
+                locale:
+                  type: string
+                  enum: [en, de]
+                  description: Language of mails to the account; defaults to `Accept-Language`.
       responses:
         "201":
           description: Account created.
@@ -128,6 +139,7 @@ paths:
                 type: object
                 properties:
                   accountId: { $ref: "#/components/schemas/Id" }
+        "403": { $ref: "#/components/responses/RegistrationRefused" }
         "409":
           description: The email or account ID is taken.
   /api/v1/auth/login/start:
@@ -204,6 +216,8 @@ paths:
                       all other devices by a master password change.
         "401":
           description: Wrong credentials, unknown or expired login.
+        "403":
+          description: "`account_disabled`: the password was right, but an instance admin disabled the account."
   /api/v1/auth/logout:
     post:
       summary: End the current session
@@ -229,7 +243,228 @@ paths:
                   kdfSalt: { $ref: "#/components/schemas/Base64Url" }
                   kdfParams: { $ref: "#/components/schemas/KdfParams" }
                   encryptedAccountKey: { $ref: "#/components/schemas/Base64Url" }
+                  instanceAdmin: { type: boolean }
         "401": { $ref: "#/components/responses/Unauthorized" }
+  /api/v1/account/preferences:
+    get:
+      summary: Mail language and notification settings
+      operationId: preferences
+      responses:
+        "200":
+          description: Preferences.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AccountPreferences" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    put:
+      summary: Change preferences (omitted fields stay)
+      operationId: updatePreferences
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                locale: { type: string, enum: [en, de, ""], description: '`""` resets to the instance default.' }
+                notifyNewDevice: { type: boolean }
+      responses:
+        "200":
+          description: The stored preferences.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AccountPreferences" }
+        "400": { description: Unknown locale. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /api/v1/admin/settings:
+    get:
+      summary: Instance settings and mail status
+      operationId: adminSettings
+      tags: [admin]
+      responses:
+        "200":
+          description: Settings.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminSettings" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    put:
+      summary: Change the instance settings
+      operationId: updateAdminSettings
+      tags: [admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/InstanceSettings" }
+      responses:
+        "200":
+          description: The stored settings. Changes are recorded in the admin log.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminSettings" }
+        "400": { description: Invalid settings. }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /api/v1/admin/users:
+    get:
+      summary: Accounts on the server
+      operationId: adminUsers
+      tags: [admin]
+      parameters:
+        - { name: q, in: query, schema: { type: string }, description: Part of the email. }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+        - { name: offset, in: query, schema: { type: integer, minimum: 0, default: 0 } }
+      responses:
+        "200":
+          description: Newest accounts first.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [users, total]
+                properties:
+                  users: { type: array, items: { $ref: "#/components/schemas/AdminUser" } }
+                  total: { type: integer }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /api/v1/admin/users/{id}/disable:
+    post:
+      summary: Disable an account
+      description: Deletes all its sessions at once; logins then fail with `account_disabled`. Data stays. Admins cannot disable themselves.
+      operationId: disableUser
+      tags: [admin]
+      parameters:
+        - { name: id, in: path, required: true, schema: { $ref: "#/components/schemas/Id" } }
+      responses:
+        "204": { description: Disabled (or already disabled). }
+        "400": { description: The admin's own account. }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: Unknown account. }
+  /api/v1/admin/users/{id}/enable:
+    post:
+      summary: Enable a disabled account
+      operationId: enableUser
+      tags: [admin]
+      parameters:
+        - { name: id, in: path, required: true, schema: { $ref: "#/components/schemas/Id" } }
+      responses:
+        "204": { description: Enabled. }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: Unknown account. }
+  /api/v1/admin/mail/test:
+    post:
+      summary: Queue a test mail
+      operationId: sendTestMail
+      tags: [admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                to: { type: string, description: Defaults to the admin's own email. }
+      responses:
+        "200":
+          description: Queued. Without SMTP it is written to the server log.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, to, mailConfigured]
+                properties:
+                  id: { type: string }
+                  to: { type: string }
+                  mailConfigured: { type: boolean }
+        "403": { $ref: "#/components/responses/Forbidden" }
+  /api/v1/admin/invites:
+    get:
+      summary: Invitations, newest first
+      operationId: adminInvites
+      tags: [admin]
+      responses:
+        "200":
+          description: Invitations.
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: "#/components/schemas/Invite" } }
+        "403": { $ref: "#/components/responses/Forbidden" }
+    post:
+      summary: Invite an email to create an account
+      description: |
+        Mails a link `<base>/#/?invite=<token>&email=<email>` that is valid for 7 days and
+        replaces earlier unused invitations for the email. The base is
+        `PASSBOX_PUBLIC_URL`, else `linkBase`.
+      operationId: createInvite
+      tags: [admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string }
+                locale: { type: string, enum: [en, de] }
+                linkBase:
+                  { type: string, description: "Origin of the web app, for example `https://vault.example.com`." }
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - { $ref: "#/components/schemas/Invite" }
+                  - type: object
+                    required: [link, mailConfigured]
+                    properties:
+                      link: { type: [string, "null"] }
+                      mailConfigured: { type: boolean }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { description: An account with this email exists. }
+  /api/v1/admin/invites/{id}:
+    delete:
+      summary: Withdraw an unused invitation
+      operationId: revokeInvite
+      tags: [admin]
+      parameters:
+        - { name: id, in: path, required: true, schema: { $ref: "#/components/schemas/Id" } }
+      responses:
+        "204": { description: Withdrawn. }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: Unknown or already used. }
+  /api/v1/admin/events:
+    get:
+      summary: Admin audit log, newest first
+      description: |
+        Rows are hash-chained: `hash` is the SHA-256 (hex) of the JSON array
+        `[prevHash, seq, id, actorId, actorEmail, action, target, details, ip, createdAt]`
+        (with `details` as the stored JSON text), and `prevHash` is the previous
+        row's hash (`""` for the first). `chain` reports the check of the whole log.
+      operationId: adminEvents
+      tags: [admin]
+      parameters:
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 500, default: 50 } }
+        - { name: before, in: query, schema: { type: integer }, description: Only events with a lower `seq`. }
+      responses:
+        "200":
+          description: Events.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [events, chain]
+                properties:
+                  events: { type: array, items: { $ref: "#/components/schemas/AdminEvent" } }
+                  chain:
+                    type: object
+                    required: [valid, length, brokenAt]
+                    properties:
+                      valid: { type: boolean }
+                      length: { type: integer }
+                      brokenAt: { type: [integer, "null"] }
+        "403": { $ref: "#/components/responses/Forbidden" }
   /api/v1/sync:
     get:
       summary: Changes since a cursor
@@ -348,6 +583,12 @@ components:
         `Retry-After` header give the remaining time of the current window.
     Conflict:
       description: The revision does not follow the stored one. `details.currentRevision` holds the stored revision.
+    Forbidden:
+      description: "`forbidden`: the account is not an instance admin."
+    RegistrationRefused:
+      description: |
+        `registration_closed` (invite-only server), `domain_not_allowed`
+        (`domains` mode, other domain) or `invitation_invalid`.
   schemas:
     Id:
       type: string
@@ -371,6 +612,96 @@ components:
         version: { type: string }
         apiVersion: { type: integer }
         minKdfParams: { $ref: "#/components/schemas/KdfParams" }
+        instanceName: { type: string }
+        registration: { type: string, enum: [open, invite_only, domains] }
+        allowedDomains: { type: array, items: { type: string }, description: Only in `domains` mode. }
+        supportUrl: { type: [string, "null"] }
+        defaultLocale: { type: string, enum: [en, de] }
+        passwordPolicy: { $ref: "#/components/schemas/PasswordPolicy" }
+    PasswordPolicy:
+      type: object
+      description: Minimum for new master passwords; clients enforce it.
+      required: [minScore, minLength]
+      properties:
+        minScore: { type: integer, enum: [3, 4] }
+        minLength: { type: integer, minimum: 12, maximum: 128 }
+    AccountPreferences:
+      type: object
+      required: [locale, notifyNewDevice]
+      properties:
+        locale: { type: [string, "null"], enum: [en, de, null] }
+        notifyNewDevice: { type: boolean }
+    InstanceSettings:
+      type: object
+      required: [instanceName, registration, allowedDomains, supportUrl, defaultLocale, passwordPolicy]
+      properties:
+        instanceName: { type: string, minLength: 1, maxLength: 60 }
+        registration: { type: string, enum: [open, invite_only, domains] }
+        allowedDomains: { type: array, items: { type: string } }
+        supportUrl: { type: string, description: "https://, http:// or mailto: address, or empty." }
+        defaultLocale: { type: string, enum: [en, de] }
+        passwordPolicy: { $ref: "#/components/schemas/PasswordPolicy" }
+    AdminSettings:
+      type: object
+      required: [settings, mail, envAdminEmails]
+      properties:
+        settings: { $ref: "#/components/schemas/InstanceSettings" }
+        envAdminEmails: { type: array, items: { type: string } }
+        mail:
+          type: object
+          required: [configured, transport, host, from, publicUrl, pending, failed, lastSentAt, lastError]
+          properties:
+            configured: { type: boolean }
+            transport: { type: string, enum: [smtps, starttls, smtp, log] }
+            host: { type: [string, "null"] }
+            from: { type: string }
+            publicUrl: { type: [string, "null"] }
+            pending: { type: integer }
+            failed: { type: integer }
+            lastSentAt: { type: [integer, "null"] }
+            lastError: { type: [string, "null"] }
+    AdminUser:
+      type: object
+      required:
+        [id, email, createdAt, lastActivityAt, status, disabledAt, instanceAdmin, activeSessions, twoFactorEnabled]
+      properties:
+        id: { $ref: "#/components/schemas/Id" }
+        email: { type: string }
+        createdAt: { type: integer }
+        lastActivityAt: { type: [integer, "null"] }
+        status: { type: string, enum: [active, disabled] }
+        disabledAt: { type: [integer, "null"] }
+        instanceAdmin: { type: boolean }
+        activeSessions: { type: integer }
+        twoFactorEnabled: { type: [boolean, "null"], description: "`null` until the server supports login 2FA." }
+    Invite:
+      type: object
+      required: [id, email, invitedBy, createdAt, expiresAt, usedAt, status]
+      properties:
+        id: { $ref: "#/components/schemas/Id" }
+        email: { type: string }
+        invitedBy: { type: string }
+        createdAt: { type: integer }
+        expiresAt: { type: integer }
+        usedAt: { type: [integer, "null"] }
+        status: { type: string, enum: [pending, used, expired] }
+    AdminEvent:
+      type: object
+      required: [seq, id, actorId, actorEmail, action, target, details, ip, createdAt, prevHash, hash]
+      properties:
+        seq: { type: integer }
+        id: { $ref: "#/components/schemas/Id" }
+        actorId: { type: string }
+        actorEmail: { type: string }
+        action:
+          type: string
+          description: instance_admin_bootstrap, settings_updated, user_disabled, user_enabled, test_mail_sent, invite_created, invite_used, invite_revoked
+        target: { type: string }
+        details: { type: [object, "null"] }
+        ip: { type: string }
+        createdAt: { type: integer }
+        prevHash: { type: string }
+        hash: { type: string }
     NewVault:
       type: object
       required: [id, encryptedKey, encryptedMeta]

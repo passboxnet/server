@@ -2,11 +2,14 @@
 
 pub mod access;
 pub mod account;
+pub mod admin;
 pub mod auth;
 pub mod groups;
 pub mod items;
 pub mod keys;
+pub mod notify;
 pub mod orgs;
+pub mod preferences;
 pub mod sessions;
 pub mod shared;
 pub mod signed;
@@ -31,6 +34,24 @@ pub fn router() -> Router<AppState> {
         .route("/account/events", get(account::events))
         .route("/account/password/start", post(account::password_start))
         .route("/account/password/finish", post(account::password_finish))
+        .route(
+            "/account/preferences",
+            get(preferences::get).put(preferences::put),
+        )
+        .route(
+            "/admin/settings",
+            get(admin::get_settings).put(admin::put_settings),
+        )
+        .route("/admin/users", get(admin::users))
+        .route("/admin/users/{id}/disable", post(admin::disable_user))
+        .route("/admin/users/{id}/enable", post(admin::enable_user))
+        .route("/admin/mail/test", post(admin::test_mail))
+        .route("/admin/events", get(admin::events))
+        .route(
+            "/admin/invites",
+            get(admin::invites).post(admin::create_invite),
+        )
+        .route("/admin/invites/{id}", delete(admin::revoke_invite))
         .route("/sessions", get(sessions::list))
         .route("/sessions/revoke-others", post(sessions::revoke_others))
         .route("/sessions/{id}", delete(sessions::revoke))
