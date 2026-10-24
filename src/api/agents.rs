@@ -38,7 +38,14 @@ const MAX_REQUESTS: u32 = 30;
 /// Agent events per principal and minute.
 const MAX_EVENTS: u32 = 120;
 
-const TOOLS: &[&str] = &["search", "request_access", "run", "inject", "create", "generate"];
+const TOOLS: &[&str] = &[
+    "search",
+    "request_access",
+    "run",
+    "inject",
+    "create",
+    "generate",
+];
 const RESULTS: &[&str] = &["ok", "failed", "denied", "expired", "blocked"];
 
 fn internal(e: impl std::fmt::Display) -> ApiError {
@@ -563,7 +570,11 @@ async fn record_agent_event(
     }
     let target: String = req.target.chars().take(200).collect();
     let client_name: String = req.client_name.chars().take(100).collect();
-    if target.chars().chain(client_name.chars()).any(char::is_control) {
+    if target
+        .chars()
+        .chain(client_name.chars())
+        .any(char::is_control)
+    {
         return Err(ApiError::bad_request("control characters are not allowed"));
     }
     sqlx::query(

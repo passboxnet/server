@@ -257,14 +257,8 @@ pub fn router() -> Router<AppState> {
             "/service-account/items/{id}",
             put(service_accounts::put_item).delete(service_accounts::delete_item),
         )
-        .route(
-            "/service-account/agent-grants",
-            post(agents::sa_create),
-        )
-        .route(
-            "/service-account/agent-grants/{id}",
-            get(agents::sa_get),
-        )
+        .route("/service-account/agent-grants", post(agents::sa_create))
+        .route("/service-account/agent-grants/{id}", get(agents::sa_get))
         .route("/service-account/agent-events", post(agents::sa_event))
         // AI agents: grant requests, decisions and audit.
         .route("/agent-grants", get(agents::list).post(agents::create))

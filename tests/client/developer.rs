@@ -56,8 +56,18 @@ fn owner(server: &str) -> (Client, String) {
     let vault = client.vaults().unwrap().remove(0).id;
     let mut data = ItemData::new(ItemCategory::Login, "Database");
     data.set_field(field::USERNAME, "Username", FieldType::Text, "admin");
-    data.set_field(field::PASSWORD, "Password", FieldType::Concealed, "s3cr3t-db-pw");
-    data.set_field(field::URL, "Website", FieldType::Url, "https://db.example.com");
+    data.set_field(
+        field::PASSWORD,
+        "Password",
+        FieldType::Concealed,
+        "s3cr3t-db-pw",
+    );
+    data.set_field(
+        field::URL,
+        "Website",
+        FieldType::Url,
+        "https://db.example.com",
+    );
     client.create_item(&vault, &data).unwrap();
     (client, vault)
 }
@@ -115,7 +125,9 @@ fn service_accounts_on(server: &str) {
     assert!(ServiceAccountClient::connect(server, &wrong).is_err());
     owner.revoke_service_account(&info.id).unwrap();
     match ServiceAccountClient::connect(server, &token) {
-        Err(Error::Server { status: 403, code, .. }) => {
+        Err(Error::Server {
+            status: 403, code, ..
+        }) => {
             assert_eq!(code, "service_account_revoked")
         }
         Err(e) => panic!("unexpected error {e}"),
@@ -192,9 +204,20 @@ fn agent_broker_on(server: &str) {
     let marker = dir.path().join("ran");
     let command = format!("touch {}", marker.display());
     let result = broker
-        .run(&command, &env, &[], None, Duration::from_secs(10), "test", Duration::from_secs(10))
+        .run(
+            &command,
+            &env,
+            &[],
+            None,
+            Duration::from_secs(10),
+            "test",
+            Duration::from_secs(10),
+        )
         .unwrap();
-    assert!(matches!(result, Err(GrantState::Denied { .. })), "{result:?}");
+    assert!(
+        matches!(result, Err(GrantState::Denied { .. })),
+        "{result:?}"
+    );
     assert!(!marker.exists());
 
     // An approved grant with an allowlist runs matching commands, and the
@@ -232,9 +255,20 @@ fn agent_broker_on(server: &str) {
     // A command outside the allowlist needs its own approval; nobody
     // answers, so it does not run.
     let result = broker
-        .run(&command, &env, &[], None, Duration::from_secs(10), "", Duration::from_millis(300))
+        .run(
+            &command,
+            &env,
+            &[],
+            None,
+            Duration::from_secs(10),
+            "",
+            Duration::from_millis(300),
+        )
         .unwrap();
-    assert!(matches!(result, Err(GrantState::Pending { .. })), "{result:?}");
+    assert!(
+        matches!(result, Err(GrantState::Pending { .. })),
+        "{result:?}"
+    );
     assert!(!marker.exists());
 
     // Inject writes a private file without returning the values.
@@ -283,8 +317,18 @@ fn agent_broker_on(server: &str) {
         .into_iter()
         .map(|e| e.kind)
         .collect::<Vec<_>>();
-    for kind in ["agent_grant_requested", "agent_grant_approved", "agent_grant_denied", "agent_run", "agent_inject", "agent_create"] {
-        assert!(events.iter().any(|k| k == kind), "{kind} missing in {events:?}");
+    for kind in [
+        "agent_grant_requested",
+        "agent_grant_approved",
+        "agent_grant_denied",
+        "agent_run",
+        "agent_inject",
+        "agent_create",
+    ] {
+        assert!(
+            events.iter().any(|k| k == kind),
+            "{kind} missing in {events:?}"
+        );
     }
     let log = std::fs::read_to_string(dir.path().join("audit.log")).unwrap();
     assert!(!log.contains("s3cr3t"));
@@ -297,7 +341,15 @@ fn agent_broker_on(server: &str) {
     };
     owner.revoke_agent_grant(&grant_id).unwrap();
     let result = broker
-        .run("echo hi", &env, &[], None, Duration::from_secs(10), "", Duration::from_millis(200))
+        .run(
+            "echo hi",
+            &env,
+            &[],
+            None,
+            Duration::from_secs(10),
+            "",
+            Duration::from_millis(200),
+        )
         .unwrap();
     assert!(result.is_err(), "a revoked grant was used");
 

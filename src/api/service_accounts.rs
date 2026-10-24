@@ -255,8 +255,17 @@ pub struct ServiceAccountInfo {
 type SaRow = (String, String, String, String, i64, i64, i64, String, i64);
 
 async fn info(conn: &mut AnyConnection, row: SaRow) -> ApiResult<ServiceAccountInfo> {
-    let (id, name, public_key, public_key_signature, expires_at, revoked_at, last_used_at, ip, created_at) =
-        row;
+    let (
+        id,
+        name,
+        public_key,
+        public_key_signature,
+        expires_at,
+        revoked_at,
+        last_used_at,
+        ip,
+        created_at,
+    ) = row;
     let rows: Vec<(String, i64, String, i64, i64)> = sqlx::query_as(
         "SELECT g.vault_id, g.key_epoch, g.permission, v.key_epoch, g.created_at \
          FROM service_account_grants g JOIN vaults v ON v.id = g.vault_id \
@@ -301,7 +310,6 @@ async fn info(conn: &mut AnyConnection, row: SaRow) -> ApiResult<ServiceAccountI
         grants,
     })
 }
-
 
 /// `GET /service-accounts`: the account's service accounts, newest first.
 pub async fn list(
@@ -495,15 +503,7 @@ pub async fn put_grants(
     }
     let sig_pk = owner_sig_pk(&mut tx, &session.account_id).await?;
     for grant in &req.grants {
-        check_grant(
-            &mut tx,
-            &session.account_id,
-            &sig_pk,
-            &sa_id,
-            &row.2,
-            grant,
-        )
-        .await?;
+        check_grant(&mut tx, &session.account_id, &sig_pk, &sa_id, &row.2, grant).await?;
     }
     for grant in &req.grants {
         insert_grant(&mut tx, &sa_id, grant).await?;
@@ -759,12 +759,14 @@ impl FromRequestParts<AppState> for ServiceAuth {
             ));
         }
         if now - last_used_at > LAST_USED_RESOLUTION_MS {
-            sqlx::query("UPDATE service_accounts SET last_used_at = $1, last_used_ip = $2 WHERE id = $3")
-                .bind(now)
-                .bind(&ip)
-                .bind(sa_id)
-                .execute(&state.db)
-                .await?;
+            sqlx::query(
+                "UPDATE service_accounts SET last_used_at = $1, last_used_ip = $2 WHERE id = $3",
+            )
+            .bind(now)
+            .bind(&ip)
+            .bind(sa_id)
+            .execute(&state.db)
+            .await?;
         }
         Ok(Self {
             id: sa_id.to_owned(),
@@ -914,18 +916,19 @@ pub async fn state(State(state): State<AppState>, auth: ServiceAuth) -> ApiResul
         .bind(&vault_id)
         .fetch_all(&mut *conn)
         .await?;
-        items.extend(rows.into_iter().filter_map(
-            |(id, revision, data, key_epoch, updated_at)| {
-                Some(SaItem {
-                    id,
-                    vault_id: vault_id.clone(),
-                    revision,
-                    encrypted_data: data?,
-                    key_epoch,
-                    updated_at,
-                })
-            },
-        ));
+        items.extend(
+            rows.into_iter()
+                .filter_map(|(id, revision, data, key_epoch, updated_at)| {
+                    Some(SaItem {
+                        id,
+                        vault_id: vault_id.clone(),
+                        revision,
+                        encrypted_data: data?,
+                        key_epoch,
+                        updated_at,
+                    })
+                }),
+        );
     }
     sa_event(
         &mut conn,
