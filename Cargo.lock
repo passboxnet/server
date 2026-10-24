@@ -3566,6 +3566,7 @@ dependencies = [
  "getrandom 0.4.3",
  "js-sys",
  "passbox-core",
+ "serde",
  "serde_json",
  "wasm-bindgen",
  "zeroize",
