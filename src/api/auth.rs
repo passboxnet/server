@@ -680,7 +680,8 @@ pub(crate) struct NewSession<'a> {
     pub device_name: &'a str,
     pub client_kind: &'a str,
     pub ip: &'a str,
-    /// The activity log entry: `login` or `login_two_factor`.
+    /// The activity log entry: `login`, `login_two_factor` or
+    /// `login_recovered` (right after an account recovery).
     pub event: &'a str,
     /// Remember the device for two-factor authentication until then (Unix
     /// ms; 0 keeps what the device token had).
@@ -721,15 +722,19 @@ pub(crate) async fn start_session(
     .bind(&new_device_token_hash)
     .execute(&state.db)
     .await?;
-    super::notify::signed_in(
-        state,
-        account_id,
-        new.device_token_hash.is_some(),
-        new.device_name,
-        new.ip,
-        now,
-    )
-    .await;
+    // The device that just recovered the account gets the recovery mail
+    // instead of a new-device mail.
+    if new.event != "login_recovered" {
+        super::notify::signed_in(
+            state,
+            account_id,
+            new.device_token_hash.is_some(),
+            new.device_name,
+            new.ip,
+            now,
+        )
+        .await;
+    }
     record_event(
         state,
         account_id,

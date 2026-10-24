@@ -30,8 +30,8 @@ use serde_json::json;
 
 use super::account::require_recent_login;
 use super::auth::{
-    CLIENT_KINDS, Session, check_lockout, clean_device_name, fake_account_id, hash_token, limit_ip,
-    record_event, record_failure,
+    CLIENT_KINDS, NewSession, Session, SessionResponse, check_lockout, clean_device_name,
+    fake_account_id, hash_token, limit_ip, record_event, record_failure,
 };
 use super::validate;
 use crate::db::{self, now_ms};
@@ -720,12 +720,14 @@ pub struct CompleteFinishRequest {
     recovery_code: Option<NewRecoveryCode>,
 }
 
-/// Sets the new credentials and signs out every device.
+/// Sets the new credentials, signs out every device and returns a session
+/// for the recovering device (it proved the recovery already, so a second
+/// factor is not asked again).
 pub async fn complete_finish(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
     Json(req): Json<CompleteFinishRequest>,
-) -> ApiResult<StatusCode> {
+) -> ApiResult<Json<SessionResponse>> {
     limit_ip(&state, &ip)?;
     validate::kdf(&req.kdf_salt, &req.kdf_params)?;
     validate::base64(
@@ -856,7 +858,20 @@ pub async fn complete_finish(
         )
         .await?;
     }
-    Ok(StatusCode::NO_CONTENT)
+    let session = super::auth::start_session(
+        &state,
+        &account_id,
+        NewSession {
+            device_token_hash: None,
+            device_name: &device_name,
+            client_kind: &client_kind,
+            ip: &ip,
+            event: "login_recovered",
+            remember_until: 0,
+        },
+    )
+    .await?;
+    Ok(Json(session))
 }
 
 // --- Organization recovery: the requesting device ----------------------------------------

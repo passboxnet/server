@@ -166,9 +166,11 @@ async fn complete(
         }),
     )
     .await;
-    if status != StatusCode::NO_CONTENT {
+    if status != StatusCode::OK {
         return Err((status, body));
     }
+    // A session for the recovering device.
+    assert!(body["token"].as_str().is_some());
     Ok((auth_secret, code))
 }
 
@@ -400,7 +402,7 @@ pub(super) async fn organization_recovery(server: &TestServer) {
             Some(serde_json::to_value(&upload).unwrap()),
         )
         .await;
-    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
 
     // Bob opts in.
     let record = org_recovery_record(server, &bob, &org_id).await;

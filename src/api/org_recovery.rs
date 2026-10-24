@@ -300,7 +300,7 @@ pub async fn create_key(
         &ip,
     )
     .await?;
-    Ok(StatusCode::CREATED)
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn insert_grant(
