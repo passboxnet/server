@@ -847,6 +847,66 @@ paths:
               schema: { $ref: "#/components/schemas/WriteResponse" }
         "404": { description: Unknown item. }
         "409": { $ref: "#/components/responses/Conflict" }
+  /api/v1/items/{id}/versions:
+    get:
+      summary: Earlier versions of an item
+      description: |
+        Every update keeps the replaced, still encrypted version (newest 20
+        per item, including re-encryptions after a key rotation). Each
+        version is bound to its own revision and key epoch, so clients
+        decrypt it with the item AAD of that revision. Versions whose key
+        epoch the client does not have are shown as undecryptable. A
+        permanent deletion removes the history. Readable by everyone who can
+        read the item, including view-only members of a shared vault.
+        Restoring a version is a normal `PUT /api/v1/items/{id}` with its data.
+      operationId: itemVersions
+      parameters:
+        - { name: id, in: path, required: true, schema: { $ref: "#/components/schemas/Id" } }
+      responses:
+        "200":
+          description: Versions, newest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [versions]
+                properties:
+                  versions: { type: array, items: { $ref: "#/components/schemas/ItemVersion" } }
+        "404": { description: Unknown or deleted item, or no access. }
+  /api/v1/icons/{domain}:
+    get:
+      summary: A website's icon, fetched by the server
+      description: |
+        Lets clients show favicons without contacting the website themselves.
+        The server tries `https://{domain}/apple-touch-icon.png`,
+        `/favicon.ico` and the `<link rel="icon">` of the homepage, over
+        HTTPS on port 443 only, refusing IP literals and every non-public
+        address (also after DNS resolution and on redirects; at most 3
+        redirects, 3 s per request, 200 KB). Only PNG, ICO, JPEG, GIF and
+        WebP images whose bytes match are returned. Hits are cached for 7
+        days and misses for a day. 600 requests per session and minute.
+        Turned off with `PASSBOX_ICONS=off` (then always 404; see
+        `ServerMeta.icons`). The server learns which domains users look at.
+      operationId: icon
+      parameters:
+        - name: domain
+          in: path
+          required: true
+          description: Host name, for example `github.com` (Unicode names are converted to punycode).
+          schema: { type: string }
+      responses:
+        "200":
+          description: The icon (`Cache-Control: private, max-age=604800`).
+          content:
+            image/png: {}
+            image/x-icon: {}
+            image/jpeg: {}
+            image/gif: {}
+            image/webp: {}
+        "400": { description: Not a valid public domain name (IP literal, port, single label, ...). }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { description: No icon, or icons are turned off (`Cache-Control: private, max-age=86400`). }
+        "429": { description: "`rate_limited`." }
   /api/v1/account/keys:
     get:
       summary: The account's own key pairs
@@ -2219,6 +2279,7 @@ components:
         supportUrl: { type: [string, "null"] }
         defaultLocale: { type: string, enum: [en, de] }
         passwordPolicy: { $ref: "#/components/schemas/PasswordPolicy" }
+        icons: { type: boolean, description: "Whether `/api/v1/icons/{domain}` serves website icons (`PASSBOX_ICONS`)." }
     PasswordPolicy:
       type: object
       description: Minimum for new master passwords; clients enforce it.
@@ -2335,6 +2396,16 @@ components:
         deleted: { type: boolean }
         updatedAt: { type: integer }
         keyEpoch: { type: integer, description: Vault key epoch of `encryptedData` (0 for personal vaults) }
+        createdAt: { type: integer, description: When the item was created (Unix ms). }
+    ItemVersion:
+      type: object
+      required: [revision, keyEpoch, encryptedData, updatedAt, updatedBy]
+      properties:
+        revision: { type: integer }
+        keyEpoch: { type: integer }
+        encryptedData: { $ref: "#/components/schemas/Base64Url" }
+        updatedAt: { type: integer }
+        updatedBy: { type: [string, "null"], description: Public ID of the session that saved this version. }
     WriteResponse:
       type: object
       required: [revision, seq]
