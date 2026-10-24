@@ -21,7 +21,7 @@ Passbox is developed as one monorepo. It will be split into separate repositorie
 | [`apps/extension`](apps/extension) | Chrome extension (Manifest V3) with autofill, save prompts and passkeys; see [docs/architecture/extension.md](docs/architecture/extension.md) |
 | [`apps/ios`](apps/ios) | iOS and iPadOS app (SwiftUI) with AutoFill extension; see [docs/ios.md](docs/ios.md) |
 | [`apps/android`](apps/android) | Android app (Kotlin, Jetpack Compose) with an autofill service; see [docs/android.md](docs/android.md) |
-| [`apps/website`](apps/website) | Marketing website (Next.js, static export) |
+| [`apps/website`](apps/website) | Marketing website in English and German (Next.js, static export); see [docs/website.md](docs/website.md) |
 | [`packages/ui`](packages/ui) | Shared design system (React, Tailwind CSS tokens) |
 | [`packages/api-client`](packages/api-client) | Typed TypeScript client for the server API |
 | [`packages/client`](packages/client) | Platform-neutral client logic: sign-up, sign-in, unlock, sync, item schema |
@@ -90,7 +90,7 @@ Passbox is free to self-host with every feature included. The hosted service cos
 
 | Plan | Monthly | Yearly |
 | --- | --- | --- |
-| Personal | 1 € per member | 10 € per member |
+| Private | 1 € per member | 10 € per member |
 | Teams | 3 € per member | 30 € per member |
 
 ## Security
