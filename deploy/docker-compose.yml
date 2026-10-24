@@ -1,0 +1,12 @@
+# Minimal self-hosted setup. Put a reverse proxy with HTTPS in front of it
+# before storing real data.
+services:
+  passbox:
+    build:
+      context: ..
+    image: passbox:latest
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      RUST_LOG: info

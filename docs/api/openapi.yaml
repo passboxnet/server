@@ -1,0 +1,72 @@
+openapi: 3.1.0
+info:
+  title: Passbox API
+  version: 0.1.0
+  license:
+    name: MIT
+    identifier: MIT
+  description: |
+    HTTP API of the Passbox server. All vault data is encrypted on the client;
+    the server only stores and relays ciphertext.
+servers:
+  - url: http://localhost:8080
+paths:
+  /health:
+    get:
+      summary: Liveness check
+      operationId: health
+      responses:
+        "200":
+          description: The server is running.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    const: ok
+  /api/v1/meta:
+    get:
+      summary: Public server information
+      description: Information clients need before signing in.
+      operationId: meta
+      responses:
+        "200":
+          description: Server information.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServerMeta"
+components:
+  schemas:
+    KdfParams:
+      type: object
+      required: [memoryKib, iterations, parallelism]
+      properties:
+        memoryKib:
+          type: integer
+          minimum: 65536
+          description: Argon2id memory cost in KiB.
+        iterations:
+          type: integer
+          minimum: 3
+        parallelism:
+          type: integer
+          minimum: 1
+    ServerMeta:
+      type: object
+      required: [name, version, apiVersion, minKdfParams]
+      properties:
+        name:
+          type: string
+          example: passbox
+        version:
+          type: string
+          example: 0.1.0
+        apiVersion:
+          type: integer
+          example: 1
+        minKdfParams:
+          $ref: "#/components/schemas/KdfParams"

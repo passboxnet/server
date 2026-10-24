@@ -1,0 +1,25 @@
+# Rust
+/target/
+
+# Node
+node_modules/
+dist/
+.next/
+out/
+*.tsbuildinfo
+next-env.d.ts
+
+# WebAssembly build output
+crates/core-wasm/pkg/
+
+# Local data and secrets
+/data/
+.env
+.env.*
+!.env.example
+
+# Editors and OS
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
