@@ -841,6 +841,15 @@ pub async fn complete_finish(
     });
     notify(&state, &account_id, Template::RecoveryUsed, params.clone()).await;
     if method == "org" && !org_id.is_empty() {
+        super::org_audit::record(
+            &state,
+            &org_id,
+            &super::org_audit::Actor::account(&account_id, &device_name, &client_kind, &ip),
+            "recovery_completed",
+            super::org_audit::Target::account(&account_id),
+            json!({}),
+        )
+        .await;
         let admins = super::org_recovery::recovery_admins(&state, &org_id).await?;
         for admin in admins {
             record_event(&state, &admin, "org_member_recovered", "", "", &ip).await?;
@@ -972,6 +981,15 @@ pub async fn org_request(
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
+        super::org_audit::record(
+            &state,
+            &org_id,
+            &super::org_audit::Actor::account(&account_id, &device_name, "", &ip),
+            "recovery_requested",
+            super::org_audit::Target::account(&account_id),
+            json!({ "requestId": request_id }),
+        )
+        .await;
         record_event(
             &state,
             &account_id,

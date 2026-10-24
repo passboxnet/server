@@ -414,6 +414,9 @@ async fn sync_sharing(
                 }),
         );
     }
+    // Policies (D2): the newest of every organization, every time.
+    let org_ids: Vec<String> = orgs.iter().map(|(o, _)| o.id.clone()).collect();
+    delta.policies = super::org_policy::records(conn, &org_ids).await?;
     delta.orgs = orgs.into_iter().map(|(o, _)| o).collect();
     Ok(delta)
 }

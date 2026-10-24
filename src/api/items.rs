@@ -14,6 +14,7 @@ use super::validate;
 use super::vaults::WriteResponse;
 use crate::db::{self, now_ms};
 use crate::error::{ApiError, ApiResult};
+use crate::security::ClientIp;
 use crate::state::AppState;
 
 #[derive(Deserialize)]
@@ -60,11 +61,11 @@ async fn require_write(
     account_id: &str,
     vault_id: &str,
     key_epoch: i64,
-) -> ApiResult<()> {
+) -> ApiResult<access::VaultAccess> {
     let access = access::require_vault_write(tx, vault_id, account_id).await?;
-    let current = match access {
+    let current = match &access {
         access::VaultAccess::Personal => 0,
-        access::VaultAccess::Shared { key_epoch, .. } => key_epoch,
+        access::VaultAccess::Shared { key_epoch, .. } => *key_epoch,
     };
     if key_epoch != current {
         return Err(ApiError::conflict(
@@ -72,7 +73,15 @@ async fn require_write(
             json!({ "currentKeyEpoch": current }),
         ));
     }
-    Ok(())
+    Ok(access)
+}
+
+/// The organization of a shared vault (for the audit log).
+fn shared_org(access: &access::VaultAccess) -> Option<&str> {
+    match access {
+        access::VaultAccess::Shared { org_id, .. } => Some(org_id),
+        access::VaultAccess::Personal => None,
+    }
 }
 
 /// Number of earlier versions the server keeps per item.
@@ -116,6 +125,7 @@ fn revision_conflict(current: i64) -> ApiError {
 /// Creates or updates an item.
 pub async fn put(
     State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
     session: Session,
     Path(item_id): Path<String>,
     Json(req): Json<PutItemRequest>,
@@ -126,13 +136,22 @@ pub async fn put(
     validate::base64("encryptedData", &req.encrypted_data, validate::MAX_ITEM_LEN)?;
 
     let mut tx = crate::db::begin_write(&state.db).await?;
-    require_write(&mut tx, &session.account_id, &req.vault_id, req.key_epoch).await?;
+    let vault_access =
+        require_write(&mut tx, &session.account_id, &req.vault_id, req.key_epoch).await?;
+    let audit_org = shared_org(&vault_access).map(str::to_owned);
+    let actor = super::org_audit::Actor::of(&session, &ip);
 
     let now = now_ms();
     match current_item(&mut tx, &session.account_id, &item_id).await? {
         None => {
             if req.revision != 1 {
                 return Err(revision_conflict(0));
+            }
+            if audit_org.is_none() {
+                // Policy D2: no new items in personal vaults if an
+                // organization turned them off.
+                super::org_policy::ensure_personal_vaults_allowed(&mut tx, &session.account_id)
+                    .await?;
             }
             let seq = db::next_seq(&mut tx).await?;
             sqlx::query(
@@ -149,6 +168,17 @@ pub async fn put(
             .bind(&session.id)
             .execute(&mut *tx)
             .await?;
+            if let Some(org_id) = &audit_org {
+                super::org_audit::record_in(
+                    &mut tx,
+                    org_id,
+                    &actor,
+                    "item_created",
+                    super::org_audit::Target::item(&item_id),
+                    json!({ "vaultId": req.vault_id }),
+                )
+                .await?;
+            }
             tx.commit().await?;
             Ok(Json(WriteResponse { revision: 1, seq }))
         }
@@ -176,6 +206,17 @@ pub async fn put(
             .bind(&item_id)
             .execute(&mut *tx)
             .await?;
+            if let Some(org_id) = &audit_org {
+                super::org_audit::record_in(
+                    &mut tx,
+                    org_id,
+                    &actor,
+                    "item_updated",
+                    super::org_audit::Target::item(&item_id),
+                    json!({ "vaultId": req.vault_id, "revision": req.revision }),
+                )
+                .await?;
+            }
             tx.commit().await?;
             Ok(Json(WriteResponse {
                 revision: req.revision,
@@ -194,6 +235,7 @@ pub struct DeleteQuery {
 /// Deletes an item, keeping a tombstone without data.
 pub async fn delete(
     State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
     session: Session,
     Path(item_id): Path<String>,
     Query(query): Query<DeleteQuery>,
@@ -205,7 +247,7 @@ pub async fn delete(
     let (vault_id, current) = current_item(&mut tx, &session.account_id, &item_id)
         .await?
         .ok_or(ApiError::NotFound)?;
-    access::require_vault_write(&mut tx, &vault_id, &session.account_id).await?;
+    let vault_access = access::require_vault_write(&mut tx, &vault_id, &session.account_id).await?;
     if query.revision != current + 1 {
         return Err(revision_conflict(current));
     }
@@ -226,6 +268,17 @@ pub async fn delete(
     .bind(&item_id)
     .execute(&mut *tx)
     .await?;
+    if let Some(org_id) = shared_org(&vault_access) {
+        super::org_audit::record_in(
+            &mut tx,
+            org_id,
+            &super::org_audit::Actor::of(&session, &ip),
+            "item_deleted",
+            super::org_audit::Target::item(&item_id),
+            json!({ "vaultId": vault_id }),
+        )
+        .await?;
+    }
     tx.commit().await?;
     Ok(Json(WriteResponse {
         revision: query.revision,

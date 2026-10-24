@@ -33,6 +33,8 @@ pub struct AppState {
     pub mailer: Mailer,
     /// Emails from `PASSBOX_ADMIN_EMAILS` (lower case): always instance admins.
     pub admin_emails: Arc<Vec<String>>,
+    /// Webhooks may target private and local addresses (self-hosted SIEM).
+    pub webhook_allow_private: bool,
     /// Website icons (`PASSBOX_ICONS`), with their fetcher and cache.
     pub icons: Arc<IconService>,
 }
@@ -77,6 +79,7 @@ impl AppState {
             log_signer: Arc::new(LogSigner::from_seed(&log_seed)),
             mailer: Mailer::log_only(db.clone()),
             admin_emails: Arc::new(Vec::new()),
+            webhook_allow_private: false,
             icons: Arc::new(IconService::http()),
             db,
             opaque: Arc::new(opaque),

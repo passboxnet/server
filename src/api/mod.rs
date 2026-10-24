@@ -11,6 +11,10 @@ pub mod icons;
 pub mod items;
 pub mod keys;
 pub mod notify;
+pub mod org_admin;
+pub mod org_audit;
+pub mod org_events;
+pub mod org_policy;
 pub mod org_recovery;
 pub mod orgs;
 pub mod preferences;
@@ -229,6 +233,49 @@ pub fn router() -> Router<AppState> {
             get(device_links::get).delete(device_links::delete),
         )
         .route("/device-links/{id}/approve", post(device_links::approve))
+        // Organization administration (wave D): policies, audit log,
+        // reports, settings, offboarding, events API and webhooks.
+        .route(
+            "/orgs/{org_id}/policy",
+            get(org_policy::get).put(org_policy::put),
+        )
+        .route("/orgs/{org_id}/audit", get(org_audit::list))
+        .route("/orgs/{org_id}/audit/verify", get(org_audit::verify))
+        .route("/orgs/{org_id}/audit/export", get(org_audit::export))
+        .route(
+            "/orgs/{org_id}/audit/client-events",
+            post(org_audit::client_events),
+        )
+        .route("/orgs/{org_id}/reports", get(org_admin::reports))
+        .route(
+            "/orgs/{org_id}/security-report",
+            put(org_admin::put_security_report),
+        )
+        .route(
+            "/orgs/{org_id}/settings",
+            get(org_admin::get_settings).put(org_admin::put_settings),
+        )
+        .route(
+            "/orgs/{org_id}/members/{account_id}/end-sessions",
+            post(org_admin::end_sessions),
+        )
+        .route(
+            "/orgs/{org_id}/event-tokens",
+            get(org_events::tokens).post(org_events::create_token),
+        )
+        .route(
+            "/orgs/{org_id}/event-tokens/{token_id}",
+            delete(org_events::revoke_token),
+        )
+        .route(
+            "/orgs/{org_id}/webhooks",
+            get(org_events::webhooks).post(org_events::create_webhook),
+        )
+        .route(
+            "/orgs/{org_id}/webhooks/{webhook_id}",
+            delete(org_events::delete_webhook),
+        )
+        .route("/org-events", get(org_events::pull))
         .merge(sso_routes())
 }
 

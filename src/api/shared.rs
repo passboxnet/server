@@ -337,6 +337,7 @@ pub struct WriteResult {
 /// Creates a shared vault (owners and admins).
 pub async fn create(
     State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
     session: Session,
     Path(org_id): Path<String>,
     Json(req): Json<NewSharedVault>,
@@ -346,6 +347,15 @@ pub async fn create(
     access::require_admin(&mut tx, &org_id, &session.account_id).await?;
     let me = signed::own_bundle(&mut tx, &session.account_id).await?;
     let seq = insert_shared_vault(&mut tx, &org_id, &me, &req, now_ms()).await?;
+    super::org_audit::record_in(
+        &mut tx,
+        &org_id,
+        &super::org_audit::Actor::of(&session, &ip),
+        "vault_created",
+        super::org_audit::Target::vault(&req.id),
+        serde_json::json!({}),
+    )
+    .await?;
     tx.commit().await?;
     Ok((StatusCode::CREATED, Json(WriteResult { seq, key_epoch: 1 })))
 }
@@ -484,6 +494,15 @@ pub async fn put_member(
     )
     .await?;
     upsert_key(&mut tx, &vault_id, &req.key, seq, now).await?;
+    super::org_audit::record_in(
+        &mut tx,
+        &org_id,
+        &super::org_audit::Actor::of(&session, &ip),
+        "vault_access_granted",
+        super::org_audit::Target::vault(&vault_id),
+        json!({ "principalType": req.principal_type, "principalId": req.principal_id, "role": req.role }),
+    )
+    .await?;
     tx.commit().await?;
     if principal_type == PrincipalType::Account && req.principal_id != session.account_id {
         record_event(
@@ -608,6 +627,15 @@ pub async fn rotate(
     .bind(now)
     .bind(&vault_id)
     .execute(&mut *tx)
+    .await?;
+    super::org_audit::record_in(
+        &mut tx,
+        &org_id,
+        &super::org_audit::Actor::of(&session, &ip),
+        if req.removed.is_empty() { "vault_key_rotated" } else { "vault_access_revoked" },
+        super::org_audit::Target::vault(&vault_id),
+        json!({ "keyEpoch": req.key_epoch, "removed": req.removed.iter().map(|r| format!("{}:{}", r.principal_type, r.principal_id)).collect::<Vec<_>>() }),
+    )
     .await?;
     tx.commit().await?;
     for account in removed_accounts {
@@ -788,6 +816,7 @@ pub struct BatchResult {
 /// conflicts and skipped.
 pub async fn batch_items(
     State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
     session: Session,
     Path(vault_id): Path<String>,
     Json(req): Json<BatchRequest>,
@@ -807,9 +836,11 @@ pub async fn batch_items(
     }
     let mut tx = db::begin_write(&state.db).await?;
     let access = access::require_vault_write(&mut tx, &vault_id, &session.account_id).await?;
-    let current_epoch = match access {
-        access::VaultAccess::Shared { key_epoch, .. } => key_epoch,
-        access::VaultAccess::Personal => 0,
+    let (current_epoch, batch_org) = match &access {
+        access::VaultAccess::Shared {
+            key_epoch, org_id, ..
+        } => (*key_epoch, Some(org_id.clone())),
+        access::VaultAccess::Personal => (0, None),
     };
     let now = now_ms();
     let mut results = Vec::with_capacity(req.items.len());
@@ -870,6 +901,18 @@ pub async fn batch_items(
             status,
             revision: item.revision,
         });
+    }
+    if let Some(org_id) = &batch_org {
+        let written = results.iter().filter(|r| r.status == "ok").count();
+        super::org_audit::record_in(
+            &mut tx,
+            org_id,
+            &super::org_audit::Actor::of(&session, &ip),
+            "vault_items_written",
+            super::org_audit::Target::vault(&vault_id),
+            json!({ "count": written, "keyEpoch": current_epoch }),
+        )
+        .await?;
     }
     tx.commit().await?;
     Ok(Json(results))

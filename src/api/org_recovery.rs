@@ -292,6 +292,15 @@ pub async fn create_key(
     .await?;
     insert_grant(&mut tx, &org_id, &req.grant, &session.account_id).await?;
     tx.commit().await?;
+    super::org_audit::record(
+        &state,
+        &org_id,
+        &super::org_audit::Actor::of(&session, &ip),
+        "recovery_key_created",
+        super::org_audit::Target::org(&org_id),
+        json!({}),
+    )
+    .await;
     event(
         &state,
         &session.account_id,
@@ -372,6 +381,15 @@ pub async fn add_grant(
     check_grant(&grant, &req, &org_id, &session.account_id, &holder.hash())?;
     insert_grant(&mut tx, &org_id, &req, &session.account_id).await?;
     tx.commit().await?;
+    super::org_audit::record(
+        &state,
+        &org_id,
+        &super::org_audit::Actor::of(&session, &ip),
+        "recovery_admin_added",
+        super::org_audit::Target::account(&req.account_id),
+        json!({}),
+    )
+    .await;
     event(
         &state,
         &req.account_id,
@@ -438,6 +456,15 @@ pub async fn put_escrow(
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
+    super::org_audit::record(
+        &state,
+        &org_id,
+        &super::org_audit::Actor::of(&session, &ip),
+        "recovery_enrolled",
+        super::org_audit::Target::account(&session.account_id),
+        json!({}),
+    )
+    .await;
     event(
         &state,
         &session.account_id,
@@ -474,6 +501,15 @@ pub async fn delete_escrow(
     .bind(&session.account_id)
     .execute(&state.db)
     .await?;
+    super::org_audit::record(
+        &state,
+        &org_id,
+        &super::org_audit::Actor::of(&session, &ip),
+        "recovery_withdrawn",
+        super::org_audit::Target::account(&session.account_id),
+        json!({}),
+    )
+    .await;
     event(
         &state,
         &session.account_id,
@@ -656,6 +692,15 @@ pub async fn approve(
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
+    super::org_audit::record(
+        &state,
+        &org_id,
+        &super::org_audit::Actor::of(&session, &ip),
+        "recovery_request_approved",
+        super::org_audit::Target::account(&account_id),
+        json!({ "requestId": request_id }),
+    )
+    .await;
     event(
         &state,
         &session.account_id,
@@ -704,6 +749,15 @@ pub async fn deny(
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
+    super::org_audit::record(
+        &state,
+        &org_id,
+        &super::org_audit::Actor::of(&session, &ip),
+        "recovery_request_denied",
+        super::org_audit::Target::account(&account_id),
+        json!({ "requestId": request_id }),
+    )
+    .await;
     event(
         &state,
         &session.account_id,

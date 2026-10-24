@@ -64,6 +64,12 @@ pub struct Config {
     /// Log output format.
     #[arg(long, env = "PASSBOX_LOG_FORMAT", value_enum, default_value_t = LogFormat::Pretty)]
     pub log_format: LogFormat,
+
+    /// Let organization webhooks (audit log push) reach private and local
+    /// addresses, for a SIEM in the same network. Off by default, so that
+    /// organization admins cannot make the server call internal services.
+    #[arg(long, env = "PASSBOX_WEBHOOK_ALLOW_PRIVATE", default_value_t = false)]
+    pub webhook_allow_private: bool,
 }
 
 /// Hides the database and SMTP credentials.
@@ -81,6 +87,7 @@ impl std::fmt::Debug for Config {
             .field("admin_emails", &self.admin_emails)
             .field("icons", &self.icons)
             .field("log_format", &self.log_format)
+            .field("webhook_allow_private", &self.webhook_allow_private)
             .finish()
     }
 }
@@ -111,6 +118,7 @@ impl Default for Config {
             admin_emails: Vec::new(),
             icons: Switch::On,
             log_format: LogFormat::Pretty,
+            webhook_allow_private: false,
         }
     }
 }
