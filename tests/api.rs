@@ -20,6 +20,8 @@ use tower::ServiceExt;
 
 #[path = "api/admin.rs"]
 mod admin;
+#[path = "api/comfort.rs"]
+mod comfort;
 #[path = "api/org_admin.rs"]
 mod org_admin;
 #[path = "api/recovery.rs"]
@@ -275,6 +277,7 @@ async fn run_all(database_url: &str) {
     recovery::device_links(&server).await;
     sso::single_sign_on(&server).await;
     org_admin::organization_administration(&server).await;
+    comfort::comfort(&server).await;
     // Last: it locks out an email and counts failures for the test IP.
     failed_logins_are_rate_limited(&server).await;
 }

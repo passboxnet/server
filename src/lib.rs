@@ -4,6 +4,7 @@
 //! plaintext secrets or keys that could decrypt them.
 
 pub mod api;
+pub mod blobs;
 pub mod config;
 pub mod db;
 pub mod error;
@@ -29,6 +30,12 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
     state.auth_rate_limit = config.auth_rate_limit;
     state.admin_emails = std::sync::Arc::new(admin_emails(&config.admin_emails));
     state.webhook_allow_private = config.webhook_allow_private;
+    state.blobs = std::sync::Arc::new(blobs::DiskBlobStore::new(&config.blob_dir));
+    state.attachment_limits = api::attachments::AttachmentLimits::from_mib(
+        config.attachment_max_mb,
+        config.attachment_quota_mb,
+        config.org_attachment_quota_mb,
+    );
     if config.icons == config::Switch::Off {
         state.icons = std::sync::Arc::new(api::icons::IconService::new(
             false,
@@ -53,6 +60,7 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
     state.mailer.spawn_worker();
     api::sso::oidc::init_from_env();
     api::org_events::spawn_worker(state.clone());
+    api::attachments::spawn_sweeper(state.clone());
     let app = routes::router(&config, state);
     let listener = TcpListener::bind(config.bind)
         .await

@@ -18,7 +18,8 @@ use crate::state::AppState;
 /// other HTTPS servers because the web client can talk to a server on
 /// another origin and checks breached passwords with Have I Been Pwned.
 const CSP: &str = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; \
-    style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; \
+    style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; \
+    frame-src 'self' blob:; \
     connect-src 'self' https: http://localhost:* http://127.0.0.1:*; \
     frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'";
 

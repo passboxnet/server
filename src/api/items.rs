@@ -56,7 +56,7 @@ async fn current_item(
 }
 
 /// Requires write access to the vault and the vault's current key epoch.
-async fn require_write(
+pub(crate) async fn require_write(
     tx: &mut sqlx::Transaction<'_, sqlx::Any>,
     account_id: &str,
     vault_id: &str,
@@ -280,6 +280,7 @@ pub async fn delete(
         .await?;
     }
     tx.commit().await?;
+    super::attachments::delete_for_item(&state, &item_id).await?;
     Ok(Json(WriteResponse {
         revision: query.revision,
         seq,

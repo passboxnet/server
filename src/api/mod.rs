@@ -1,9 +1,11 @@
 //! The `/api/v1` HTTP API.
 
 pub mod access;
+pub mod access_requests;
 pub mod account;
 pub mod admin;
 pub mod agents;
+pub mod attachments;
 pub mod auth;
 pub mod device_links;
 pub mod emergency;
@@ -11,6 +13,7 @@ pub mod groups;
 pub mod icons;
 pub mod items;
 pub mod keys;
+pub mod moves;
 pub mod notify;
 pub mod org_admin;
 pub mod org_audit;
@@ -23,6 +26,7 @@ pub mod recovery;
 pub mod scim;
 pub mod service_accounts;
 pub mod sessions;
+pub mod share_links;
 pub mod shared;
 pub mod signed;
 pub mod sso;
@@ -319,6 +323,7 @@ pub fn router() -> Router<AppState> {
         .route("/agent-grants/{id}/revoke", post(agents::revoke))
         .route("/agent-events", get(agents::events).post(agents::event))
         .merge(sso_routes())
+        .merge(comfort_routes())
 }
 
 /// Single sign-on, trusted devices and SCIM provisioning (wave E).
@@ -402,4 +407,40 @@ fn sso_routes() -> Router<AppState> {
                 .patch(scim::patch_group)
                 .delete(scim::delete_group),
         )
+}
+
+/// Moving items, attachments, share links and access requests (B5, G2,
+/// B7, B9).
+fn comfort_routes() -> Router<AppState> {
+    Router::new()
+        .route("/items/move", post(moves::move_items))
+        .route("/attachments/usage", get(attachments::usage))
+        .route(
+            "/attachments/{id}",
+            put(attachments::upload)
+                .get(attachments::download)
+                .delete(attachments::delete),
+        )
+        .route(
+            "/share-links",
+            get(share_links::list).post(share_links::create),
+        )
+        .route("/share-links/{id}", delete(share_links::delete))
+        .route("/public/share-links/{id}", get(share_links::public_info))
+        .route("/public/share-links/{id}/open", post(share_links::open))
+        .route(
+            "/vaults/{id}/access-request",
+            get(access_requests::state_for_vault),
+        )
+        .route(
+            "/vaults/{id}/access-requests",
+            post(access_requests::create),
+        )
+        .route("/access-requests", get(access_requests::list))
+        .route("/access-requests/{id}", delete(access_requests::cancel))
+        .route(
+            "/access-requests/{id}/approve",
+            post(access_requests::approve),
+        )
+        .route("/access-requests/{id}/deny", post(access_requests::deny))
 }

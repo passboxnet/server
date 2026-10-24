@@ -70,6 +70,23 @@ pub struct Config {
     /// organization admins cannot make the server call internal services.
     #[arg(long, env = "PASSBOX_WEBHOOK_ALLOW_PRIVATE", default_value_t = false)]
     pub webhook_allow_private: bool,
+
+    /// Directory for encrypted file attachments. Back it up together with
+    /// the database.
+    #[arg(long, env = "PASSBOX_BLOB_DIR", default_value = "blobs")]
+    pub blob_dir: PathBuf,
+
+    /// Largest attachment in MiB.
+    #[arg(long, env = "PASSBOX_ATTACHMENT_MAX_MB", default_value_t = 100)]
+    pub attachment_max_mb: u64,
+
+    /// Attachment storage per account (personal vaults) in MiB; 0 = unlimited.
+    #[arg(long, env = "PASSBOX_ATTACHMENT_QUOTA_MB", default_value_t = 0)]
+    pub attachment_quota_mb: u64,
+
+    /// Attachment storage per organization (shared vaults) in MiB; 0 = unlimited.
+    #[arg(long, env = "PASSBOX_ORG_ATTACHMENT_QUOTA_MB", default_value_t = 0)]
+    pub org_attachment_quota_mb: u64,
 }
 
 /// Hides the database and SMTP credentials.
@@ -88,6 +105,10 @@ impl std::fmt::Debug for Config {
             .field("icons", &self.icons)
             .field("log_format", &self.log_format)
             .field("webhook_allow_private", &self.webhook_allow_private)
+            .field("blob_dir", &self.blob_dir)
+            .field("attachment_max_mb", &self.attachment_max_mb)
+            .field("attachment_quota_mb", &self.attachment_quota_mb)
+            .field("org_attachment_quota_mb", &self.org_attachment_quota_mb)
             .finish()
     }
 }
@@ -119,6 +140,10 @@ impl Default for Config {
             icons: Switch::On,
             log_format: LogFormat::Pretty,
             webhook_allow_private: false,
+            blob_dir: PathBuf::from("blobs"),
+            attachment_max_mb: 100,
+            attachment_quota_mb: 0,
+            org_attachment_quota_mb: 0,
         }
     }
 }

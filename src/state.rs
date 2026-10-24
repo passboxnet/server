@@ -7,7 +7,9 @@ use passbox_core::encoding;
 use passbox_core::opaque::ServerKeys;
 use passbox_core::random;
 
+use crate::api::attachments::AttachmentLimits;
 use crate::api::icons::IconService;
+use crate::blobs::{BlobStore, DiskBlobStore};
 use crate::db::Db;
 use crate::mail::Mailer;
 use crate::security::RateLimiter;
@@ -37,6 +39,10 @@ pub struct AppState {
     pub webhook_allow_private: bool,
     /// Website icons (`PASSBOX_ICONS`), with their fetcher and cache.
     pub icons: Arc<IconService>,
+    /// Encrypted attachment blobs (`PASSBOX_BLOB_DIR`).
+    pub blobs: Arc<dyn BlobStore>,
+    /// Attachment size limit and quotas.
+    pub attachment_limits: AttachmentLimits,
 }
 
 impl AppState {
@@ -81,6 +87,9 @@ impl AppState {
             admin_emails: Arc::new(Vec::new()),
             webhook_allow_private: false,
             icons: Arc::new(IconService::http()),
+            // `serve` replaces it with `PASSBOX_BLOB_DIR`.
+            blobs: Arc::new(DiskBlobStore::temporary()),
+            attachment_limits: AttachmentLimits::default(),
             db,
             opaque: Arc::new(opaque),
             prelogin_key: Arc::new(prelogin_key),

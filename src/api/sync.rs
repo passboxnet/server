@@ -150,6 +150,15 @@ pub async fn sync(
         items: items.into_iter().map(item).collect(),
         sharing: None,
     };
+    // Vaults whose moved-out items need tombstones (not for full sends).
+    let mut moved_from: Vec<String> = Vec::new();
+    if query.since > 0 {
+        moved_from =
+            sqlx::query_scalar("SELECT id FROM vaults WHERE account_id = $1 AND org_id IS NULL")
+                .bind(&session.account_id)
+                .fetch_all(&mut *conn)
+                .await?;
+    }
     if query.sharing == 1 {
         let sharing = sync_sharing(
             &mut conn,
@@ -157,9 +166,28 @@ pub async fn sync(
             query.since,
             cursor,
             &mut response,
+            &mut moved_from,
         )
         .await?;
         response.sharing = Some(sharing);
+    }
+    let tombstones = super::moves::tombstones(&mut conn, &moved_from, query.since, cursor).await?;
+    if !tombstones.is_empty() {
+        let mut items: Vec<SyncItem> = tombstones
+            .into_iter()
+            .map(|(id, vault_id, revision, moved_at)| SyncItem {
+                id,
+                vault_id,
+                revision,
+                encrypted_data: None,
+                deleted: true,
+                updated_at: moved_at,
+                key_epoch: 0,
+                created_at: 0,
+            })
+            .collect();
+        items.append(&mut response.items);
+        response.items = items;
     }
     Ok(Json(response))
 }
@@ -172,6 +200,7 @@ async fn sync_sharing(
     since: i64,
     cursor: i64,
     response: &mut SyncResponse,
+    moved_from: &mut Vec<String>,
 ) -> ApiResult<SharingDelta> {
     let mut delta = SharingDelta::default();
     let orgs = super::orgs::org_records(conn, me).await?;
@@ -310,6 +339,11 @@ async fn sync_sharing(
                 }
             }
             let vault_since = if access_seq > since { 0 } else { since };
+            if since > 0 {
+                // Also on a full send of the vault: the device may still
+                // hold items that left it.
+                moved_from.push(vault_id.clone());
+            }
             delta.vault_access.push(VaultAccessRecord {
                 vault_id: vault_id.clone(),
                 org_id: org.id.clone(),

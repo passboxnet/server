@@ -28,6 +28,7 @@ COPY --from=build /src/apps/web/dist /usr/share/passbox/web
 COPY --from=build --chown=65532:65532 /data /data
 ENV PASSBOX_BIND=0.0.0.0:8080 \
     PASSBOX_DATABASE_URL=sqlite:///data/passbox.db?mode=rwc \
+    PASSBOX_BLOB_DIR=/data/blobs \
     PASSBOX_WEB_DIR=/usr/share/passbox/web \
     PASSBOX_LOG_FORMAT=json
 VOLUME /data

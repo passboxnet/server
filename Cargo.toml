@@ -25,7 +25,10 @@ serde_json.workspace = true
 sha2.workspace = true
 sqlx.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["time", "sync", "io-util"] }
+tokio = { workspace = true, features = ["time", "sync", "io-util", "fs"] }
+# Streaming attachment blobs from and to disk.
+tokio-util = { version = "0.7", features = ["io"] }
+http-body-util = "0.1"
 tower-http.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
@@ -35,7 +38,6 @@ url = "2"
 
 [dev-dependencies]
 tower = { workspace = true, features = ["util"] }
-http-body-util = "0.1"
 passbox-core = { workspace = true, features = ["oidc", "test-issuer"] }
 
 [lints]
