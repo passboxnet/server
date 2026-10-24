@@ -19,12 +19,23 @@ use crate::state::AppState;
 
 /// Requests to authentication endpoints per client IP and minute.
 const AUTH_REQUESTS_PER_MINUTE: u32 = 60;
-/// Failed logins per email within the lockout window.
+/// Failed logins within the lockout window per (email, IP) pair for unknown
+/// devices, and per device token for known devices.
 const MAX_FAILED_LOGINS: u32 = 10;
+/// Failed logins per email from unknown devices within the lockout window, a
+/// backstop against guessing from many addresses. Devices with a valid
+/// device token are exempt, so reaching it does not lock out the user.
+const MAX_FAILED_LOGINS_PER_EMAIL: u32 = 50;
 /// Failed logins per IP within the lockout window. Higher, because many
 /// people can share one address (offices, mobile carriers).
 const MAX_FAILED_LOGINS_PER_IP: u32 = 100;
 const LOCKOUT_WINDOW: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+
+/// Device tokens are valid for a year after they were issued. Each
+/// successful login replaces the presented token with a new one.
+const DEVICE_TOKEN_TTL_MS: i64 = 365 * 24 * 60 * 60 * 1000;
+/// Device tokens beyond this many per account are deleted, oldest first.
+const MAX_DEVICE_TOKENS_PER_ACCOUNT: i64 = 50;
 
 /// Throttles authentication requests from one IP address.
 fn limit_ip(state: &AppState, ip: &str) -> ApiResult<()> {
@@ -38,17 +49,129 @@ fn limit_ip(state: &AppState, ip: &str) -> ApiResult<()> {
     }
 }
 
-/// Fails while an email or IP has too many recent failed logins.
-fn check_lockout(state: &AppState, email: &str, ip: &str) -> ApiResult<()> {
-    for (key, max) in [
-        (format!("fail-email:{email}"), MAX_FAILED_LOGINS),
-        (format!("fail-ip:{ip}"), MAX_FAILED_LOGINS_PER_IP),
-    ] {
-        if let Some(wait) = state.limiter.blocked(&key, max, LOCKOUT_WINDOW) {
-            return Err(ApiError::RateLimited(wait));
-        }
+/// The failure counters that apply to a login, with their limits.
+///
+/// A login with a valid device token (`device_token_hash`) counts against
+/// that token and the IP only. Without one it counts against the
+/// (email, IP) pair, the email as a whole (backstop) and the IP. So an
+/// attacker who knows an email locks out only their own address and, once
+/// the backstop is reached, new devices; devices that signed in before keep
+/// working.
+fn failure_limits(email: &str, ip: &str, device_token_hash: Option<&str>) -> Vec<(String, u32)> {
+    let mut limits = match device_token_hash {
+        Some(hash) => vec![(format!("fail-device:{hash}"), MAX_FAILED_LOGINS)],
+        None => vec![
+            (format!("fail-email-ip:{email} {ip}"), MAX_FAILED_LOGINS),
+            (format!("fail-email:{email}"), MAX_FAILED_LOGINS_PER_EMAIL),
+        ],
+    };
+    limits.push((format!("fail-ip:{ip}"), MAX_FAILED_LOGINS_PER_IP));
+    limits
+}
+
+/// Fails while any of the login's failure counters is exhausted. The error
+/// carries the longest remaining wait of the current windows, so clients
+/// know when to retry.
+fn check_lockout(state: &AppState, limits: &[(String, u32)]) -> ApiResult<()> {
+    let wait = limits
+        .iter()
+        .filter_map(|(key, max)| state.limiter.blocked(key, *max, LOCKOUT_WINDOW))
+        .max();
+    match wait {
+        Some(wait) => Err(ApiError::RateLimited(wait)),
+        None => Ok(()),
     }
-    Ok(())
+}
+
+fn record_failure(state: &AppState, limits: &[(String, u32)]) {
+    for (key, max) in limits {
+        state.limiter.hit(key, *max, LOCKOUT_WINDOW);
+    }
+}
+
+// --- Device tokens -------------------------------------------------------------
+//
+// A device token is an opaque random value the server hands out on every
+// successful login. It proves that a device signed in successfully before
+// and only exempts that device from the per-email lockout; it grants no
+// access by itself. The server stores SHA-256 hashes only.
+//
+// - Each successful login replaces the token it was started with (rotation),
+//   so a device holds exactly one current token.
+// - Logging out, locking or revoking a session keeps the token: the device
+//   still is a device that knew the password.
+// - A master password change deletes every token of the account except the
+//   one issued with the session that made the change.
+// - Tokens expire a year after they were issued; at most
+//   `MAX_DEVICE_TOKENS_PER_ACCOUNT` are kept per account.
+
+/// Returns the hash of `token` if it is a valid device token of the account
+/// with `email`. Unknown, expired or foreign tokens are ignored (the login
+/// counts as coming from an unknown device), never an error.
+async fn valid_device_token(
+    state: &AppState,
+    email: &str,
+    token: Option<&str>,
+) -> ApiResult<Option<String>> {
+    let Some(token) = token.filter(|t| !t.is_empty() && t.len() <= 128) else {
+        return Ok(None);
+    };
+    let token_hash = hash_token(token);
+    let found: Option<i64> = sqlx::query_scalar(
+        "SELECT 1 FROM device_tokens d JOIN accounts a ON a.id = d.account_id \
+         WHERE d.token_hash = $1 AND a.email = $2 AND d.expires_at > $3",
+    )
+    .bind(&token_hash)
+    .bind(email)
+    .bind(now_ms())
+    .fetch_optional(&state.db)
+    .await?;
+    Ok(found.map(|_| token_hash))
+}
+
+/// Issues a new device token after a successful login and returns it with
+/// its hash. The token the login was started with is deleted. If the
+/// response gets lost, the device counts as unknown until its next
+/// successful login.
+async fn issue_device_token(
+    state: &AppState,
+    account_id: &str,
+    previous_hash: Option<&str>,
+    now: i64,
+) -> ApiResult<(String, String)> {
+    let token = encoding::encode(&random::bytes::<32>().map_err(|e| ApiError::Internal(e.into()))?);
+    let token_hash = hash_token(&token);
+    let mut tx = state.db.begin().await?;
+    sqlx::query(
+        "DELETE FROM device_tokens WHERE account_id = $1 AND (expires_at <= $2 OR token_hash = $3)",
+    )
+    .bind(account_id)
+    .bind(now)
+    .bind(previous_hash.unwrap_or(""))
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO device_tokens (token_hash, account_id, created_at, expires_at) \
+         VALUES ($1, $2, $3, $4)",
+    )
+    .bind(&token_hash)
+    .bind(account_id)
+    .bind(now)
+    .bind(now + DEVICE_TOKEN_TTL_MS)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "DELETE FROM device_tokens WHERE account_id = $1 AND token_hash NOT IN \
+         (SELECT token_hash FROM device_tokens WHERE account_id = $2 \
+         ORDER BY created_at DESC, token_hash LIMIT $3)",
+    )
+    .bind(account_id)
+    .bind(account_id)
+    .bind(MAX_DEVICE_TOKENS_PER_ACCOUNT)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok((token, token_hash))
 }
 
 /// Records an entry in the account's activity log.
@@ -301,6 +424,9 @@ pub async fn register_finish(
 pub struct LoginStartRequest {
     email: String,
     credential_request: String,
+    /// The device token from this device's last successful login, if any.
+    #[serde(default)]
+    device_token: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -317,7 +443,11 @@ pub async fn login_start(
 ) -> ApiResult<Json<LoginStartResponse>> {
     limit_ip(&state, &ip)?;
     let email = validate::email(&req.email)?;
-    check_lockout(&state, &email, &ip)?;
+    let device_token_hash = valid_device_token(&state, &email, req.device_token.as_deref()).await?;
+    check_lockout(
+        &state,
+        &failure_limits(&email, &ip, device_token_hash.as_deref()),
+    )?;
     let request = validate::base64(
         "credentialRequest",
         &req.credential_request,
@@ -350,8 +480,8 @@ pub async fn login_start(
         .execute(&state.db)
         .await?;
     sqlx::query(
-        "INSERT INTO login_attempts (id, account_id, state, expires_at, ip, email) \
-         VALUES ($1, $2, $3, $4, $5, $6)",
+        "INSERT INTO login_attempts (id, account_id, state, expires_at, ip, email, device_token_hash) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7)",
     )
     .bind(&login_id)
     .bind(account_id)
@@ -359,6 +489,7 @@ pub async fn login_start(
     .bind(now + LOGIN_TTL_MS)
     .bind(&ip)
     .bind(&email)
+    .bind(device_token_hash.unwrap_or_default())
     .execute(&state.db)
     .await?;
 
@@ -388,6 +519,9 @@ pub struct LoginFinishResponse {
     account_id: String,
     session_id: String,
     expires_at: i64,
+    /// Store it on the device and send it with the next `login/start`. It
+    /// replaces the device token the login was started with.
+    device_token: String,
 }
 
 const CLIENT_KINDS: [&str; 6] = ["web", "extension", "desktop", "ios", "android", "cli"];
@@ -420,15 +554,17 @@ pub async fn login_finish(
     };
 
     // Each attempt can be finished once, successful or not.
-    let attempt: Option<(Option<String>, String, i64, String)> = sqlx::query_as(
-        "DELETE FROM login_attempts WHERE id = $1 RETURNING account_id, state, expires_at, email",
+    let attempt: Option<(Option<String>, String, i64, String, String)> = sqlx::query_as(
+        "DELETE FROM login_attempts WHERE id = $1 \
+         RETURNING account_id, state, expires_at, email, device_token_hash",
     )
     .bind(&req.login_id)
     .fetch_optional(&state.db)
     .await?;
-    let Some((account_id, login_state, expires_at, email)) = attempt else {
+    let Some((account_id, login_state, expires_at, email, device_token_hash)) = attempt else {
         return Err(ApiError::InvalidCredentials);
     };
+    let device_token_hash = Some(device_token_hash.as_str()).filter(|h| !h.is_empty());
     let now = now_ms();
     let login_state = encoding::decode(&login_state).map_err(|e| ApiError::Internal(e.into()))?;
     let verified = opaque::finish_login(&login_state, &finalization).is_ok();
@@ -436,16 +572,7 @@ pub async fn login_finish(
         Some(id) if verified && expires_at >= now => id,
         known => {
             tracing::info!("failed login");
-            state.limiter.hit(
-                &format!("fail-email:{email}"),
-                MAX_FAILED_LOGINS,
-                LOCKOUT_WINDOW,
-            );
-            state.limiter.hit(
-                &format!("fail-ip:{ip}"),
-                MAX_FAILED_LOGINS_PER_IP,
-                LOCKOUT_WINDOW,
-            );
+            record_failure(&state, &failure_limits(&email, &ip, device_token_hash));
             if let Some(account_id) = known {
                 record_event(
                     &state,
@@ -464,9 +591,11 @@ pub async fn login_finish(
     let token = encoding::encode(&random::bytes::<32>().map_err(|e| ApiError::Internal(e.into()))?);
     let session_id = id::new_id().map_err(|e| ApiError::Internal(e.into()))?;
     let expires_at = now + SESSION_TTL_MS;
+    let (device_token, new_device_token_hash) =
+        issue_device_token(&state, &account_id, device_token_hash, now).await?;
     sqlx::query(
         "INSERT INTO sessions (token_hash, account_id, created_at, expires_at, id, device_name, client_kind, ip, \
-         last_used_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+         last_used_at, device_token_hash) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
     )
     .bind(hash_token(&token))
     .bind(&account_id)
@@ -477,6 +606,7 @@ pub async fn login_finish(
     .bind(&client_kind)
     .bind(&ip)
     .bind(now)
+    .bind(&new_device_token_hash)
     .execute(&state.db)
     .await?;
     record_event(
@@ -495,6 +625,7 @@ pub async fn login_finish(
         account_id,
         session_id,
         expires_at,
+        device_token,
     }))
 }
 

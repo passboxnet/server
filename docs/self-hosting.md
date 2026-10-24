@@ -52,6 +52,12 @@ Losing the `server_secrets` table invalidates all logins: users cannot sign in a
 ## Security behavior
 
 - **Security headers:** every response carries a Content Security Policy (no framing, scripts only from the server plus WebAssembly), `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, a restrictive `Permissions-Policy` and `Strict-Transport-Security` (effective once served over HTTPS). API responses are `Cache-Control: no-store`.
-- **Rate limiting:** authentication endpoints accept 60 requests per minute and IP. After 10 failed logins for one email within 15 minutes, further logins for that email are refused for the rest of the window (100 failures per IP). Limits are kept in memory per server process and answered with `429` and `Retry-After`.
+- **Rate limiting:** authentication endpoints accept 60 requests per minute and IP. Failed logins are counted per 15-minute window:
+  - Devices that signed in successfully before present a **device token** and are exempt from the per-email limits. Each device token has its own limit of 10 failures.
+  - Other logins are refused after 10 failures for the same email from the same IP, or 50 failures for the email from all IPs together (a backstop against distributed guessing).
+  - Every IP is refused after 100 failures, with or without device token.
+
+  So someone who knows a user's email cannot lock the user out of their signed-in devices; at most new devices have to wait. Limits are kept in memory per server process and answered with `429`, `Retry-After` and `details.retryAfterSeconds` (the remaining time of the window).
+- **Device tokens:** every successful login issues a new random device token and invalidates the one the login was started with. The server stores only SHA-256 hashes. A device token grants no access by itself; it only lifts the per-email lockout. It survives logout, locking and signing out a session from the device list, expires after a year, and at most 50 are kept per account. Changing the master password invalidates the device tokens of all other devices. Clients delete their token when the user signs out of the account.
 - **Sessions:** users see their signed-in devices and can sign them out. Changing the master password signs out every other device.
 - **Activity log:** sign-ins, failed sign-ins, sign-outs, revoked sessions and password changes are recorded per account and visible to the account owner.

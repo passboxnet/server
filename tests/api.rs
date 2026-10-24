@@ -24,7 +24,10 @@ struct TestServer {
 impl TestServer {
     async fn new(database_url: &str) -> Self {
         let db = passbox_server::db::connect(database_url).await.unwrap();
-        let state = AppState::load(db).await.unwrap();
+        let mut state = AppState::load(db).await.unwrap();
+        // Lets tests pick the client IP with `X-Forwarded-For`. Requests
+        // without it count as IP "unknown".
+        state.trust_proxy = true;
         Self {
             app: passbox_server::routes::router(&Config::default(), state),
         }
@@ -37,9 +40,23 @@ impl TestServer {
         token: Option<&str>,
         body: Option<Value>,
     ) -> (StatusCode, Value) {
+        self.request_from(None, method, uri, token, body).await
+    }
+
+    async fn request_from(
+        &self,
+        ip: Option<&str>,
+        method: Method,
+        uri: &str,
+        token: Option<&str>,
+        body: Option<Value>,
+    ) -> (StatusCode, Value) {
         let mut builder = Request::builder().method(method).uri(uri);
         if let Some(token) = token {
             builder = builder.header("authorization", format!("Bearer {token}"));
+        }
+        if let Some(ip) = ip {
+            builder = builder.header("x-forwarded-for", ip);
         }
         let request = match body {
             Some(body) => builder
@@ -60,6 +77,11 @@ impl TestServer {
     async fn post(&self, uri: &str, token: Option<&str>, body: Value) -> (StatusCode, Value) {
         self.request(Method::POST, uri, token, Some(body)).await
     }
+}
+
+struct Login {
+    token: String,
+    device_token: String,
 }
 
 /// A client account with its secrets. Key derivation is skipped (the server
@@ -130,15 +152,40 @@ impl Client {
         server: &TestServer,
         auth_secret: &[u8],
     ) -> Result<String, StatusCode> {
+        self.try_login(server, auth_secret, None, None)
+            .await
+            .map(|login| login.token)
+            .map_err(|(status, _)| status)
+    }
+
+    /// Runs a login from `ip` (or IP "unknown"), optionally presenting a
+    /// device token. Fails with the status and body of the first rejected
+    /// request.
+    async fn try_login(
+        &self,
+        server: &TestServer,
+        auth_secret: &[u8],
+        ip: Option<&str>,
+        device_token: Option<&str>,
+    ) -> Result<Login, (StatusCode, Value)> {
         let (flow, request) = ClientLoginFlow::start(auth_secret).unwrap();
+        let mut start =
+            json!({ "email": self.email, "credentialRequest": encoding::encode(&request) });
+        if let Some(device_token) = device_token {
+            start["deviceToken"] = json!(device_token);
+        }
         let (status, body) = server
-            .post(
+            .request_from(
+                ip,
+                Method::POST,
                 "/api/v1/auth/login/start",
                 None,
-                json!({ "email": self.email, "credentialRequest": encoding::encode(&request) }),
+                Some(start),
             )
             .await;
-        assert_eq!(status, StatusCode::OK, "{body}");
+        if status != StatusCode::OK {
+            return Err((status, body));
+        }
         let response = encoding::decode(body["credentialResponse"].as_str().unwrap()).unwrap();
         // With a wrong secret the client detects the failure itself; send a
         // garbage finalization to check the server rejects it too.
@@ -147,19 +194,24 @@ impl Client {
             Err(_) => vec![0u8; 64],
         };
         let (status, body) = server
-            .post(
+            .request_from(
+                ip,
+                Method::POST,
                 "/api/v1/auth/login/finish",
                 None,
-                json!({
+                Some(json!({
                     "loginId": body["loginId"],
                     "credentialFinalization": encoding::encode(&finalization),
-                }),
+                })),
             )
             .await;
         if status == StatusCode::OK {
-            Ok(body["token"].as_str().unwrap().to_owned())
+            Ok(Login {
+                token: body["token"].as_str().unwrap().to_owned(),
+                device_token: body["deviceToken"].as_str().unwrap().to_owned(),
+            })
         } else {
-            Err(status)
+            Err((status, body))
         }
     }
 
@@ -178,6 +230,7 @@ async fn run_all(database_url: &str) {
     cross_origin_requests_are_allowed_without_credentials(&server).await;
     sessions_and_activity_log(&server).await;
     master_password_change(&server).await;
+    known_devices_survive_email_lockout(&server).await;
     security_headers_are_set(&server).await;
     // Last: it locks out an email and counts failures for the test IP.
     failed_logins_are_rate_limited(&server).await;
@@ -276,8 +329,16 @@ async fn sessions_and_activity_log(server: &TestServer) {
 async fn master_password_change(server: &TestServer) {
     let client = Client::new();
     let (keyring, _) = client.register(server).await;
-    let token = client.login(server).await;
-    let other_device = client.login(server).await;
+    let current = client
+        .try_login(server, &client.auth_secret, Some("10.1.0.1"), None)
+        .await
+        .unwrap();
+    let token = current.token.clone();
+    let other = client
+        .try_login(server, &client.auth_secret, Some("10.1.0.2"), None)
+        .await
+        .unwrap();
+    let other_device = other.token.clone();
 
     let new_auth_secret: [u8; 32] = random::bytes().unwrap();
     let new_auk = SymmetricKey::generate().unwrap();
@@ -316,6 +377,39 @@ async fn master_password_change(server: &TestServer) {
         client.login_with(server, &client.auth_secret).await,
         Err(StatusCode::UNAUTHORIZED)
     );
+
+    // Other devices lose their device token as well: once their address is
+    // locked out, they are treated like unknown devices. This device keeps
+    // its token.
+    for _ in 0..10 {
+        let (status, _) = client
+            .try_login(server, b"guess", Some("10.1.0.2"), None)
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+    let (status, _) = client
+        .try_login(
+            server,
+            &new_auth_secret,
+            Some("10.1.0.2"),
+            Some(&other.device_token),
+        )
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    client
+        .try_login(
+            server,
+            &new_auth_secret,
+            Some("10.1.0.2"),
+            Some(&current.device_token),
+        )
+        .await
+        .unwrap();
+
     let new_token = client.login_with(server, &new_auth_secret).await.unwrap();
     let (_, account) = server
         .request(Method::GET, "/api/v1/account", Some(&new_token), None)
@@ -332,6 +426,115 @@ async fn master_password_change(server: &TestServer) {
         )
         .is_ok()
     );
+}
+
+/// Failed logins by someone who knows the email must not lock the user out
+/// of devices that signed in before (they present a device token), nor out
+/// of other addresses until the per-email backstop is reached.
+async fn known_devices_survive_email_lockout(server: &TestServer) {
+    let client = Client::new();
+    client.register(server).await;
+    let secret = client.auth_secret;
+    let laptop = client
+        .try_login(server, &secret, Some("10.0.1.1"), None)
+        .await
+        .unwrap();
+
+    // An attacker exhausts the limit for the email from their address.
+    let attacker = Some("10.0.6.6");
+    for _ in 0..10 {
+        let (status, _) = client
+            .try_login(server, b"guess", attacker, None)
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+    let (status, body) = client
+        .try_login(server, &secret, attacker, None)
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(body["error"], "rate_limited");
+    // The real remaining time of the 15 minute window.
+    let retry_after = body["details"]["retryAfterSeconds"].as_u64().unwrap();
+    assert!(retry_after > 14 * 60 && retry_after <= 15 * 60, "{body}");
+
+    // The known device still signs in, even from the attacker's address,
+    // and gets a new device token in exchange for the old one.
+    let laptop = {
+        let next = client
+            .try_login(server, &secret, attacker, Some(&laptop.device_token))
+            .await
+            .unwrap();
+        assert_ne!(next.device_token, laptop.device_token);
+        next
+    };
+    // A new device at another address is not affected either.
+    let phone = client
+        .try_login(server, &secret, Some("10.0.2.2"), None)
+        .await
+        .unwrap();
+
+    // Backstop: 50 failures for the email in total (10 above) from many
+    // addresses lock out unknown devices everywhere.
+    for i in 0..40 {
+        let ip = format!("10.0.7.{i}");
+        let (status, _) = client
+            .try_login(server, b"guess", Some(&ip), None)
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+    let (status, _) = client
+        .try_login(server, &secret, Some("10.0.3.3"), None)
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    // Devices with a valid device token still sign in.
+    let laptop = client
+        .try_login(
+            server,
+            &secret,
+            Some("10.0.3.3"),
+            Some(&laptop.device_token),
+        )
+        .await
+        .unwrap();
+    client
+        .try_login(server, &secret, Some("10.0.2.2"), Some(&phone.device_token))
+        .await
+        .unwrap();
+
+    // A device token has its own failure limit, so a stolen one does not
+    // allow unlimited guessing.
+    for _ in 0..10 {
+        let (status, _) = client
+            .try_login(
+                server,
+                b"guess",
+                Some("10.0.4.4"),
+                Some(&laptop.device_token),
+            )
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+    let (status, _) = client
+        .try_login(
+            server,
+            &secret,
+            Some("10.0.1.1"),
+            Some(&laptop.device_token),
+        )
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
 }
 
 async fn security_headers_are_set(server: &TestServer) {
