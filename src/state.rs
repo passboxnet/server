@@ -7,6 +7,7 @@ use passbox_core::encoding;
 use passbox_core::opaque::ServerKeys;
 use passbox_core::random;
 
+use crate::api::icons::IconService;
 use crate::db::Db;
 use crate::mail::Mailer;
 use crate::security::RateLimiter;
@@ -32,6 +33,8 @@ pub struct AppState {
     pub mailer: Mailer,
     /// Emails from `PASSBOX_ADMIN_EMAILS` (lower case): always instance admins.
     pub admin_emails: Arc<Vec<String>>,
+    /// Website icons (`PASSBOX_ICONS`), with their fetcher and cache.
+    pub icons: Arc<IconService>,
 }
 
 impl AppState {
@@ -74,6 +77,7 @@ impl AppState {
             log_signer: Arc::new(LogSigner::from_seed(&log_seed)),
             mailer: Mailer::log_only(db.clone()),
             admin_emails: Arc::new(Vec::new()),
+            icons: Arc::new(IconService::http()),
             db,
             opaque: Arc::new(opaque),
             prelogin_key: Arc::new(prelogin_key),

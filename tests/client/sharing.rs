@@ -301,6 +301,26 @@ fn family_sharing_roles_groups_and_removal() {
         Some("Doe family")
     );
 
+    // The history of a shared item survives the rotation: Alice reads the
+    // versions encrypted with the old key epoch. Dave joins afterwards and
+    // never gets the old key: he sees the versions, without their data.
+    let history = alice.client.item_history(&netflix).unwrap();
+    let passwords: Vec<Option<&str>> = history
+        .iter()
+        .map(|v| v.data.as_ref().and_then(|d| d.field(field::PASSWORD)))
+        .collect();
+    assert_eq!(passwords, [Some("changed"), Some("family-secret")]);
+    assert!(history[0].revision > history[1].revision);
+    let dave = Person::sign_up(&server, "dave");
+    let invitation = alice.client.invite(&org_id, &dave.email, "member").unwrap();
+    dave.client.accept_invitation(&invitation.link).unwrap();
+    alice.client.confirm_member(&org_id, &dave.id()).unwrap();
+    dave.client.sync().unwrap();
+    assert!(dave.client.item(&netflix).is_ok());
+    let history = dave.client.item_history(&netflix).unwrap();
+    assert_eq!(history.len(), 2);
+    assert!(history.iter().all(|v| v.data.is_none()), "{history:?}");
+
     // Removing Carol from the group rotates the group and the Kids vault.
     alice
         .client
