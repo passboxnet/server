@@ -29,6 +29,8 @@ tokio = { workspace = true, features = ["time", "sync", "io-util"] }
 tower-http.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+# Webhook delivery (D5); already used by passbox-client.
+ureq.workspace = true
 
 [dev-dependencies]
 tower = { workspace = true, features = ["util"] }

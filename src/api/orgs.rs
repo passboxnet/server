@@ -220,6 +220,15 @@ pub async fn create(
     if let Some(vault) = &req.vault {
         super::shared::insert_shared_vault(&mut tx, &req.id, &me, vault, now).await?;
     }
+    super::org_audit::record_in(
+        &mut tx,
+        &req.id,
+        &super::org_audit::Actor::of(&session, &ip),
+        "org_created",
+        super::org_audit::Target::org(&req.id),
+        json!({ "kind": kind.as_str() }),
+    )
+    .await?;
     tx.commit().await?;
     event(&state, &session.account_id, "org_created", &session, &ip).await?;
     Ok((
@@ -425,6 +434,7 @@ pub struct UpdateOrgRequest {
 /// Renames an organization (admins).
 pub async fn update(
     State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
     session: Session,
     Path(org_id): Path<String>,
     Json(req): Json<UpdateOrgRequest>,
@@ -457,6 +467,15 @@ pub async fn update(
         .bind(&org_id)
         .execute(&mut *tx)
         .await?;
+    super::org_audit::record_in(
+        &mut tx,
+        &org_id,
+        &super::org_audit::Actor::of(&session, &ip),
+        "org_renamed",
+        super::org_audit::Target::org(&org_id),
+        serde_json::json!({}),
+    )
+    .await?;
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -638,6 +657,18 @@ pub async fn invite(
         }),
     )
     .await?;
+    super::org_audit::record_in(
+        &mut tx,
+        &org_id,
+        &super::org_audit::Actor::of(&session, &ip),
+        "member_invited",
+        super::org_audit::Target {
+            kind: "invitation",
+            id: &invitation_id,
+        },
+        json!({ "email": email, "role": role.as_str() }),
+    )
+    .await?;
     tx.commit().await?;
     state.mailer.wake();
     event(
@@ -709,6 +740,7 @@ pub async fn invitations(
 /// Revokes a pending invitation (admins).
 pub async fn revoke_invitation(
     State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
     session: Session,
     Path((org_id, invitation_id)): Path<(String, String)>,
 ) -> ApiResult<StatusCode> {
@@ -726,6 +758,18 @@ pub async fn revoke_invitation(
     if updated.rows_affected() == 0 {
         return Err(ApiError::NotFound);
     }
+    super::org_audit::record_in(
+        &mut tx,
+        &org_id,
+        &super::org_audit::Actor::of(&session, &ip),
+        "invitation_revoked",
+        super::org_audit::Target {
+            kind: "invitation",
+            id: &invitation_id,
+        },
+        serde_json::json!({}),
+    )
+    .await?;
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -875,6 +919,15 @@ pub async fn accept(
     .bind(&invitation_id)
     .execute(&mut *tx)
     .await?;
+    super::org_audit::record_in(
+        &mut tx,
+        &org_id,
+        &super::org_audit::Actor::of(&session, &ip),
+        "member_joined",
+        super::org_audit::Target::account(&session.account_id),
+        json!({ "role": role, "invitationId": invitation_id }),
+    )
+    .await?;
     tx.commit().await?;
     event(
         &state,
@@ -982,6 +1035,15 @@ pub async fn confirm(
     .execute(&mut *tx)
     .await?;
     insert_org_key(&mut tx, &org_id, &req.org_key, seq, now).await?;
+    super::org_audit::record_in(
+        &mut tx,
+        &org_id,
+        &super::org_audit::Actor::of(&session, &ip),
+        "member_confirmed",
+        super::org_audit::Target::account(&account_id),
+        json!({ "role": target.role.as_str() }),
+    )
+    .await?;
     tx.commit().await?;
     event(
         &state,
@@ -1068,6 +1130,19 @@ pub async fn update_member(
             .execute(&mut *tx)
             .await?;
     }
+    super::org_audit::record_in(
+        &mut tx,
+        &org_id,
+        &super::org_audit::Actor::of(&session, &ip),
+        if role == target.role {
+            "member_reattested"
+        } else {
+            "member_role_changed"
+        },
+        super::org_audit::Target::account(&account_id),
+        json!({ "from": target.role.as_str(), "to": role.as_str() }),
+    )
+    .await?;
     tx.commit().await?;
     if role != target.role {
         event(&state, &account_id, "org_role_changed", &session, &ip).await?;
@@ -1078,6 +1153,7 @@ pub async fn update_member(
 async fn set_status(
     state: &AppState,
     session: &Session,
+    ip: &str,
     org_id: &str,
     account_id: &str,
     status: &str,
@@ -1119,6 +1195,19 @@ async fn set_status(
         .bind(account_id)
         .execute(&mut *tx)
         .await?;
+    super::org_audit::record_in(
+        &mut tx,
+        org_id,
+        &super::org_audit::Actor::of(session, ip),
+        if status == "suspended" {
+            "member_suspended"
+        } else {
+            "member_reactivated"
+        },
+        super::org_audit::Target::account(account_id),
+        serde_json::json!({}),
+    )
+    .await?;
     tx.commit().await?;
     Ok(())
 }
@@ -1131,7 +1220,7 @@ pub async fn suspend(
     session: Session,
     Path((org_id, account_id)): Path<(String, String)>,
 ) -> ApiResult<StatusCode> {
-    set_status(&state, &session, &org_id, &account_id, "suspended").await?;
+    set_status(&state, &session, &ip, &org_id, &account_id, "suspended").await?;
     event(
         &state,
         &account_id,
@@ -1149,7 +1238,7 @@ pub async fn reactivate(
     session: Session,
     Path((org_id, account_id)): Path<(String, String)>,
 ) -> ApiResult<StatusCode> {
-    set_status(&state, &session, &org_id, &account_id, "confirmed").await?;
+    set_status(&state, &session, &ip, &org_id, &account_id, "confirmed").await?;
     event(
         &state,
         &account_id,
@@ -1243,6 +1332,19 @@ pub async fn remove_member(
         .bind(&org_id)
         .execute(&mut *tx)
         .await?;
+    super::org_audit::record_in(
+        &mut tx,
+        &org_id,
+        &super::org_audit::Actor::of(&session, &ip),
+        if leaving {
+            "member_left"
+        } else {
+            "member_removed"
+        },
+        super::org_audit::Target::account(&account_id),
+        json!({ "role": target.role.as_str(), "vaults": vaults, "groups": groups }),
+    )
+    .await?;
     tx.commit().await?;
     event(&state, &account_id, "org_membership_removed", &session, &ip).await?;
     if !leaving {
@@ -1263,6 +1365,7 @@ pub async fn remove_member(
 /// confirmed member.
 pub async fn rotate_key(
     State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
     session: Session,
     Path(org_id): Path<String>,
     Json(req): Json<RotateOrgKey>,
@@ -1341,6 +1444,15 @@ pub async fn rotate_key(
     .bind(now)
     .bind(&org_id)
     .execute(&mut *tx)
+    .await?;
+    super::org_audit::record_in(
+        &mut tx,
+        &org_id,
+        &super::org_audit::Actor::of(&session, &ip),
+        "org_key_rotated",
+        super::org_audit::Target::org(&org_id),
+        json!({ "epoch": req.epoch }),
+    )
     .await?;
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)

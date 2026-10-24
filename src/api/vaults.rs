@@ -11,6 +11,7 @@ use super::auth::{NewVaultRequest, Session};
 use super::validate;
 use crate::db::{self, now_ms};
 use crate::error::{ApiError, ApiResult};
+use crate::security::ClientIp;
 use crate::state::AppState;
 
 pub fn validate_new_vault(vault: &NewVaultRequest) -> ApiResult<()> {
@@ -71,6 +72,8 @@ pub async fn create(
 ) -> ApiResult<(StatusCode, Json<WriteResponse>)> {
     validate_new_vault(&req)?;
     let mut tx = crate::db::begin_write(&state.db).await?;
+    // Policy D2: organizations can turn personal vaults off.
+    super::org_policy::ensure_personal_vaults_allowed(&mut tx, &session.account_id).await?;
     let seq = insert_vault(&mut tx, &session.account_id, &req, now_ms()).await?;
     tx.commit().await?;
     Ok((
@@ -92,6 +95,7 @@ pub struct UpdateVaultRequest {
 
 pub async fn update(
     State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
     session: Session,
     Path(vault_id): Path<String>,
     Json(req): Json<UpdateVaultRequest>,
@@ -105,10 +109,12 @@ pub async fn update(
     )?;
 
     let mut tx = crate::db::begin_write(&state.db).await?;
+    let mut shared_org = None;
     match super::access::vault_access(&mut tx, &vault_id, &session.account_id).await? {
         None => return Err(ApiError::NotFound),
         Some(super::access::VaultAccess::Personal) => {}
-        Some(super::access::VaultAccess::Shared { .. }) => {
+        Some(super::access::VaultAccess::Shared { org_id, .. }) => {
+            shared_org = Some(org_id);
             let (_, key_epoch) =
                 super::access::require_vault_manager(&mut tx, &vault_id, &session.account_id)
                     .await?;
@@ -139,6 +145,17 @@ pub async fn update(
         .bind(&vault_id)
         .execute(&mut *tx)
         .await?;
+    if let Some(org_id) = &shared_org {
+        super::org_audit::record_in(
+            &mut tx,
+            org_id,
+            &super::org_audit::Actor::of(&session, &ip),
+            "vault_renamed",
+            super::org_audit::Target::vault(&vault_id),
+            serde_json::json!({}),
+        )
+        .await?;
+    }
     tx.commit().await?;
     Ok(Json(WriteResponse {
         revision: req.revision,

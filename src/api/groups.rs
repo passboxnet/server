@@ -130,6 +130,7 @@ pub struct GroupWrite {
 /// Creates a group (admins). The creator is always a member.
 pub async fn create(
     State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
     session: Session,
     Path(org_id): Path<String>,
     Json(req): Json<NewGroup>,
@@ -202,6 +203,15 @@ pub async fn create(
     for member in &req.members {
         insert_member_key(&mut tx, &req.id, member, seq, now).await?;
     }
+    super::org_audit::record_in(
+        &mut tx,
+        &org_id,
+        &super::org_audit::Actor::of(&session, &ip),
+        "group_created",
+        super::org_audit::Target::group(&req.id),
+        serde_json::json!({ "members": req.members.iter().map(|m| m.account_id.clone()).collect::<Vec<_>>() }),
+    )
+    .await?;
     tx.commit().await?;
     Ok((
         StatusCode::CREATED,
@@ -296,6 +306,7 @@ async fn require_group(conn: &mut AnyConnection, org_id: &str, group_id: &str) -
 /// Renames a group (admins).
 pub async fn update(
     State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
     session: Session,
     Path((org_id, group_id)): Path<(String, String)>,
     Json(req): Json<UpdateGroupRequest>,
@@ -325,6 +336,15 @@ pub async fn update(
         .bind(&group_id)
         .execute(&mut *tx)
         .await?;
+    super::org_audit::record_in(
+        &mut tx,
+        &org_id,
+        &super::org_audit::Actor::of(&session, &ip),
+        "group_renamed",
+        super::org_audit::Target::group(&group_id),
+        serde_json::json!({}),
+    )
+    .await?;
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -332,6 +352,7 @@ pub async fn update(
 /// Deletes a group (admins). Vaults must be unshared from it first.
 pub async fn delete(
     State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
     session: Session,
     Path((org_id, group_id)): Path<(String, String)>,
 ) -> ApiResult<StatusCode> {
@@ -357,6 +378,15 @@ pub async fn delete(
         .execute(&mut *tx)
         .await?;
     db::next_seq(&mut tx).await?;
+    super::org_audit::record_in(
+        &mut tx,
+        &org_id,
+        &super::org_audit::Actor::of(&session, &ip),
+        "group_deleted",
+        super::org_audit::Target::group(&group_id),
+        serde_json::json!({}),
+    )
+    .await?;
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -399,6 +429,15 @@ pub async fn add_member(
         .bind(&group_id)
         .execute(&mut *tx)
         .await?;
+    super::org_audit::record_in(
+        &mut tx,
+        &org_id,
+        &super::org_audit::Actor::of(&session, &ip),
+        "group_member_added",
+        super::org_audit::Target::group(&group_id),
+        serde_json::json!({ "accountId": req.account_id }),
+    )
+    .await?;
     tx.commit().await?;
     record_event(
         &state,
@@ -525,6 +564,19 @@ pub async fn rotate(
             .execute(&mut *tx)
             .await?;
     }
+    super::org_audit::record_in(
+        &mut tx,
+        &org_id,
+        &super::org_audit::Actor::of(&session, &ip),
+        if req.removed.is_empty() {
+            "group_key_rotated"
+        } else {
+            "group_member_removed"
+        },
+        super::org_audit::Target::group(&group_id),
+        serde_json::json!({ "removed": req.removed, "keyVersion": req.key_version }),
+    )
+    .await?;
     tx.commit().await?;
     for account in &req.removed {
         record_event(

@@ -1297,6 +1297,11 @@ pub async fn disable(
             "two-factor authentication is not turned on",
         ));
     }
+    {
+        // Policy D2: an organization can require two-factor sign-in.
+        let mut conn = state.db.acquire().await?;
+        super::org_policy::ensure_two_factor_optional(&mut conn, &session.account_id).await?;
+    }
     let challenge = if req.factor.method == "webauthn" {
         find_challenge(&state.db, &req.challenge_token, PURPOSE_VERIFY)
             .await?

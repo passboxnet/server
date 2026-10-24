@@ -28,6 +28,7 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
     state.trust_proxy = config.trust_proxy;
     state.auth_rate_limit = config.auth_rate_limit;
     state.admin_emails = std::sync::Arc::new(admin_emails(&config.admin_emails));
+    state.webhook_allow_private = config.webhook_allow_private;
     state.mailer = mail::Mailer::new(
         state.db.clone(),
         &mail::MailConfig {
@@ -44,6 +45,7 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
         );
     }
     state.mailer.spawn_worker();
+    api::org_events::spawn_worker(state.clone());
     let app = routes::router(&config, state);
     let listener = TcpListener::bind(config.bind)
         .await
