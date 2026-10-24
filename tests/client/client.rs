@@ -264,6 +264,15 @@ fn devices_activity_and_master_password_change() {
         .change_master_password(PASSWORD, "new password 123")
         .unwrap();
     assert!(matches!(laptop.unlock_key(), Ok(key) if key.len() == 65));
+    // The Emergency Kit can be shown again with the current password only.
+    assert_eq!(
+        laptop.reveal_secret_key("new password 123").unwrap(),
+        secret_key
+    );
+    assert!(matches!(
+        laptop.reveal_secret_key(PASSWORD),
+        Err(Error::InvalidCredentials)
+    ));
     assert!(matches!(phone.sync(), Err(Error::Locked)));
     assert!(matches!(
         phone.unlock(PASSWORD),
