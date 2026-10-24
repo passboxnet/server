@@ -7,6 +7,7 @@ use passbox_core::opaque::ServerKeys;
 use passbox_core::random;
 
 use crate::db::Db;
+use crate::mail::Mailer;
 use crate::security::RateLimiter;
 
 /// Shared state of all request handlers.
@@ -22,6 +23,10 @@ pub struct AppState {
     pub limiter: Arc<RateLimiter>,
     /// Trust `X-Forwarded-For` from a reverse proxy for client IPs.
     pub trust_proxy: bool,
+    /// Queues outgoing mail. Logs mails until SMTP is configured.
+    pub mailer: Mailer,
+    /// Emails from `PASSBOX_ADMIN_EMAILS` (lower case): always instance admins.
+    pub admin_emails: Arc<Vec<String>>,
 }
 
 impl AppState {
@@ -54,6 +59,8 @@ impl AppState {
             .context("corrupt two-factor key")?;
 
         Ok(Self {
+            mailer: Mailer::log_only(db.clone()),
+            admin_emails: Arc::new(Vec::new()),
             db,
             opaque: Arc::new(opaque),
             prelogin_key: Arc::new(prelogin_key),

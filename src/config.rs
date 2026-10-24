@@ -5,7 +5,7 @@ use clap::{Parser, ValueEnum};
 
 /// Passbox server configuration. Every option can also be set through an
 /// environment variable.
-#[derive(Debug, Clone, Parser)]
+#[derive(Clone, Parser)]
 #[command(name = "passbox-server", version, about)]
 pub struct Config {
     /// Address to listen on.
@@ -29,9 +29,47 @@ pub struct Config {
     #[arg(long, env = "PASSBOX_TRUST_PROXY", default_value_t = false)]
     pub trust_proxy: bool,
 
+    /// SMTP server for outgoing mail, for example
+    /// `smtps://user:password@mail.example.com:465` (implicit TLS) or
+    /// `smtp://user:password@mail.example.com:587?tls=required` (STARTTLS).
+    /// Without it, mails are written to the log instead of being sent.
+    #[arg(long, env = "PASSBOX_SMTP_URL", hide_env_values = true)]
+    pub smtp_url: Option<String>,
+
+    /// Sender address of outgoing mail, for example `Passbox <passbox@example.com>`.
+    #[arg(long, env = "PASSBOX_MAIL_FROM")]
+    pub mail_from: Option<String>,
+
+    /// Public address of this server, for example `https://passbox.example.com`.
+    /// Used for links in mails.
+    #[arg(long, env = "PASSBOX_PUBLIC_URL")]
+    pub public_url: Option<String>,
+
+    /// Emails of accounts that are always instance admins (comma-separated),
+    /// in addition to the first account created on the server.
+    #[arg(long, env = "PASSBOX_ADMIN_EMAILS", value_delimiter = ',')]
+    pub admin_emails: Vec<String>,
+
     /// Log output format.
     #[arg(long, env = "PASSBOX_LOG_FORMAT", value_enum, default_value_t = LogFormat::Pretty)]
     pub log_format: LogFormat,
+}
+
+/// Hides the database and SMTP credentials.
+impl std::fmt::Debug for Config {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Config")
+            .field("bind", &self.bind)
+            .field("database_url", &"<redacted>")
+            .field("web_dir", &self.web_dir)
+            .field("trust_proxy", &self.trust_proxy)
+            .field("smtp_url", &self.smtp_url.as_ref().map(|_| "<redacted>"))
+            .field("mail_from", &self.mail_from)
+            .field("public_url", &self.public_url)
+            .field("admin_emails", &self.admin_emails)
+            .field("log_format", &self.log_format)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -47,6 +85,10 @@ impl Default for Config {
             database_url: "sqlite::memory:".to_owned(),
             web_dir: None,
             trust_proxy: false,
+            smtp_url: None,
+            mail_from: None,
+            public_url: None,
+            admin_emails: Vec::new(),
             log_format: LogFormat::Pretty,
         }
     }

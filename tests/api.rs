@@ -17,22 +17,40 @@ use passbox_server::state::AppState;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
+#[path = "api/admin.rs"]
+mod admin;
+
 struct TestServer {
     app: Router,
-    db: passbox_server::db::Db,
+    state: AppState,
+    /// Listed in `PASSBOX_ADMIN_EMAILS`.
+    env_admin_email: String,
 }
 
 impl TestServer {
     async fn new(database_url: &str) -> Self {
         let db = passbox_server::db::connect(database_url).await.unwrap();
-        let mut state = AppState::load(db.clone()).await.unwrap();
+        Self::with_db(db).await
+    }
+
+    /// A second server process on the same database, with its own rate
+    /// limits.
+    async fn with_db(db: passbox_server::db::Db) -> Self {
+        let mut state = AppState::load(db).await.unwrap();
         // Lets tests pick the client IP with `X-Forwarded-For`. Requests
         // without it count as IP "unknown".
         state.trust_proxy = true;
+        let env_admin_email = format!("{}@env-admin.example", id::new_id().unwrap());
+        state.admin_emails = std::sync::Arc::new(vec![env_admin_email.clone()]);
         Self {
-            app: passbox_server::routes::router(&Config::default(), state),
-            db,
+            app: passbox_server::routes::router(&Config::default(), state.clone()),
+            state,
+            env_admin_email,
         }
+    }
+
+    fn db(&self) -> &passbox_server::db::Db {
+        &self.state.db
     }
 
     async fn request(
@@ -224,6 +242,8 @@ impl Client {
 
 async fn run_all(database_url: &str) {
     let server = TestServer::new(database_url).await;
+    // First: the first account on a fresh server becomes instance admin.
+    admin::instance_administration(&TestServer::with_db(server.db().clone()).await).await;
     registration_and_login(&server).await;
     prelogin_does_not_reveal_accounts(&server).await;
     items_sync_and_conflicts(&server).await;
@@ -1127,7 +1147,7 @@ async fn two_factor_totp_and_recovery_codes(server: &TestServer) {
     let (sealed,): (String,) =
         sqlx::query_as("SELECT sealed_secret FROM two_factor_totp WHERE account_id = $1")
             .bind(&client.account_id)
-            .fetch_one(&server.db)
+            .fetch_one(server.db())
             .await
             .unwrap();
     assert!(!sealed.contains(&secret));
@@ -1212,7 +1232,7 @@ async fn two_factor_totp_and_recovery_codes(server: &TestServer) {
     sqlx::query("UPDATE sessions SET created_at = $1 WHERE account_id = $2")
         .bind(0i64)
         .bind(&client.account_id)
-        .execute(&server.db)
+        .execute(server.db())
         .await
         .unwrap();
     let (status, body) = server
@@ -1273,6 +1293,26 @@ async fn two_factor_totp_and_recovery_codes(server: &TestServer) {
     assert_eq!(state["recoveryCodesRemaining"], 0);
     let body = client.password_step(server, ip, None, None).await;
     assert!(body["token"].is_string(), "{body}");
+
+    // The owner got a mail for every change (on, new codes, off).
+    let mails: Vec<(String,)> = sqlx::query_as(
+        "SELECT params FROM mail_outbox WHERE recipient = $1 AND template = $2 ORDER BY created_at",
+    )
+    .bind(&client.email)
+    .bind("two_factor_changed")
+    .fetch_all(server.db())
+    .await
+    .unwrap();
+    let changes: Vec<String> = mails
+        .iter()
+        .map(|(params,)| {
+            serde_json::from_str::<Value>(params).unwrap()["change"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        })
+        .collect();
+    assert_eq!(changes, ["enabled", "changed", "disabled"], "{changes:?}");
 
     let kinds = event_kinds(server, &token).await;
     for kind in [

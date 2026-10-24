@@ -649,6 +649,8 @@ pub async fn login_two_factor(
         return Err(ApiError::TwoFactorExpired);
     }
 
+    // The account may have been disabled since the password step.
+    crate::instance::ensure_active(&state, &account_id).await?;
     let remember_until = if req.remember_device {
         now_ms() + REMEMBER_DEVICE_MS
     } else {
@@ -865,6 +867,14 @@ async fn record_added(
     ip: &str,
     was_enabled: bool,
 ) -> ApiResult<()> {
+    super::notify::two_factor_changed(
+        state,
+        &session.account_id,
+        if was_enabled { "changed" } else { "enabled" },
+        &session.device_name,
+        ip,
+    )
+    .await;
     record_event(
         state,
         &session.account_id,
@@ -905,6 +915,14 @@ pub async fn totp_remove(
         .bind(&session.account_id)
         .execute(&state.db)
         .await?;
+    super::notify::two_factor_changed(
+        &state,
+        &session.account_id,
+        "changed",
+        &session.device_name,
+        &ip,
+    )
+    .await;
     record_event(
         &state,
         &session.account_id,
@@ -1133,6 +1151,14 @@ pub async fn webauthn_remove(
         .bind(&session.account_id)
         .execute(&state.db)
         .await?;
+    super::notify::two_factor_changed(
+        &state,
+        &session.account_id,
+        "changed",
+        &session.device_name,
+        &ip,
+    )
+    .await;
     record_event(
         &state,
         &session.account_id,
@@ -1171,6 +1197,14 @@ pub async fn recovery_codes_regenerate(
     let mut tx = db::begin_write(&state.db).await?;
     let recovery_codes = replace_recovery_codes(&mut tx, &session.account_id, now_ms()).await?;
     tx.commit().await?;
+    super::notify::two_factor_changed(
+        &state,
+        &session.account_id,
+        "changed",
+        &session.device_name,
+        &ip,
+    )
+    .await;
     record_event(
         &state,
         &session.account_id,
@@ -1309,6 +1343,14 @@ pub async fn disable(
         .execute(&mut *tx)
         .await?;
     tx.commit().await?;
+    super::notify::two_factor_changed(
+        &state,
+        &session.account_id,
+        "disabled",
+        &session.device_name,
+        &ip,
+    )
+    .await;
     record_event(
         &state,
         &session.account_id,

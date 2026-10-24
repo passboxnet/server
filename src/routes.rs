@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use axum::extract::State;
 use axum::http::{Method, header};
 use axum::routing::get;
 use axum::{Json, Router};
@@ -10,6 +11,9 @@ use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 
 use crate::config::Config;
+use crate::error::ApiResult;
+use crate::instance::{PasswordPolicy, RegistrationMode};
+use crate::mail::Locale;
 use crate::state::AppState;
 
 /// Builds the application router.
@@ -65,15 +69,38 @@ struct Meta {
     /// Lowest KDF parameters the server accepts for new accounts. Clients
     /// enforce their own minimum as well.
     min_kdf_params: KdfParams,
+    /// Name the admins gave this server.
+    instance_name: String,
+    /// Who may create an account: `open`, `invite_only` or `domains`.
+    registration: RegistrationMode,
+    /// In `domains` mode: the email domains that may register.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    allowed_domains: Vec<String>,
+    /// Where users get help (`null` if not set).
+    support_url: Option<String>,
+    default_locale: Locale,
+    /// Minimum strength of new master passwords; clients enforce it.
+    password_policy: PasswordPolicy,
 }
 
-async fn meta() -> Json<Meta> {
-    Json(Meta {
+async fn meta(State(state): State<AppState>) -> ApiResult<Json<Meta>> {
+    let settings = crate::instance::load_settings(&state.db).await?;
+    Ok(Json(Meta {
         name: "passbox",
         version: env!("CARGO_PKG_VERSION"),
         api_version: 1,
         min_kdf_params: KdfParams::MINIMUM,
-    })
+        instance_name: settings.instance_name,
+        allowed_domains: if settings.registration == RegistrationMode::Domains {
+            settings.allowed_domains
+        } else {
+            Vec::new()
+        },
+        registration: settings.registration,
+        support_url: Some(settings.support_url).filter(|url| !url.is_empty()),
+        default_locale: settings.default_locale,
+        password_policy: settings.password_policy,
+    }))
 }
 
 #[cfg(test)]
@@ -115,6 +142,10 @@ mod tests {
         assert_eq!(body["apiVersion"], 1);
         assert_eq!(body["version"], env!("CARGO_PKG_VERSION"));
         assert_eq!(body["minKdfParams"]["memoryKib"], 65536);
+        assert_eq!(body["registration"], "open");
+        assert_eq!(body["instanceName"], "Passbox");
+        assert_eq!(body["passwordPolicy"]["minScore"], 3);
+        assert_eq!(body["supportUrl"], Value::Null);
     }
 
     #[tokio::test]

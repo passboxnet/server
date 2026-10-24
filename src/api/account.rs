@@ -182,5 +182,6 @@ pub async fn password_finish(
         &ip,
     )
     .await?;
+    super::notify::password_changed(&state, &session.account_id, &session.device_name, &ip).await;
     Ok(StatusCode::NO_CONTENT)
 }
