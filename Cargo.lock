@@ -3547,6 +3547,7 @@ dependencies = [
  "opaque-ke",
  "p256",
  "rand_core 0.6.4",
+ "ring",
  "serde",
  "serde_json",
  "sha1",
@@ -3626,6 +3627,7 @@ dependencies = [
  "tower-http 0.7.1",
  "tracing",
  "tracing-subscriber",
+ "ureq",
 ]
 
 [[package]]
