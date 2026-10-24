@@ -28,6 +28,12 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
     state.trust_proxy = config.trust_proxy;
     state.auth_rate_limit = config.auth_rate_limit;
     state.admin_emails = std::sync::Arc::new(admin_emails(&config.admin_emails));
+    if config.icons == config::Switch::Off {
+        state.icons = std::sync::Arc::new(api::icons::IconService::new(
+            false,
+            std::sync::Arc::new(api::icons::HttpIconFetcher::new()),
+        ));
+    }
     state.mailer = mail::Mailer::new(
         state.db.clone(),
         &mail::MailConfig {

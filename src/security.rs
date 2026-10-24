@@ -27,6 +27,8 @@ pub async fn security_headers(request: Request, next: Next) -> Response {
     let is_api = request.uri().path().starts_with("/api/");
     let mut response = next.run(request).await;
     let headers = response.headers_mut();
+    // Handlers that allow caching (website icons) set their own header.
+    let cacheable = headers.contains_key(header::CACHE_CONTROL);
     let mut set = |name: HeaderName, value: &'static str| {
         headers.insert(name, HeaderValue::from_static(value));
     };
@@ -44,7 +46,7 @@ pub async fn security_headers(request: Request, next: Next) -> Response {
         HeaderName::from_static("cross-origin-opener-policy"),
         "same-origin",
     );
-    if is_api {
+    if is_api && !cacheable {
         set(header::CACHE_CONTROL, "no-store");
     }
     response
