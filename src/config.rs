@@ -24,6 +24,11 @@ pub struct Config {
     #[arg(long, env = "PASSBOX_WEB_DIR")]
     pub web_dir: Option<PathBuf>,
 
+    /// Use the first address of `X-Forwarded-For` as the client IP. Enable
+    /// only behind a reverse proxy that sets this header.
+    #[arg(long, env = "PASSBOX_TRUST_PROXY", default_value_t = false)]
+    pub trust_proxy: bool,
+
     /// Log output format.
     #[arg(long, env = "PASSBOX_LOG_FORMAT", value_enum, default_value_t = LogFormat::Pretty)]
     pub log_format: LogFormat,
@@ -41,6 +46,7 @@ impl Default for Config {
             bind: SocketAddr::from(([127, 0, 0, 1], 8080)),
             database_url: "sqlite::memory:".to_owned(),
             web_dir: None,
+            trust_proxy: false,
             log_format: LogFormat::Pretty,
         }
     }

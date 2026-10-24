@@ -15,6 +15,10 @@ pub enum ApiError {
     InvalidCredentials,
     #[error("not found")]
     NotFound,
+    #[error("sign in again to confirm this change")]
+    ReauthenticationRequired,
+    #[error("too many attempts; try again later")]
+    RateLimited(std::time::Duration),
     #[error("{message}")]
     Conflict { message: String, details: Value },
     #[error(transparent)]
@@ -55,6 +59,8 @@ impl IntoResponse for ApiError {
             Self::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized"),
             Self::InvalidCredentials => (StatusCode::UNAUTHORIZED, "invalid_credentials"),
             Self::NotFound => (StatusCode::NOT_FOUND, "not_found"),
+            Self::ReauthenticationRequired => (StatusCode::FORBIDDEN, "reauthentication_required"),
+            Self::RateLimited(_) => (StatusCode::TOO_MANY_REQUESTS, "rate_limited"),
             Self::Conflict { .. } => (StatusCode::CONFLICT, "conflict"),
             Self::Internal(err) => {
                 tracing::error!(error = ?err, "internal error");
@@ -65,11 +71,16 @@ impl IntoResponse for ApiError {
             Self::Internal(_) => "internal server error".to_owned(),
             other => other.to_string(),
         };
+        let retry_after = match &self {
+            Self::RateLimited(wait) => Some(wait.as_secs().max(1)),
+            _ => None,
+        };
         let details = match self {
             Self::Conflict { details, .. } => details,
+            Self::RateLimited(_) => serde_json::json!({ "retryAfterSeconds": retry_after }),
             _ => Value::Null,
         };
-        (
+        let mut response = (
             status,
             Json(ErrorBody {
                 error: code,
@@ -77,7 +88,13 @@ impl IntoResponse for ApiError {
                 details,
             }),
         )
-            .into_response()
+            .into_response();
+        if let Some(seconds) = retry_after {
+            response
+                .headers_mut()
+                .insert(axum::http::header::RETRY_AFTER, seconds.into());
+        }
+        response
     }
 }
 

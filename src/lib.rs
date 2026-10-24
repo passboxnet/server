@@ -8,6 +8,7 @@ pub mod config;
 pub mod db;
 pub mod error;
 pub mod routes;
+pub mod security;
 pub mod state;
 pub mod telemetry;
 
@@ -21,16 +22,20 @@ use crate::state::AppState;
 /// Starts the HTTP server and runs until it receives a shutdown signal.
 pub async fn serve(config: Config) -> anyhow::Result<()> {
     let db = db::connect(&config.database_url).await?;
-    let state = AppState::load(db).await?;
+    let mut state = AppState::load(db).await?;
+    state.trust_proxy = config.trust_proxy;
     let app = routes::router(&config, state);
     let listener = TcpListener::bind(config.bind)
         .await
         .with_context(|| format!("failed to bind {}", config.bind))?;
     info!(address = %listener.local_addr()?, version = env!("CARGO_PKG_VERSION"), "passbox server listening");
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .context("server error")
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await
+    .context("server error")
 }
 
 async fn shutdown_signal() {

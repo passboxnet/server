@@ -14,7 +14,67 @@ use sha2::{Digest, Sha256};
 use super::validate;
 use crate::db::{self, now_ms};
 use crate::error::{ApiError, ApiResult};
+use crate::security::ClientIp;
 use crate::state::AppState;
+
+/// Requests to authentication endpoints per client IP and minute.
+const AUTH_REQUESTS_PER_MINUTE: u32 = 60;
+/// Failed logins per email within the lockout window.
+const MAX_FAILED_LOGINS: u32 = 10;
+/// Failed logins per IP within the lockout window. Higher, because many
+/// people can share one address (offices, mobile carriers).
+const MAX_FAILED_LOGINS_PER_IP: u32 = 100;
+const LOCKOUT_WINDOW: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+
+/// Throttles authentication requests from one IP address.
+fn limit_ip(state: &AppState, ip: &str) -> ApiResult<()> {
+    match state.limiter.hit(
+        &format!("auth-ip:{ip}"),
+        AUTH_REQUESTS_PER_MINUTE,
+        std::time::Duration::from_secs(60),
+    ) {
+        Some(wait) => Err(ApiError::RateLimited(wait)),
+        None => Ok(()),
+    }
+}
+
+/// Fails while an email or IP has too many recent failed logins.
+fn check_lockout(state: &AppState, email: &str, ip: &str) -> ApiResult<()> {
+    for (key, max) in [
+        (format!("fail-email:{email}"), MAX_FAILED_LOGINS),
+        (format!("fail-ip:{ip}"), MAX_FAILED_LOGINS_PER_IP),
+    ] {
+        if let Some(wait) = state.limiter.blocked(&key, max, LOCKOUT_WINDOW) {
+            return Err(ApiError::RateLimited(wait));
+        }
+    }
+    Ok(())
+}
+
+/// Records an entry in the account's activity log.
+pub async fn record_event(
+    state: &AppState,
+    account_id: &str,
+    kind: &str,
+    device_name: &str,
+    client_kind: &str,
+    ip: &str,
+) -> ApiResult<()> {
+    sqlx::query(
+        "INSERT INTO account_events (id, account_id, kind, device_name, client_kind, ip, created_at) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7)",
+    )
+    .bind(id::new_id().map_err(|e| ApiError::Internal(e.into()))?)
+    .bind(account_id)
+    .bind(kind)
+    .bind(device_name)
+    .bind(client_kind)
+    .bind(ip)
+    .bind(now_ms())
+    .execute(&state.db)
+    .await?;
+    Ok(())
+}
 
 /// Sessions expire after 30 days.
 const SESSION_TTL_MS: i64 = 30 * 24 * 60 * 60 * 1000;
@@ -40,8 +100,10 @@ pub struct PreloginResponse {
 /// fake values, so the endpoint does not reveal which accounts exist.
 pub async fn prelogin(
     State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
     Json(req): Json<PreloginRequest>,
 ) -> ApiResult<Json<PreloginResponse>> {
+    limit_ip(&state, &ip)?;
     let email = validate::email(&req.email)?;
     let row: Option<(String, String, i64, i64, i64)> = sqlx::query_as(
         "SELECT id, kdf_salt, kdf_memory_kib, kdf_iterations, kdf_parallelism FROM accounts WHERE email = $1",
@@ -108,8 +170,10 @@ pub struct RegisterStartResponse {
 
 pub async fn register_start(
     State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
     Json(req): Json<RegisterStartRequest>,
 ) -> ApiResult<Json<RegisterStartResponse>> {
+    limit_ip(&state, &ip)?;
     validate::id("accountId", &req.account_id)?;
     let email = validate::email(&req.email)?;
     ensure_account_is_new(&state, &req.account_id, &email).await?;
@@ -172,8 +236,10 @@ pub struct RegisterFinishResponse {
 
 pub async fn register_finish(
     State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
     Json(req): Json<RegisterFinishRequest>,
 ) -> ApiResult<(StatusCode, Json<RegisterFinishResponse>)> {
+    limit_ip(&state, &ip)?;
     validate::id("accountId", &req.account_id)?;
     let email = validate::email(&req.email)?;
     validate::kdf(&req.kdf_salt, &req.kdf_params)?;
@@ -219,6 +285,7 @@ pub async fn register_finish(
     tx.commit().await?;
 
     tracing::info!(account_id = %req.account_id, "account registered");
+    record_event(&state, &req.account_id, "account_created", "", "", &ip).await?;
     Ok((
         StatusCode::CREATED,
         Json(RegisterFinishResponse {
@@ -245,9 +312,12 @@ pub struct LoginStartResponse {
 
 pub async fn login_start(
     State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
     Json(req): Json<LoginStartRequest>,
 ) -> ApiResult<Json<LoginStartResponse>> {
+    limit_ip(&state, &ip)?;
     let email = validate::email(&req.email)?;
+    check_lockout(&state, &email, &ip)?;
     let request = validate::base64(
         "credentialRequest",
         &req.credential_request,
@@ -280,12 +350,15 @@ pub async fn login_start(
         .execute(&state.db)
         .await?;
     sqlx::query(
-        "INSERT INTO login_attempts (id, account_id, state, expires_at) VALUES ($1, $2, $3, $4)",
+        "INSERT INTO login_attempts (id, account_id, state, expires_at, ip, email) \
+         VALUES ($1, $2, $3, $4, $5, $6)",
     )
     .bind(&login_id)
     .bind(account_id)
     .bind(encoding::encode(&login_state))
     .bind(now + LOGIN_TTL_MS)
+    .bind(&ip)
+    .bind(&email)
     .execute(&state.db)
     .await?;
 
@@ -300,6 +373,12 @@ pub async fn login_start(
 pub struct LoginFinishRequest {
     login_id: String,
     credential_finalization: String,
+    /// Shown in the user's device list, for example "Chrome on macOS".
+    #[serde(default)]
+    device_name: String,
+    /// web, extension, desktop, ios, android or cli.
+    #[serde(default)]
+    client_kind: String,
 }
 
 #[derive(Serialize)]
@@ -307,11 +386,24 @@ pub struct LoginFinishRequest {
 pub struct LoginFinishResponse {
     token: String,
     account_id: String,
+    session_id: String,
     expires_at: i64,
+}
+
+const CLIENT_KINDS: [&str; 6] = ["web", "extension", "desktop", "ios", "android", "cli"];
+
+fn clean_device_name(name: &str) -> String {
+    name.chars()
+        .filter(|c| !c.is_control())
+        .take(80)
+        .collect::<String>()
+        .trim()
+        .to_owned()
 }
 
 pub async fn login_finish(
     State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
     Json(req): Json<LoginFinishRequest>,
 ) -> ApiResult<Json<LoginFinishResponse>> {
     validate::id("loginId", &req.login_id)?;
@@ -320,15 +412,21 @@ pub async fn login_finish(
         &req.credential_finalization,
         validate::MAX_SMALL_LEN,
     )?;
+    let device_name = clean_device_name(&req.device_name);
+    let client_kind = if CLIENT_KINDS.contains(&req.client_kind.as_str()) {
+        req.client_kind.clone()
+    } else {
+        String::new()
+    };
 
     // Each attempt can be finished once, successful or not.
-    let attempt: Option<(Option<String>, String, i64)> = sqlx::query_as(
-        "DELETE FROM login_attempts WHERE id = $1 RETURNING account_id, state, expires_at",
+    let attempt: Option<(Option<String>, String, i64, String)> = sqlx::query_as(
+        "DELETE FROM login_attempts WHERE id = $1 RETURNING account_id, state, expires_at, email",
     )
     .bind(&req.login_id)
     .fetch_optional(&state.db)
     .await?;
-    let Some((account_id, login_state, expires_at)) = attempt else {
+    let Some((account_id, login_state, expires_at, email)) = attempt else {
         return Err(ApiError::InvalidCredentials);
     };
     let now = now_ms();
@@ -336,35 +434,88 @@ pub async fn login_finish(
     let verified = opaque::finish_login(&login_state, &finalization).is_ok();
     let account_id = match account_id {
         Some(id) if verified && expires_at >= now => id,
-        _ => {
+        known => {
             tracing::info!("failed login");
+            state.limiter.hit(
+                &format!("fail-email:{email}"),
+                MAX_FAILED_LOGINS,
+                LOCKOUT_WINDOW,
+            );
+            state.limiter.hit(
+                &format!("fail-ip:{ip}"),
+                MAX_FAILED_LOGINS_PER_IP,
+                LOCKOUT_WINDOW,
+            );
+            if let Some(account_id) = known {
+                record_event(
+                    &state,
+                    &account_id,
+                    "login_failed",
+                    &device_name,
+                    &client_kind,
+                    &ip,
+                )
+                .await?;
+            }
             return Err(ApiError::InvalidCredentials);
         }
     };
 
     let token = encoding::encode(&random::bytes::<32>().map_err(|e| ApiError::Internal(e.into()))?);
+    let session_id = id::new_id().map_err(|e| ApiError::Internal(e.into()))?;
     let expires_at = now + SESSION_TTL_MS;
-    sqlx::query("INSERT INTO sessions (token_hash, account_id, created_at, expires_at) VALUES ($1, $2, $3, $4)")
-        .bind(hash_token(&token))
-        .bind(&account_id)
-        .bind(now)
-        .bind(expires_at)
-        .execute(&state.db)
-        .await?;
+    sqlx::query(
+        "INSERT INTO sessions (token_hash, account_id, created_at, expires_at, id, device_name, client_kind, ip, \
+         last_used_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+    )
+    .bind(hash_token(&token))
+    .bind(&account_id)
+    .bind(now)
+    .bind(expires_at)
+    .bind(&session_id)
+    .bind(&device_name)
+    .bind(&client_kind)
+    .bind(&ip)
+    .bind(now)
+    .execute(&state.db)
+    .await?;
+    record_event(
+        &state,
+        &account_id,
+        "login",
+        &device_name,
+        &client_kind,
+        &ip,
+    )
+    .await?;
     tracing::info!(account_id = %account_id, "login");
 
     Ok(Json(LoginFinishResponse {
         token,
         account_id,
+        session_id,
         expires_at,
     }))
 }
 
-pub async fn logout(State(state): State<AppState>, session: Session) -> ApiResult<StatusCode> {
+pub async fn logout(
+    State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
+    session: Session,
+) -> ApiResult<StatusCode> {
     sqlx::query("DELETE FROM sessions WHERE token_hash = $1")
         .bind(&session.token_hash)
         .execute(&state.db)
         .await?;
+    record_event(
+        &state,
+        &session.account_id,
+        "logout",
+        &session.device_name,
+        &session.client_kind,
+        &ip,
+    )
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -417,8 +568,23 @@ pub async fn account(
 /// carries a valid `Authorization: Bearer <token>` header.
 pub struct Session {
     pub account_id: String,
+    /// Public ID of the session, shown in the device list.
+    pub id: String,
+    pub device_name: String,
+    pub client_kind: String,
+    /// When the session was created by a full login (Unix ms).
+    pub created_at: i64,
     token_hash: String,
 }
+
+impl Session {
+    pub(crate) fn token_hash(&self) -> &str {
+        &self.token_hash
+    }
+}
+
+/// `last_used_at` is updated at most this often per session.
+const LAST_USED_RESOLUTION_MS: i64 = 60_000;
 
 fn hash_token(token: &str) -> String {
     HEXLOWER.encode(&Sha256::digest(token.as_bytes()))
@@ -443,18 +609,31 @@ impl FromRequestParts<AppState> for Session {
             return Err(ApiError::Unauthorized);
         }
         let token_hash = hash_token(token);
-        let account_id: Option<String> = sqlx::query_scalar(
-            "SELECT account_id FROM sessions WHERE token_hash = $1 AND expires_at > $2",
+        let now = db::now_ms();
+        let row: Option<(String, String, String, String, i64, i64)> = sqlx::query_as(
+            "SELECT account_id, id, device_name, client_kind, created_at, last_used_at FROM sessions \
+             WHERE token_hash = $1 AND expires_at > $2",
         )
         .bind(&token_hash)
-        .bind(db::now_ms())
+        .bind(now)
         .fetch_optional(&state.db)
         .await?;
-        account_id
-            .map(|account_id| Session {
-                account_id,
-                token_hash,
-            })
-            .ok_or(ApiError::Unauthorized)
+        let (account_id, id, device_name, client_kind, created_at, last_used_at) =
+            row.ok_or(ApiError::Unauthorized)?;
+        if now - last_used_at > LAST_USED_RESOLUTION_MS {
+            sqlx::query("UPDATE sessions SET last_used_at = $1 WHERE token_hash = $2")
+                .bind(now)
+                .bind(&token_hash)
+                .execute(&state.db)
+                .await?;
+        }
+        Ok(Session {
+            account_id,
+            id,
+            device_name,
+            client_kind,
+            created_at,
+            token_hash,
+        })
     }
 }

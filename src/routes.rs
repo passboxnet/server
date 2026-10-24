@@ -28,7 +28,8 @@ pub fn router(config: &Config, state: AppState) -> Router {
         app = app.fallback_service(spa);
     }
 
-    app.layer(TraceLayer::new_for_http())
+    app.layer(axum::middleware::from_fn(crate::security::security_headers))
+        .layer(TraceLayer::new_for_http())
 }
 
 /// Lets clients on other origins (the desktop app, a web client served

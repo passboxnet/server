@@ -6,6 +6,7 @@ use passbox_core::opaque::ServerKeys;
 use passbox_core::random;
 
 use crate::db::Db;
+use crate::security::RateLimiter;
 
 /// Shared state of all request handlers.
 #[derive(Clone)]
@@ -14,6 +15,10 @@ pub struct AppState {
     pub opaque: Arc<ServerKeys>,
     /// Key for deriving stable fake login parameters for unknown emails.
     pub prelogin_key: Arc<[u8; 32]>,
+    /// Limits for authentication endpoints.
+    pub limiter: Arc<RateLimiter>,
+    /// Trust `X-Forwarded-For` from a reverse proxy for client IPs.
+    pub trust_proxy: bool,
 }
 
 impl AppState {
@@ -37,6 +42,8 @@ impl AppState {
             db,
             opaque: Arc::new(opaque),
             prelogin_key: Arc::new(prelogin_key),
+            limiter: Arc::new(RateLimiter::default()),
+            trust_proxy: false,
         })
     }
 }

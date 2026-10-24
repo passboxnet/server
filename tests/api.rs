@@ -176,6 +176,206 @@ async fn run_all(database_url: &str) {
     accounts_are_isolated(&server).await;
     requests_need_a_session(&server).await;
     cross_origin_requests_are_allowed_without_credentials(&server).await;
+    sessions_and_activity_log(&server).await;
+    master_password_change(&server).await;
+    security_headers_are_set(&server).await;
+    // Last: it locks out an email and counts failures for the test IP.
+    failed_logins_are_rate_limited(&server).await;
+}
+
+async fn sessions_and_activity_log(server: &TestServer) {
+    let client = Client::new();
+    client.register(server).await;
+    let laptop = client.login(server).await;
+    let phone = client.login(server).await;
+
+    let (status, sessions) = server
+        .request(Method::GET, "/api/v1/sessions", Some(&laptop), None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let sessions = sessions.as_array().unwrap().clone();
+    assert_eq!(sessions.len(), 2);
+    assert_eq!(sessions.iter().filter(|s| s["current"] == true).count(), 1);
+    let phone_session = sessions.iter().find(|s| s["current"] == false).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    // Signing out the phone from the laptop invalidates the phone's token.
+    let (status, _) = server
+        .request(
+            Method::DELETE,
+            &format!("/api/v1/sessions/{phone_session}"),
+            Some(&laptop),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _) = server
+        .request(Method::GET, "/api/v1/account", Some(&phone), None)
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    // Other accounts' sessions cannot be revoked.
+    let stranger = Client::new();
+    stranger.register(server).await;
+    let stranger_token = stranger.login(server).await;
+    let (status, sessions) = server
+        .request(Method::GET, "/api/v1/sessions", Some(&laptop), None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let laptop_session = sessions[0]["id"].as_str().unwrap().to_owned();
+    let (status, _) = server
+        .request(
+            Method::DELETE,
+            &format!("/api/v1/sessions/{laptop_session}"),
+            Some(&stranger_token),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let tablet = client.login(server).await;
+    let (status, _) = server
+        .post("/api/v1/sessions/revoke-others", Some(&laptop), json!({}))
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _) = server
+        .request(Method::GET, "/api/v1/account", Some(&tablet), None)
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _) = server
+        .request(Method::GET, "/api/v1/account", Some(&laptop), None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+
+    assert!(client.login_with(server, b"wrong").await.is_err());
+    let (status, events) = server
+        .request(Method::GET, "/api/v1/account/events", Some(&laptop), None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let kinds: Vec<&str> = events
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["kind"].as_str().unwrap())
+        .collect();
+    for kind in [
+        "account_created",
+        "login",
+        "login_failed",
+        "session_revoked",
+        "other_sessions_revoked",
+    ] {
+        assert!(kinds.contains(&kind), "missing {kind} in {kinds:?}");
+    }
+    // Newest first.
+    assert_eq!(kinds[0], "login_failed");
+}
+
+async fn master_password_change(server: &TestServer) {
+    let client = Client::new();
+    let (keyring, _) = client.register(server).await;
+    let token = client.login(server).await;
+    let other_device = client.login(server).await;
+
+    let new_auth_secret: [u8; 32] = random::bytes().unwrap();
+    let new_auk = SymmetricKey::generate().unwrap();
+    let (flow, request) = ClientRegistrationFlow::start(&new_auth_secret).unwrap();
+    let (status, body) = server
+        .post(
+            "/api/v1/account/password/start",
+            Some(&token),
+            json!({ "registrationRequest": encoding::encode(&request) }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let upload = flow
+        .finish(&encoding::decode(body["registrationResponse"].as_str().unwrap()).unwrap())
+        .unwrap();
+    let (status, body) = server
+        .post(
+            "/api/v1/account/password/finish",
+            Some(&token),
+            json!({
+                "registrationUpload": encoding::encode(&upload),
+                "kdfSalt": encoding::encode(&[9u8; 16]),
+                "kdfParams": KdfParams::DEFAULT,
+                "encryptedAccountKey": keyring.wrap_account_key(&new_auk).unwrap(),
+            }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+
+    // Other devices are signed out; the old password no longer works.
+    let (status, _) = server
+        .request(Method::GET, "/api/v1/account", Some(&other_device), None)
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        client.login_with(server, &client.auth_secret).await,
+        Err(StatusCode::UNAUTHORIZED)
+    );
+    let new_token = client.login_with(server, &new_auth_secret).await.unwrap();
+    let (_, account) = server
+        .request(Method::GET, "/api/v1/account", Some(&new_token), None)
+        .await;
+    assert_eq!(
+        encoding::decode(account["kdfSalt"].as_str().unwrap()).unwrap(),
+        [9u8; 16]
+    );
+    assert!(
+        Keyring::unlock(
+            &new_auk,
+            &client.account_id,
+            account["encryptedAccountKey"].as_str().unwrap()
+        )
+        .is_ok()
+    );
+}
+
+async fn security_headers_are_set(server: &TestServer) {
+    for uri in ["/health", "/api/v1/meta"] {
+        let response = server
+            .app
+            .clone()
+            .oneshot(Request::get(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let headers = response.headers();
+        assert_eq!(headers["x-frame-options"], "DENY");
+        assert_eq!(headers["x-content-type-options"], "nosniff");
+        assert!(
+            headers["content-security-policy"]
+                .to_str()
+                .unwrap()
+                .contains("frame-ancestors 'none'")
+        );
+        if uri.starts_with("/api/") {
+            assert_eq!(headers["cache-control"], "no-store");
+        }
+    }
+}
+
+async fn failed_logins_are_rate_limited(server: &TestServer) {
+    let client = Client::new();
+    client.register(server).await;
+    for _ in 0..10 {
+        assert_eq!(
+            client.login_with(server, b"guess").await,
+            Err(StatusCode::UNAUTHORIZED)
+        );
+    }
+    let (status, body) = server
+        .post(
+            "/api/v1/auth/login/start",
+            None,
+            json!({ "email": client.email, "credentialRequest": "AA" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(body["error"], "rate_limited");
+    assert!(body["details"]["retryAfterSeconds"].as_u64().unwrap() > 0);
 }
 
 #[tokio::test]
