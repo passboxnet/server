@@ -3,6 +3,7 @@
 pub mod access;
 pub mod account;
 pub mod admin;
+pub mod agents;
 pub mod auth;
 pub mod device_links;
 pub mod emergency;
@@ -14,6 +15,7 @@ pub mod org_recovery;
 pub mod orgs;
 pub mod preferences;
 pub mod recovery;
+pub mod service_accounts;
 pub mod sessions;
 pub mod shared;
 pub mod signed;
@@ -224,4 +226,50 @@ pub fn router() -> Router<AppState> {
             get(device_links::get).delete(device_links::delete),
         )
         .route("/device-links/{id}/approve", post(device_links::approve))
+        // Service accounts: the owner.
+        .route(
+            "/service-accounts",
+            get(service_accounts::list).post(service_accounts::create),
+        )
+        .route(
+            "/service-accounts/{id}",
+            put(service_accounts::update).delete(service_accounts::delete),
+        )
+        .route(
+            "/service-accounts/{id}/grants",
+            put(service_accounts::put_grants),
+        )
+        .route(
+            "/service-accounts/{id}/grants/{vault_id}",
+            delete(service_accounts::delete_grant),
+        )
+        .route(
+            "/service-accounts/{id}/revoke",
+            post(service_accounts::revoke),
+        )
+        .route(
+            "/service-accounts/{id}/events",
+            get(service_accounts::events),
+        )
+        // Service accounts: the service account itself.
+        .route("/service-account", get(service_accounts::state))
+        .route(
+            "/service-account/items/{id}",
+            put(service_accounts::put_item).delete(service_accounts::delete_item),
+        )
+        .route(
+            "/service-account/agent-grants",
+            post(agents::sa_create),
+        )
+        .route(
+            "/service-account/agent-grants/{id}",
+            get(agents::sa_get),
+        )
+        .route("/service-account/agent-events", post(agents::sa_event))
+        // AI agents: grant requests, decisions and audit.
+        .route("/agent-grants", get(agents::list).post(agents::create))
+        .route("/agent-grants/{id}", get(agents::get))
+        .route("/agent-grants/{id}/decision", post(agents::decide))
+        .route("/agent-grants/{id}/revoke", post(agents::revoke))
+        .route("/agent-events", get(agents::events).post(agents::event))
 }
