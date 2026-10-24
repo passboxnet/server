@@ -11,6 +11,7 @@ use passbox_core::aead::SymmetricKey;
 use passbox_core::kdf::KdfParams;
 use passbox_core::keyring::Keyring;
 use passbox_core::opaque::{ClientLoginFlow, ClientRegistrationFlow};
+use passbox_core::sharing::objects::{OrgKind, OrgRole, PrincipalType, VaultRole};
 use passbox_core::{encoding, id, random};
 use passbox_server::config::Config;
 use passbox_server::state::AppState;
@@ -258,6 +259,8 @@ async fn run_all(database_url: &str) {
     two_factor_remember_device(&server).await;
     two_factor_security_keys(&server).await;
     two_factor_rate_limits(&server).await;
+    key_pairs_and_directory(&server).await;
+    organizations_and_shared_vaults(&server).await;
     // Last: it locks out an email and counts failures for the test IP.
     failed_logins_are_rate_limited(&server).await;
 }
@@ -584,6 +587,968 @@ async fn security_headers_are_set(server: &TestServer) {
             assert_eq!(headers["cache-control"], "no-store");
         }
     }
+}
+
+// --- Sharing: key pairs, key directory, organizations, shared vaults -----------
+
+impl Client {
+    /// Registers from `ip` (sharing tests use their own IPs so the auth rate
+    /// limit of the other tests is not affected) and returns the keyring.
+    async fn register_from(&self, server: &TestServer, ip: &str) -> Keyring {
+        let (flow, request) = ClientRegistrationFlow::start(&self.auth_secret).unwrap();
+        let (status, body) = server
+            .request_from(
+                Some(ip),
+                Method::POST,
+                "/api/v1/auth/register/start",
+                None,
+                Some(json!({
+                    "accountId": self.account_id,
+                    "email": self.email,
+                    "registrationRequest": encoding::encode(&request),
+                })),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let response = encoding::decode(body["registrationResponse"].as_str().unwrap()).unwrap();
+        let upload = flow.finish(&response).unwrap();
+        let (mut keyring, encrypted_account_key) =
+            Keyring::create(&self.auk, &self.account_id).unwrap();
+        let vault = keyring.create_vault(r#"{"name":"Private"}"#).unwrap();
+        let (status, body) = server
+            .request_from(
+                Some(ip),
+                Method::POST,
+                "/api/v1/auth/register/finish",
+                None,
+                Some(json!({
+                    "accountId": self.account_id,
+                    "email": self.email,
+                    "registrationUpload": encoding::encode(&upload),
+                    "kdfSalt": encoding::encode(&[7u8; 16]),
+                    "kdfParams": KdfParams::DEFAULT,
+                    "encryptedAccountKey": encrypted_account_key,
+                    "vault": {
+                        "id": vault.id,
+                        "encryptedKey": vault.encrypted_key,
+                        "encryptedMeta": vault.encrypted_meta,
+                    },
+                })),
+            )
+            .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        keyring
+    }
+}
+
+/// A registered, signed-in account with published key pairs.
+struct Member {
+    client: Client,
+    keyring: Keyring,
+    token: String,
+}
+
+impl Member {
+    async fn new(server: &TestServer, ip: &str) -> Self {
+        let client = Client::new();
+        let mut keyring = client.register_from(server, ip).await;
+        let token = client
+            .try_login(server, &client.auth_secret, Some(ip), None)
+            .await
+            .unwrap()
+            .token;
+        let upload = keyring.create_account_keys(1).unwrap();
+        let (status, body) = server
+            .request(
+                Method::PUT,
+                "/api/v1/account/keys",
+                Some(&token),
+                Some(serde_json::to_value(&upload).unwrap()),
+            )
+            .await;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+        Self {
+            client,
+            keyring,
+            token,
+        }
+    }
+
+    fn id(&self) -> &str {
+        &self.client.account_id
+    }
+
+    async fn call(
+        &self,
+        server: &TestServer,
+        method: Method,
+        uri: &str,
+        body: Option<Value>,
+    ) -> (StatusCode, Value) {
+        server.request(method, uri, Some(&self.token), body).await
+    }
+
+    /// Full sharing sync: applies the delta and uploads own key copies.
+    async fn sync(
+        &mut self,
+        server: &TestServer,
+    ) -> (Value, passbox_core::sharing::state::SharingReport) {
+        let (status, body) = self
+            .call(server, Method::GET, "/api/v1/sync?since=0&sharing=1", None)
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let delta: passbox_core::sharing::data::SharingDelta =
+            serde_json::from_value(body["sharing"].clone()).unwrap();
+        let report = self.keyring.apply_sharing(delta);
+        for wrapped in &report.wrapped_keys {
+            let (status, _) = self
+                .call(
+                    server,
+                    Method::PUT,
+                    &format!(
+                        "/api/v1/vaults/{}/keys/{}/wrapped",
+                        wrapped.vault_id, wrapped.key_epoch
+                    ),
+                    Some(json!({ "wrappedKey": wrapped.wrapped_key })),
+                )
+                .await;
+            assert_eq!(status, StatusCode::NO_CONTENT);
+        }
+        (body, report)
+    }
+
+    async fn lookup(&mut self, server: &TestServer, account_id: &str) -> String {
+        let since = self.keyring.trust_store().directory.size;
+        let (status, body) = self
+            .call(
+                server,
+                Method::GET,
+                &format!("/api/v1/keys/{account_id}?since={since}"),
+                None,
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let response: passbox_core::directory::LookupResponse =
+            serde_json::from_value(body).unwrap();
+        self.keyring
+            .verify_directory_lookup(account_id, &response)
+            .unwrap()
+            .fingerprint
+    }
+
+    async fn put_item(
+        &self,
+        server: &TestServer,
+        vault_id: &str,
+        epoch: u32,
+        item_id: &str,
+        revision: u64,
+    ) -> StatusCode {
+        let encrypted = self
+            .keyring
+            .encrypt_item_at(vault_id, epoch, item_id, revision, r#"{"title":"Shared"}"#)
+            .unwrap_or_else(|_| encoding::encode(&[0u8; 64]));
+        self.call(
+            server,
+            Method::PUT,
+            &format!("/api/v1/items/{item_id}"),
+            Some(json!({ "vaultId": vault_id, "revision": revision, "encryptedData": encrypted, "keyEpoch": epoch })),
+        )
+        .await
+        .0
+    }
+}
+
+async fn invite_and_confirm(
+    server: &TestServer,
+    admin: &mut Member,
+    member: &mut Member,
+    org_id: &str,
+    role: &str,
+) {
+    let (status, body) = admin
+        .call(
+            server,
+            Method::POST,
+            &format!("/api/v1/orgs/{org_id}/invitations"),
+            Some(json!({ "email": member.client.email, "role": role })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let token = body["token"].as_str().unwrap().to_owned();
+    let (status, body) = member
+        .call(
+            server,
+            Method::POST,
+            "/api/v1/invitations/accept",
+            Some(json!({ "token": token })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    admin.sync(server).await;
+    let fingerprint = admin.lookup(server, member.id()).await;
+    let confirm = admin
+        .keyring
+        .confirm_member(org_id, member.id(), 2)
+        .unwrap();
+    assert_eq!(confirm.fingerprint, fingerprint);
+    let (status, body) = admin
+        .call(
+            server,
+            Method::POST,
+            &format!("/api/v1/orgs/{org_id}/members/{}/confirm", member.id()),
+            Some(serde_json::to_value(&confirm).unwrap()),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    admin.sync(server).await;
+}
+
+async fn key_pairs_and_directory(server: &TestServer) {
+    let mut alice = Member::new(server, "10.9.0.1").await;
+    let bob = Member::new(server, "10.9.0.2").await;
+
+    // The own keys come back exactly; republishing them is idempotent, other
+    // keys are refused.
+    let (status, own) = alice
+        .call(server, Method::GET, "/api/v1/account/keys", None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let mut reloaded = Keyring::unlock(&alice.client.auk, alice.id(), &{
+        let (_, account) = alice
+            .call(server, Method::GET, "/api/v1/account", None)
+            .await;
+        account["encryptedAccountKey"].as_str().unwrap().to_owned()
+    })
+    .unwrap();
+    reloaded
+        .load_account_keys(
+            own["bundle"].as_str().unwrap(),
+            own["bundleSignature"].as_str().unwrap(),
+            own["encryptedPrivate"].as_str().unwrap(),
+        )
+        .unwrap();
+    assert_eq!(
+        reloaded.own_bundle().unwrap(),
+        alice.keyring.own_bundle().unwrap()
+    );
+    let (status, _) = alice
+        .call(
+            server,
+            Method::PUT,
+            "/api/v1/account/keys",
+            Some(own.clone()),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let mut other = Keyring::create(&alice.client.auk, alice.id()).unwrap().0;
+    let other_keys = other.create_account_keys(5).unwrap();
+    let (status, _) = alice
+        .call(
+            server,
+            Method::PUT,
+            "/api/v1/account/keys",
+            Some(serde_json::to_value(&other_keys).unwrap()),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    // Someone else's bundle cannot be published under one's own account.
+    let (status, _) = bob
+        .call(server, Method::PUT, "/api/v1/account/keys", Some(own))
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // Directory lookups verify against the signed head, before and after
+    // the log grew.
+    alice.lookup(server, bob.id()).await;
+    let carol = Member::new(server, "10.9.0.3").await;
+    alice.lookup(server, bob.id()).await;
+    alice.lookup(server, carol.id()).await;
+    assert!(alice.keyring.trust_store().directory.size >= 3);
+    // Self-monitoring: the directory lists the account's own key.
+    let own_id = alice.id().to_owned();
+    alice.lookup(server, &own_id).await;
+    let (status, head) = alice
+        .call(server, Method::GET, "/api/v1/keys/head", None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(head["signature"].is_string());
+    let (status, page) = alice
+        .call(server, Method::GET, "/api/v1/keys/log?from=1&limit=2", None)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(page["entries"].as_array().unwrap().len(), 2);
+    let (status, _) = server
+        .request(
+            Method::GET,
+            &format!("/api/v1/keys/{}", bob.id()),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _) = alice
+        .call(
+            server,
+            Method::GET,
+            &format!("/api/v1/keys/{}", id::new_id().unwrap()),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+async fn organizations_and_shared_vaults(server: &TestServer) {
+    let mut alice = Member::new(server, "10.9.1.1").await;
+    let mut bob = Member::new(server, "10.9.1.2").await;
+    let mut carol = Member::new(server, "10.9.1.3").await;
+    let mut mallory = Member::new(server, "10.9.1.4").await;
+
+    // A family with its family vault.
+    let org = alice
+        .keyring
+        .create_org(
+            OrgKind::Family,
+            r#"{"name":"Doe"}"#,
+            Some(r#"{"name":"Family"}"#),
+            1,
+        )
+        .unwrap();
+    let org_id = org.id.clone();
+    let vault_id = org.vault.as_ref().unwrap().id.clone();
+    let mut forged = org.clone();
+    forged.genesis_signature = encoding::encode(&[0u8; 64]);
+    let (status, _) = alice
+        .call(
+            server,
+            Method::POST,
+            "/api/v1/orgs",
+            Some(serde_json::to_value(&forged).unwrap()),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "forged genesis");
+    let mut without_vault = org.clone();
+    without_vault.vault = None;
+    let (status, _) = alice
+        .call(
+            server,
+            Method::POST,
+            "/api/v1/orgs",
+            Some(serde_json::to_value(&without_vault).unwrap()),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "family needs its vault");
+    let (status, body) = alice
+        .call(
+            server,
+            Method::POST,
+            "/api/v1/orgs",
+            Some(serde_json::to_value(&org).unwrap()),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let (_, report) = alice.sync(server).await;
+    assert!(
+        report.view.warnings.is_empty(),
+        "{:?}",
+        report.view.warnings
+    );
+    assert_eq!(report.view.orgs[0].name.as_deref(), Some("Doe"));
+    assert_eq!(report.view.vaults[0].role.as_deref(), Some("manage"));
+
+    // Non-members see nothing.
+    let (status, _) = mallory
+        .call(server, Method::GET, &format!("/api/v1/orgs/{org_id}"), None)
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = mallory
+        .call(
+            server,
+            Method::GET,
+            &format!("/api/v1/vaults/{vault_id}/members"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        mallory
+            .put_item(server, &vault_id, 1, &id::new_id().unwrap(), 1)
+            .await,
+        StatusCode::NOT_FOUND
+    );
+    let (status, _) = mallory
+        .call(
+            server,
+            Method::POST,
+            &format!("/api/v1/orgs/{org_id}/invitations"),
+            Some(json!({ "email": "x@example.com", "role": "member" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // Invitation: preview, wrong account, accept once.
+    let (status, body) = alice
+        .call(
+            server,
+            Method::POST,
+            &format!("/api/v1/orgs/{org_id}/invitations"),
+            Some(json!({ "email": bob.client.email.to_uppercase(), "role": "member" })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let token = body["token"].as_str().unwrap().to_owned();
+    assert_eq!(body["path"], format!("/invite/{token}"));
+    let (status, preview) = server
+        .request_from(
+            Some("10.9.1.9"),
+            Method::GET,
+            &format!("/api/v1/invitations/{token}"),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(preview["email"], bob.client.email);
+    assert_eq!(preview["orgKind"], "family");
+    let (status, invitations) = alice
+        .call(
+            server,
+            Method::GET,
+            &format!("/api/v1/orgs/{org_id}/invitations"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(invitations.as_array().unwrap().len(), 1);
+    assert!(invitations[0].get("token").is_none());
+    let (status, _) = carol
+        .call(
+            server,
+            Method::POST,
+            "/api/v1/invitations/accept",
+            Some(json!({ "token": token })),
+        )
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "invitation is for another email"
+    );
+    let (status, _) = bob
+        .call(
+            server,
+            Method::POST,
+            "/api/v1/invitations/accept",
+            Some(json!({ "token": token })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = bob
+        .call(
+            server,
+            Method::POST,
+            "/api/v1/invitations/accept",
+            Some(json!({ "token": token })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "single use");
+    // Accepted, not confirmed: no vault access, cannot confirm others.
+    let (_, report) = bob.sync(server).await;
+    assert!(report.view.vaults.is_empty());
+    assert_eq!(report.view.orgs[0].status, "accepted");
+    let (status, _) = bob
+        .call(
+            server,
+            Method::POST,
+            &format!("/api/v1/orgs/{org_id}/members/{}/confirm", bob.id()),
+            Some(json!({})),
+        )
+        .await;
+    assert!(
+        status == StatusCode::FORBIDDEN || status == StatusCode::UNPROCESSABLE_ENTITY,
+        "{status}"
+    );
+
+    // Confirmation by the admin's client, after a directory lookup.
+    alice.sync(server).await;
+    alice.lookup(server, bob.id()).await;
+    let confirm = alice.keyring.confirm_member(&org_id, bob.id(), 2).unwrap();
+    let mut wrong = confirm.clone();
+    wrong.attestation_signature = encoding::encode(&[1u8; 64]);
+    let (status, _) = alice
+        .call(
+            server,
+            Method::POST,
+            &format!("/api/v1/orgs/{org_id}/members/{}/confirm", bob.id()),
+            Some(serde_json::to_value(&wrong).unwrap()),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "forged attestation");
+    let (status, body) = alice
+        .call(
+            server,
+            Method::POST,
+            &format!("/api/v1/orgs/{org_id}/members/{}/confirm", bob.id()),
+            Some(serde_json::to_value(&confirm).unwrap()),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    alice.sync(server).await;
+
+    // Share the family vault with Bob, view only.
+    let change = alice
+        .keyring
+        .share_vault(
+            &vault_id,
+            PrincipalType::Account,
+            bob.id(),
+            VaultRole::View,
+            3,
+        )
+        .unwrap();
+    let (status, body) = alice
+        .call(
+            server,
+            Method::POST,
+            &format!("/api/v1/vaults/{vault_id}/members"),
+            Some(serde_json::to_value(&change).unwrap()),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    // Replaying the same change fails (the manifest version is taken).
+    let (status, _) = alice
+        .call(
+            server,
+            Method::POST,
+            &format!("/api/v1/vaults/{vault_id}/members"),
+            Some(serde_json::to_value(&change).unwrap()),
+        )
+        .await;
+    assert_ne!(status, StatusCode::OK);
+    alice.sync(server).await;
+    let item_id = id::new_id().unwrap();
+    assert_eq!(
+        alice.put_item(server, &vault_id, 1, &item_id, 1).await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        alice
+            .put_item(server, &vault_id, 0, &id::new_id().unwrap(), 1)
+            .await,
+        StatusCode::CONFLICT,
+        "wrong key epoch"
+    );
+
+    let (body, report) = bob.sync(server).await;
+    assert!(
+        report.view.warnings.is_empty(),
+        "{:?}",
+        report.view.warnings
+    );
+    assert_eq!(report.view.vaults[0].role.as_deref(), Some("view"));
+    let item = body["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["id"] == item_id.as_str())
+        .unwrap();
+    assert_eq!(item["keyEpoch"], 1);
+    assert_eq!(
+        bob.keyring
+            .decrypt_item_at(
+                &vault_id,
+                1,
+                &item_id,
+                1,
+                item["encryptedData"].as_str().unwrap()
+            )
+            .unwrap(),
+        r#"{"title":"Shared"}"#
+    );
+    // A second sync uses the own wrapped copy.
+    let (_, report) = bob.sync(server).await;
+    assert!(report.wrapped_keys.is_empty());
+    // View-only members cannot write, share or rotate.
+    assert_eq!(
+        bob.put_item(server, &vault_id, 1, &item_id, 2).await,
+        StatusCode::FORBIDDEN
+    );
+    let (status, _) = bob
+        .call(
+            server,
+            Method::DELETE,
+            &format!("/api/v1/items/{item_id}?revision=2"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, _) = bob
+        .call(
+            server,
+            Method::POST,
+            &format!("/api/v1/vaults/{vault_id}/members"),
+            Some(serde_json::to_value(&change).unwrap()),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    // Legacy sync (without sharing=1) shows personal vaults only.
+    let (_, legacy) = bob
+        .call(server, Method::GET, "/api/v1/sync?since=0", None)
+        .await;
+    assert!(legacy.get("sharing").is_none());
+    assert!(
+        legacy["vaults"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|v| v["id"] != vault_id.as_str())
+    );
+
+    // A manifest not signed by the uploader is refused.
+    let mut forged = alice
+        .keyring
+        .share_vault(
+            &vault_id,
+            PrincipalType::Account,
+            bob.id(),
+            VaultRole::Edit,
+            4,
+        )
+        .unwrap();
+    let honest = forged.clone();
+    forged.manifest_signature = encoding::encode(&[2u8; 64]);
+    let (status, _) = alice
+        .call(
+            server,
+            Method::POST,
+            &format!("/api/v1/vaults/{vault_id}/members"),
+            Some(serde_json::to_value(&forged).unwrap()),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    // Role change to edit: Bob can write now.
+    let (status, body) = alice
+        .call(
+            server,
+            Method::POST,
+            &format!("/api/v1/vaults/{vault_id}/members"),
+            Some(serde_json::to_value(&honest).unwrap()),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (_, report) = bob.sync(server).await;
+    assert_eq!(report.view.vaults[0].role.as_deref(), Some("edit"));
+    assert_eq!(
+        bob.put_item(server, &vault_id, 1, &item_id, 2).await,
+        StatusCode::OK
+    );
+
+    // Carol joins; then Bob is removed from the vault with a key rotation.
+    invite_and_confirm(server, &mut alice, &mut carol, &org_id, "member").await;
+    let change = alice
+        .keyring
+        .share_vault(
+            &vault_id,
+            PrincipalType::Account,
+            carol.id(),
+            VaultRole::Edit,
+            5,
+        )
+        .unwrap();
+    let (status, body) = alice
+        .call(
+            server,
+            Method::POST,
+            &format!("/api/v1/vaults/{vault_id}/members"),
+            Some(serde_json::to_value(&change).unwrap()),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    alice.sync(server).await;
+    let rotation = alice
+        .keyring
+        .rotate_vault(
+            &vault_id,
+            &[(PrincipalType::Account, bob.id().to_owned())],
+            r#"{"name":"Family"}"#,
+            6,
+        )
+        .unwrap();
+    let (status, _) = bob
+        .call(
+            server,
+            Method::POST,
+            &format!("/api/v1/vaults/{vault_id}/rotate"),
+            Some(serde_json::to_value(&rotation).unwrap()),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "editors cannot rotate");
+    let (status, body) = alice
+        .call(
+            server,
+            Method::POST,
+            &format!("/api/v1/vaults/{vault_id}/rotate"),
+            Some(serde_json::to_value(&rotation).unwrap()),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["keyEpoch"], 2);
+    // Bob lost access at once and never receives the new key.
+    let (body, report) = bob.sync(server).await;
+    assert!(report.view.vaults.is_empty());
+    assert!(body["sharing"]["vaultKeys"].as_array().unwrap().is_empty());
+    assert!(!bob.keyring.has_vault_key(&vault_id, 2));
+    assert_eq!(
+        bob.put_item(server, &vault_id, 2, &item_id, 3).await,
+        StatusCode::NOT_FOUND
+    );
+    let (status, _) = bob
+        .call(
+            server,
+            Method::GET,
+            &format!("/api/v1/vaults/{vault_id}/members"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    // Writes need the new epoch; the batch endpoint re-encrypts items.
+    alice.sync(server).await;
+    assert_eq!(
+        alice.put_item(server, &vault_id, 1, &item_id, 3).await,
+        StatusCode::CONFLICT
+    );
+    let reencrypted = alice
+        .keyring
+        .encrypt_item_at(&vault_id, 2, &item_id, 3, r#"{"title":"Shared"}"#)
+        .unwrap();
+    let (status, body) = alice
+        .call(
+            server,
+            Method::POST,
+            &format!("/api/v1/vaults/{vault_id}/items/batch"),
+            Some(json!({ "items": [{ "id": item_id, "revision": 3, "keyEpoch": 2, "encryptedData": reencrypted }] })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body[0]["status"], "ok");
+    let (body, report) = carol.sync(server).await;
+    assert!(
+        report.view.warnings.is_empty(),
+        "{:?}",
+        report.view.warnings
+    );
+    assert!(carol.keyring.has_vault_key(&vault_id, 2));
+    let item = body["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["id"] == item_id.as_str())
+        .unwrap();
+    assert_eq!(item["keyEpoch"], 2);
+    carol
+        .keyring
+        .decrypt_item_at(
+            &vault_id,
+            2,
+            &item_id,
+            3,
+            item["encryptedData"].as_str().unwrap(),
+        )
+        .unwrap();
+    let (status, members) = carol
+        .call(
+            server,
+            Method::GET,
+            &format!("/api/v1/vaults/{vault_id}/members"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(members["members"].as_array().unwrap().len(), 2);
+
+    // Removing Carol from the organization ends her access and marks the
+    // vault for rotation; only admins can remove others.
+    let (status, _) = bob
+        .call(
+            server,
+            Method::DELETE,
+            &format!("/api/v1/orgs/{org_id}/members/{}", carol.id()),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, removed) = alice
+        .call(
+            server,
+            Method::DELETE,
+            &format!("/api/v1/orgs/{org_id}/members/{}", carol.id()),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{removed}");
+    assert_eq!(removed["vaults"][0], vault_id.as_str());
+    let (status, _) = carol
+        .call(server, Method::GET, &format!("/api/v1/orgs/{org_id}"), None)
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (_, report) = alice.sync(server).await;
+    assert!(report.view.vaults[0].rotation_pending);
+    let rotation = alice
+        .keyring
+        .rotate_vault(
+            &vault_id,
+            &[(PrincipalType::Account, carol.id().to_owned())],
+            r#"{"name":"Family"}"#,
+            7,
+        )
+        .unwrap();
+    let (status, body) = alice
+        .call(
+            server,
+            Method::POST,
+            &format!("/api/v1/vaults/{vault_id}/rotate"),
+            Some(serde_json::to_value(&rotation).unwrap()),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (_, report) = alice.sync(server).await;
+    assert!(!report.view.vaults[0].rotation_pending);
+    let rotation = alice.keyring.rotate_org_key(&org_id, 8).unwrap();
+    let (status, body) = alice
+        .call(
+            server,
+            Method::POST,
+            &format!("/api/v1/orgs/{org_id}/rotate-key"),
+            Some(serde_json::to_value(&rotation).unwrap()),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    let (_, report) = bob.sync(server).await;
+    assert_eq!(report.view.orgs[0].name.as_deref(), Some("Doe"));
+
+    // Roles: members cannot change roles, the owner can.
+    let attestation = alice
+        .keyring
+        .set_member_role(&org_id, bob.id(), OrgRole::Admin, 9)
+        .unwrap();
+    let (status, _) = bob
+        .call(
+            server,
+            Method::PUT,
+            &format!("/api/v1/orgs/{org_id}/members/{}", bob.id()),
+            Some(serde_json::to_value(&attestation).unwrap()),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, body) = alice
+        .call(
+            server,
+            Method::PUT,
+            &format!("/api/v1/orgs/{org_id}/members/{}", bob.id()),
+            Some(serde_json::to_value(&attestation).unwrap()),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    let (_, report) = bob.sync(server).await;
+    assert_eq!(report.view.orgs[0].role, "admin");
+    let me = report.view.orgs[0]
+        .members
+        .iter()
+        .find(|m| m.account_id == bob.id())
+        .unwrap();
+    assert_eq!(me.role, "admin");
+    assert!(me.verified);
+
+    // Groups: an admin creates one, the vault is shared with it, the group
+    // member gets the key through the group.
+    let mut dave = Member::new(server, "10.9.1.5").await;
+    invite_and_confirm(server, &mut alice, &mut dave, &org_id, "member").await;
+    let group = alice
+        .keyring
+        .create_group(&org_id, r#"{"name":"Kids"}"#, &[dave.id().to_owned()], 10)
+        .unwrap();
+    let (status, body) = dave
+        .call(
+            server,
+            Method::POST,
+            &format!("/api/v1/orgs/{org_id}/groups"),
+            Some(serde_json::to_value(&group).unwrap()),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    let (status, body) = alice
+        .call(
+            server,
+            Method::POST,
+            &format!("/api/v1/orgs/{org_id}/groups"),
+            Some(serde_json::to_value(&group).unwrap()),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    alice.sync(server).await;
+    let change = alice
+        .keyring
+        .share_vault(
+            &vault_id,
+            PrincipalType::Group,
+            &group.id,
+            VaultRole::View,
+            11,
+        )
+        .unwrap();
+    let (status, body) = alice
+        .call(
+            server,
+            Method::POST,
+            &format!("/api/v1/vaults/{vault_id}/members"),
+            Some(serde_json::to_value(&change).unwrap()),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (_, report) = dave.sync(server).await;
+    assert!(
+        report.view.warnings.is_empty(),
+        "{:?}",
+        report.view.warnings
+    );
+    assert_eq!(report.view.vaults[0].role.as_deref(), Some("view"));
+    assert!(dave.keyring.has_vault_key(&vault_id, 3));
+    assert_eq!(
+        dave.put_item(server, &vault_id, 3, &id::new_id().unwrap(), 1)
+            .await,
+        StatusCode::FORBIDDEN
+    );
+    let (status, _) = alice
+        .call(
+            server,
+            Method::DELETE,
+            &format!("/api/v1/orgs/{org_id}/groups/{}", group.id),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "group still has vaults");
+
+    // Security events.
+    let (_, events) = bob
+        .call(server, Method::GET, "/api/v1/account/events", None)
+        .await;
+    let kinds: Vec<&str> = events
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["kind"].as_str().unwrap())
+        .collect();
+    for kind in [
+        "keys_published",
+        "org_invitation_accepted",
+        "org_membership_confirmed",
+        "vault_shared",
+        "vault_unshared",
+        "org_role_changed",
+    ] {
+        assert!(kinds.contains(&kind), "{kind} in {kinds:?}");
+    }
+    mallory.sync(server).await;
 }
 
 async fn failed_logins_are_rate_limited(server: &TestServer) {

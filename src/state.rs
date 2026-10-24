@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use passbox_core::aead::SymmetricKey;
+use passbox_core::directory::LogSigner;
 use passbox_core::encoding;
 use passbox_core::opaque::ServerKeys;
 use passbox_core::random;
@@ -23,6 +24,8 @@ pub struct AppState {
     pub limiter: Arc<RateLimiter>,
     /// Trust `X-Forwarded-For` from a reverse proxy for client IPs.
     pub trust_proxy: bool,
+    /// Signs the head of the key directory log.
+    pub log_signer: Arc<LogSigner>,
     /// Queues outgoing mail. Logs mails until SMTP is configured.
     pub mailer: Mailer,
     /// Emails from `PASSBOX_ADMIN_EMAILS` (lower case): always instance admins.
@@ -57,8 +60,16 @@ impl AppState {
             .as_slice()
             .try_into()
             .context("corrupt two-factor key")?;
+        let log_seed: [u8; 32] = load_or_create_secret(&db, "key_log_signing_key", || {
+            Ok(random::bytes::<32>()?.to_vec())
+        })
+        .await?
+        .as_slice()
+        .try_into()
+        .context("corrupt key log signing key")?;
 
         Ok(Self {
+            log_signer: Arc::new(LogSigner::from_seed(&log_seed)),
             mailer: Mailer::log_only(db.clone()),
             admin_emails: Arc::new(Vec::new()),
             db,

@@ -85,6 +85,9 @@ pub struct UpdateVaultRequest {
     /// The new revision; must be exactly one higher than the stored one.
     revision: i64,
     encrypted_meta: String,
+    /// Key epoch of `encrypted_meta` (shared vaults; 0 for personal vaults).
+    #[serde(default)]
+    key_epoch: i64,
 }
 
 pub async fn update(
@@ -102,13 +105,25 @@ pub async fn update(
     )?;
 
     let mut tx = crate::db::begin_write(&state.db).await?;
-    let current: Option<i64> =
-        sqlx::query_scalar("SELECT revision FROM vaults WHERE id = $1 AND account_id = $2")
-            .bind(&vault_id)
-            .bind(&session.account_id)
-            .fetch_optional(&mut *tx)
-            .await?;
-    let current = current.ok_or(ApiError::NotFound)?;
+    match super::access::vault_access(&mut tx, &vault_id, &session.account_id).await? {
+        None => return Err(ApiError::NotFound),
+        Some(super::access::VaultAccess::Personal) => {}
+        Some(super::access::VaultAccess::Shared { .. }) => {
+            let (_, key_epoch) =
+                super::access::require_vault_manager(&mut tx, &vault_id, &session.account_id)
+                    .await?;
+            if key_epoch != req.key_epoch {
+                return Err(ApiError::conflict(
+                    "the vault's key was rotated; encrypt with the current key epoch",
+                    json!({ "currentKeyEpoch": key_epoch }),
+                ));
+            }
+        }
+    }
+    let current: i64 = sqlx::query_scalar("SELECT revision FROM vaults WHERE id = $1")
+        .bind(&vault_id)
+        .fetch_one(&mut *tx)
+        .await?;
     if req.revision != current + 1 {
         return Err(ApiError::conflict(
             "vault was changed by another device",

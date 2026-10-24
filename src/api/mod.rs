@@ -1,12 +1,18 @@
 //! The `/api/v1` HTTP API.
 
+pub mod access;
 pub mod account;
 pub mod admin;
 pub mod auth;
+pub mod groups;
 pub mod items;
+pub mod keys;
 pub mod notify;
+pub mod orgs;
 pub mod preferences;
 pub mod sessions;
+pub mod shared;
+pub mod signed;
 pub mod sync;
 pub mod two_factor;
 pub mod validate;
@@ -86,4 +92,71 @@ pub fn router() -> Router<AppState> {
         .route("/vaults", post(vaults::create))
         .route("/vaults/{id}", put(vaults::update))
         .route("/items/{id}", put(items::put).delete(items::delete))
+        // Account key pairs and the key directory.
+        .route("/account/keys", get(keys::own).put(keys::publish))
+        .route("/keys/head", get(keys::head))
+        .route("/keys/log", get(keys::log))
+        .route("/keys/{account_id}", get(keys::lookup))
+        // Organizations, members and invitations.
+        .route("/orgs", get(orgs::list).post(orgs::create))
+        .route(
+            "/orgs/{org_id}",
+            get(orgs::get).put(orgs::update).delete(orgs::delete),
+        )
+        .route("/orgs/{org_id}/rotate-key", post(orgs::rotate_key))
+        .route(
+            "/orgs/{org_id}/invitations",
+            get(orgs::invitations).post(orgs::invite),
+        )
+        .route(
+            "/orgs/{org_id}/invitations/{invitation_id}",
+            delete(orgs::revoke_invitation),
+        )
+        .route(
+            "/orgs/{org_id}/members/{account_id}",
+            put(orgs::update_member).delete(orgs::remove_member),
+        )
+        .route(
+            "/orgs/{org_id}/members/{account_id}/confirm",
+            post(orgs::confirm),
+        )
+        .route(
+            "/orgs/{org_id}/members/{account_id}/suspend",
+            post(orgs::suspend),
+        )
+        .route(
+            "/orgs/{org_id}/members/{account_id}/reactivate",
+            post(orgs::reactivate),
+        )
+        .route("/invitations/accept", post(orgs::accept))
+        .route("/invitations/{token}", get(orgs::preview))
+        // Groups.
+        .route(
+            "/orgs/{org_id}/groups",
+            get(groups::list).post(groups::create),
+        )
+        .route(
+            "/orgs/{org_id}/groups/{group_id}",
+            put(groups::update).delete(groups::delete),
+        )
+        .route(
+            "/orgs/{org_id}/groups/{group_id}/members",
+            post(groups::add_member),
+        )
+        .route(
+            "/orgs/{org_id}/groups/{group_id}/rotate",
+            post(groups::rotate),
+        )
+        // Shared vaults.
+        .route("/orgs/{org_id}/vaults", post(shared::create))
+        .route(
+            "/vaults/{id}/members",
+            get(shared::members).post(shared::put_member),
+        )
+        .route("/vaults/{id}/rotate", post(shared::rotate))
+        .route(
+            "/vaults/{id}/keys/{epoch}/wrapped",
+            put(shared::put_wrapped_key),
+        )
+        .route("/vaults/{id}/items/batch", post(shared::batch_items))
 }

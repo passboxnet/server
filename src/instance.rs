@@ -274,13 +274,25 @@ pub async fn check_registration(
         .bind(now_ms())
         .fetch_optional(&state.db)
         .await?;
-        match invite {
-            Some(id) => {
-                grant.invite_id = Some(id);
-                return Ok(grant);
-            }
-            None => return Err(invitation_invalid()),
+        if let Some(id) = invite {
+            grant.invite_id = Some(id);
+            return Ok(grant);
         }
+        // A pending invitation to an organization for this email allows
+        // registering too; it is accepted after sign-in.
+        let org_invite: Option<String> = sqlx::query_scalar(
+            "SELECT id FROM org_invitations WHERE token_hash = $1 AND email = $2 \
+             AND status = 'pending' AND expires_at > $3",
+        )
+        .bind(hash_invite_token(token))
+        .bind(email)
+        .bind(now_ms())
+        .fetch_optional(&state.db)
+        .await?;
+        return match org_invite {
+            Some(_) => Ok(grant),
+            None => Err(invitation_invalid()),
+        };
     }
     if is_env_admin(state, email) {
         return Ok(grant);
