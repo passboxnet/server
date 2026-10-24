@@ -12,6 +12,14 @@ pub struct Config {
     #[arg(long, env = "PASSBOX_BIND", default_value = "0.0.0.0:8080")]
     pub bind: SocketAddr,
 
+    /// Database URL: `sqlite://path/to/passbox.db?mode=rwc` or `postgres://user:pass@host/db`.
+    #[arg(
+        long,
+        env = "PASSBOX_DATABASE_URL",
+        default_value = "sqlite://passbox.db?mode=rwc"
+    )]
+    pub database_url: String,
+
     /// Directory with the built web client. When set, the server also serves the web app.
     #[arg(long, env = "PASSBOX_WEB_DIR")]
     pub web_dir: Option<PathBuf>,
@@ -31,6 +39,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             bind: SocketAddr::from(([127, 0, 0, 1], 8080)),
+            database_url: "sqlite::memory:".to_owned(),
             web_dir: None,
             log_format: LogFormat::Pretty,
         }

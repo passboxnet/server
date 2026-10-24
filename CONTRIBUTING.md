@@ -17,7 +17,10 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 pnpm lint
 pnpm build:wasm && pnpm typecheck && pnpm test && pnpm build
+pnpm e2e
 ```
+
+See the README for running the API tests against PostgreSQL and the client tests against a live server.
 
 Significant design decisions are recorded as ADRs in [`docs/adr`](docs/adr). Add one when you change the architecture, the cryptography or a public interface.
 

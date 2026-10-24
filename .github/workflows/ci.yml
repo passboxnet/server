@@ -20,6 +20,18 @@ jobs:
   rust:
     name: Rust
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: passbox
+          POSTGRES_PASSWORD: passbox
+          POSTGRES_DB: passbox_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U passbox" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      PASSBOX_TEST_DATABASE_URL: postgres://passbox:passbox@localhost:5432/passbox_test
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -53,8 +65,22 @@ jobs:
       - run: pnpm lint
       - run: pnpm build:wasm
       - run: pnpm typecheck
-      - run: pnpm test
       - run: pnpm build
+      - name: Start a server for client integration tests
+        run: |
+          cargo build --package passbox-server --locked
+          PASSBOX_DATABASE_URL=sqlite::memory: PASSBOX_BIND=127.0.0.1:8080 ./target/debug/passbox-server &
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:8080/health && break; sleep 1; done
+      - run: pnpm test
+        env:
+          PASSBOX_TEST_SERVER_URL: http://127.0.0.1:8080
+      - run: pnpm --filter @passbox/e2e exec playwright install --with-deps chromium
+      - run: pnpm e2e
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-results
+          path: e2e/test-results
 
   audit:
     name: Dependency audit

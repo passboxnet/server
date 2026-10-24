@@ -10,3 +10,10 @@ services:
       - "8080:8080"
     environment:
       RUST_LOG: info
+      # Uncomment to use PostgreSQL instead of the bundled SQLite database:
+      # PASSBOX_DATABASE_URL: postgres://passbox:passbox@postgres/passbox
+    volumes:
+      - passbox-data:/data
+
+volumes:
+  passbox-data:

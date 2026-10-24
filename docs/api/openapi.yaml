@@ -1,20 +1,28 @@
 openapi: 3.1.0
 info:
   title: Passbox API
-  version: 0.1.0
+  version: 0.2.0
   license:
     name: MIT
     identifier: MIT
   description: |
     HTTP API of the Passbox server. All vault data is encrypted on the client;
-    the server only stores and relays ciphertext.
+    the server only stores and relays ciphertext. Binary values are unpadded
+    Base64url strings. Timestamps are Unix milliseconds.
+
+    Errors have the shape `{ "error": "<code>", "message": "...", "details"?: {...} }`
+    with the codes `bad_request`, `unauthorized`, `invalid_credentials`,
+    `not_found`, `conflict` and `internal`.
 servers:
   - url: http://localhost:8080
+security:
+  - session: []
 paths:
   /health:
     get:
       summary: Liveness check
       operationId: health
+      security: []
       responses:
         "200":
           description: The server is running.
@@ -24,49 +32,354 @@ paths:
                 type: object
                 required: [status]
                 properties:
-                  status:
-                    type: string
-                    const: ok
+                  status: { type: string, const: ok }
   /api/v1/meta:
     get:
       summary: Public server information
-      description: Information clients need before signing in.
       operationId: meta
+      security: []
       responses:
         "200":
           description: Server information.
           content:
             application/json:
+              schema: { $ref: "#/components/schemas/ServerMeta" }
+  /api/v1/auth/prelogin:
+    post:
+      summary: Key derivation parameters for an email
+      description: Unknown emails receive stable fake values, so the response does not reveal whether an account exists.
+      operationId: prelogin
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string }
+      responses:
+        "200":
+          description: Parameters.
+          content:
+            application/json:
               schema:
-                $ref: "#/components/schemas/ServerMeta"
+                type: object
+                required: [accountId, kdfSalt, kdfParams]
+                properties:
+                  accountId: { $ref: "#/components/schemas/Id" }
+                  kdfSalt: { $ref: "#/components/schemas/Base64Url" }
+                  kdfParams: { $ref: "#/components/schemas/KdfParams" }
+  /api/v1/auth/register/start:
+    post:
+      summary: Start an OPAQUE registration
+      operationId: registerStart
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [accountId, email, registrationRequest]
+              properties:
+                accountId: { $ref: "#/components/schemas/Id" }
+                email: { type: string }
+                registrationRequest: { $ref: "#/components/schemas/Base64Url" }
+      responses:
+        "200":
+          description: OPAQUE registration response.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [registrationResponse]
+                properties:
+                  registrationResponse: { $ref: "#/components/schemas/Base64Url" }
+        "409":
+          description: The email or account ID is taken.
+  /api/v1/auth/register/finish:
+    post:
+      summary: Finish the registration and create the account with its first vault
+      operationId: registerFinish
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [accountId, email, registrationUpload, kdfSalt, kdfParams, encryptedAccountKey, vault]
+              properties:
+                accountId: { $ref: "#/components/schemas/Id" }
+                email: { type: string }
+                registrationUpload: { $ref: "#/components/schemas/Base64Url" }
+                kdfSalt: { $ref: "#/components/schemas/Base64Url" }
+                kdfParams: { $ref: "#/components/schemas/KdfParams" }
+                encryptedAccountKey: { $ref: "#/components/schemas/Base64Url" }
+                vault: { $ref: "#/components/schemas/NewVault" }
+      responses:
+        "201":
+          description: Account created.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accountId: { $ref: "#/components/schemas/Id" }
+        "409":
+          description: The email or account ID is taken.
+  /api/v1/auth/login/start:
+    post:
+      summary: Start an OPAQUE login
+      operationId: loginStart
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, credentialRequest]
+              properties:
+                email: { type: string }
+                credentialRequest: { $ref: "#/components/schemas/Base64Url" }
+      responses:
+        "200":
+          description: OPAQUE credential response. Finish within 5 minutes.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [loginId, credentialResponse]
+                properties:
+                  loginId: { $ref: "#/components/schemas/Id" }
+                  credentialResponse: { $ref: "#/components/schemas/Base64Url" }
+  /api/v1/auth/login/finish:
+    post:
+      summary: Finish the login and receive a session token
+      operationId: loginFinish
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [loginId, credentialFinalization]
+              properties:
+                loginId: { $ref: "#/components/schemas/Id" }
+                credentialFinalization: { $ref: "#/components/schemas/Base64Url" }
+      responses:
+        "200":
+          description: Session created.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [token, accountId, expiresAt]
+                properties:
+                  token: { type: string }
+                  accountId: { $ref: "#/components/schemas/Id" }
+                  expiresAt: { type: integer }
+        "401":
+          description: Wrong credentials, unknown or expired login.
+  /api/v1/auth/logout:
+    post:
+      summary: End the current session
+      operationId: logout
+      responses:
+        "204": { description: Session ended. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /api/v1/account:
+    get:
+      summary: The signed-in account
+      operationId: account
+      responses:
+        "200":
+          description: Account.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [accountId, email, kdfSalt, kdfParams, encryptedAccountKey]
+                properties:
+                  accountId: { $ref: "#/components/schemas/Id" }
+                  email: { type: string }
+                  kdfSalt: { $ref: "#/components/schemas/Base64Url" }
+                  kdfParams: { $ref: "#/components/schemas/KdfParams" }
+                  encryptedAccountKey: { $ref: "#/components/schemas/Base64Url" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /api/v1/sync:
+    get:
+      summary: Changes since a cursor
+      operationId: sync
+      parameters:
+        - name: since
+          in: query
+          schema: { type: integer, minimum: 0, default: 0 }
+      responses:
+        "200":
+          description: Vaults and items changed after `since`, and the new cursor.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [cursor, vaults, items]
+                properties:
+                  cursor: { type: integer }
+                  vaults:
+                    type: array
+                    items: { $ref: "#/components/schemas/SyncVault" }
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/SyncItem" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /api/v1/vaults:
+    post:
+      summary: Create a vault
+      operationId: createVault
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/NewVault" }
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WriteResponse" }
+        "409": { description: The vault ID exists. }
+  /api/v1/vaults/{id}:
+    put:
+      summary: Update vault metadata
+      operationId: updateVault
+      parameters:
+        - { name: id, in: path, required: true, schema: { $ref: "#/components/schemas/Id" } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [revision, encryptedMeta]
+              properties:
+                revision: { type: integer, description: Stored revision + 1 }
+                encryptedMeta: { $ref: "#/components/schemas/Base64Url" }
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WriteResponse" }
+        "404": { description: Unknown vault. }
+        "409": { $ref: "#/components/responses/Conflict" }
+  /api/v1/items/{id}:
+    put:
+      summary: Create (revision 1) or update an item
+      operationId: putItem
+      parameters:
+        - { name: id, in: path, required: true, schema: { $ref: "#/components/schemas/Id" } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [vaultId, revision, encryptedData]
+              properties:
+                vaultId: { $ref: "#/components/schemas/Id" }
+                revision: { type: integer, description: 1 for new items, otherwise stored revision + 1 }
+                encryptedData: { $ref: "#/components/schemas/Base64Url" }
+      responses:
+        "200":
+          description: Saved.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WriteResponse" }
+        "404": { description: Unknown vault or item. }
+        "409": { $ref: "#/components/responses/Conflict" }
+    delete:
+      summary: Delete an item (keeps a tombstone)
+      operationId: deleteItem
+      parameters:
+        - { name: id, in: path, required: true, schema: { $ref: "#/components/schemas/Id" } }
+        - { name: revision, in: query, required: true, schema: { type: integer }, description: Stored revision + 1 }
+      responses:
+        "200":
+          description: Deleted.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WriteResponse" }
+        "404": { description: Unknown item. }
+        "409": { $ref: "#/components/responses/Conflict" }
 components:
+  securitySchemes:
+    session:
+      type: http
+      scheme: bearer
+  responses:
+    Unauthorized:
+      description: Missing, invalid or expired session token.
+    Conflict:
+      description: The revision does not follow the stored one. `details.currentRevision` holds the stored revision.
   schemas:
+    Id:
+      type: string
+      pattern: "^[0-7][0-9a-hjkmnp-tv-z]{25}$"
+      description: 128 random bits as 26 lowercase Crockford Base32 characters.
+    Base64Url:
+      type: string
+      pattern: "^[A-Za-z0-9_-]+$"
     KdfParams:
       type: object
       required: [memoryKib, iterations, parallelism]
       properties:
-        memoryKib:
-          type: integer
-          minimum: 65536
-          description: Argon2id memory cost in KiB.
-        iterations:
-          type: integer
-          minimum: 3
-        parallelism:
-          type: integer
-          minimum: 1
+        memoryKib: { type: integer, minimum: 65536 }
+        iterations: { type: integer, minimum: 3 }
+        parallelism: { type: integer, minimum: 1 }
     ServerMeta:
       type: object
       required: [name, version, apiVersion, minKdfParams]
       properties:
-        name:
-          type: string
-          example: passbox
-        version:
-          type: string
-          example: 0.1.0
-        apiVersion:
-          type: integer
-          example: 1
-        minKdfParams:
-          $ref: "#/components/schemas/KdfParams"
+        name: { type: string }
+        version: { type: string }
+        apiVersion: { type: integer }
+        minKdfParams: { $ref: "#/components/schemas/KdfParams" }
+    NewVault:
+      type: object
+      required: [id, encryptedKey, encryptedMeta]
+      properties:
+        id: { $ref: "#/components/schemas/Id" }
+        encryptedKey: { $ref: "#/components/schemas/Base64Url" }
+        encryptedMeta: { $ref: "#/components/schemas/Base64Url" }
+    SyncVault:
+      type: object
+      required: [id, encryptedKey, encryptedMeta, revision, updatedAt]
+      properties:
+        id: { $ref: "#/components/schemas/Id" }
+        encryptedKey: { $ref: "#/components/schemas/Base64Url" }
+        encryptedMeta: { $ref: "#/components/schemas/Base64Url" }
+        revision: { type: integer }
+        updatedAt: { type: integer }
+    SyncItem:
+      type: object
+      required: [id, vaultId, revision, encryptedData, deleted, updatedAt]
+      properties:
+        id: { $ref: "#/components/schemas/Id" }
+        vaultId: { $ref: "#/components/schemas/Id" }
+        revision: { type: integer }
+        encryptedData:
+          oneOf:
+            - { $ref: "#/components/schemas/Base64Url" }
+            - { type: "null" }
+        deleted: { type: boolean }
+        updatedAt: { type: integer }
+    WriteResponse:
+      type: object
+      required: [revision, seq]
+      properties:
+        revision: { type: integer }
+        seq: { type: integer }

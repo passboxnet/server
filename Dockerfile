@@ -19,14 +19,18 @@ COPY . .
 RUN pnpm install --frozen-lockfile \
     && pnpm build:wasm \
     && pnpm --filter @passbox/web build \
-    && cargo build --release --locked --package passbox-server
+    && cargo build --release --locked --package passbox-server \
+    && mkdir -p /data
 
 FROM gcr.io/distroless/cc-debian12:nonroot
 COPY --from=build /src/target/release/passbox-server /usr/local/bin/passbox-server
 COPY --from=build /src/apps/web/dist /usr/share/passbox/web
+COPY --from=build --chown=65532:65532 /data /data
 ENV PASSBOX_BIND=0.0.0.0:8080 \
+    PASSBOX_DATABASE_URL=sqlite:///data/passbox.db?mode=rwc \
     PASSBOX_WEB_DIR=/usr/share/passbox/web \
     PASSBOX_LOG_FORMAT=json
+VOLUME /data
 EXPOSE 8080
 USER nonroot
 ENTRYPOINT ["/usr/local/bin/passbox-server"]

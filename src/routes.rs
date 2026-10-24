@@ -6,14 +6,16 @@ use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 
 use crate::config::Config;
+use crate::state::AppState;
 
 /// Builds the application router.
-pub fn router(config: &Config) -> Router {
-    let api = Router::new().route("/meta", get(meta));
+pub fn router(config: &Config, state: AppState) -> Router {
+    let api = crate::api::router().route("/meta", get(meta));
 
     let mut app = Router::new()
         .route("/health", get(health))
-        .nest("/api/v1", api);
+        .nest("/api/v1", api)
+        .with_state(state);
 
     if let Some(dir) = &config.web_dir {
         // Unknown paths fall back to index.html so client-side routing works.
@@ -64,6 +66,11 @@ mod tests {
 
     use super::*;
 
+    async fn app() -> Router {
+        let db = crate::db::connect("sqlite::memory:").await.unwrap();
+        router(&Config::default(), AppState::load(db).await.unwrap())
+    }
+
     async fn get_json(app: Router, uri: &str) -> (StatusCode, Value) {
         let response = app
             .oneshot(Request::get(uri).body(Body::empty()).unwrap())
@@ -76,14 +83,14 @@ mod tests {
 
     #[tokio::test]
     async fn health_is_ok() {
-        let (status, body) = get_json(router(&Config::default()), "/health").await;
+        let (status, body) = get_json(app().await, "/health").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["status"], "ok");
     }
 
     #[tokio::test]
     async fn meta_reports_version_and_kdf_minimum() {
-        let (status, body) = get_json(router(&Config::default()), "/api/v1/meta").await;
+        let (status, body) = get_json(app().await, "/api/v1/meta").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["apiVersion"], 1);
         assert_eq!(body["version"], env!("CARGO_PKG_VERSION"));
@@ -92,7 +99,7 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_route_is_not_found_without_web_dir() {
-        let (status, _) = get_json(router(&Config::default()), "/does-not-exist").await;
+        let (status, _) = get_json(app().await, "/does-not-exist").await;
         assert_eq!(status, StatusCode::NOT_FOUND);
     }
 }

@@ -19,6 +19,8 @@ Passbox is developed as one monorepo. It will be split into separate repositorie
 | [`apps/website`](apps/website) | Marketing website (Next.js, static export) |
 | [`packages/ui`](packages/ui) | Shared design system (React, Tailwind CSS tokens) |
 | [`packages/api-client`](packages/api-client) | Typed TypeScript client for the server API |
+| [`packages/client`](packages/client) | Platform-neutral client logic: sign-up, sign-in, unlock, sync, item schema |
+| [`e2e`](e2e) | Browser end-to-end tests (Playwright) |
 | [`docs`](docs) | Architecture, decisions (ADRs), API specification and planning |
 | [`deploy`](deploy) | Docker Compose setup for self-hosting |
 
@@ -42,8 +44,22 @@ pnpm test                # TypeScript tests
 Run the server and the web client in two terminals:
 
 ```sh
-cargo run -p passbox-server   # http://localhost:8080
+cargo run -p passbox-server   # http://localhost:8080, data in ./passbox.db
 pnpm dev:web                  # http://localhost:5173, proxies /api to the server
+```
+
+Open http://localhost:5173, create an account and keep the Emergency Kit.
+
+## Tests
+
+```sh
+cargo test --workspace                     # Rust unit and API tests (SQLite)
+PASSBOX_TEST_DATABASE_URL=postgres://user:pass@localhost/passbox_test \
+  cargo test -p passbox-server --test api  # the same API tests on PostgreSQL
+pnpm test                                  # TypeScript unit tests
+PASSBOX_TEST_SERVER_URL=http://127.0.0.1:8080 \
+  pnpm --filter @passbox/client test       # client against a running server
+pnpm --filter @passbox/web build && pnpm e2e   # browser tests, start their own server
 ```
 
 Other entry points:
@@ -60,7 +76,7 @@ cargo run -p passbox-cli -- totp JBSWY3DPEHPK3PXP
 docker compose -f deploy/docker-compose.yml up -d
 ```
 
-The server listens on port 8080 and serves the web client. See [the configuration options](crates/server/src/config.rs).
+The server listens on port 8080, serves the web client and stores its data in a SQLite database in the `passbox-data` volume. PostgreSQL is supported as well. See [docs/self-hosting.md](docs/self-hosting.md).
 
 ## Pricing
 
