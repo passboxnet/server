@@ -17,6 +17,10 @@ info:
     `registration_closed`, `domain_not_allowed` and `invitation_invalid`.
     Two-factor errors: `reauthentication_required` (403),
     `invalid_two_factor_code` and `two_factor_expired` (401).
+    Recovery errors: `recovery_needs_security_key` (401),
+    `emergency_access_waiting` and `device_link_expired` (403). Account
+    recovery, emergency access and device codes are described in
+    docs/architecture/recovery.md.
 
     Two-factor authentication: when an account has a second factor (TOTP
     authenticator app or WebAuthn security key), `login/finish` answers with
@@ -1379,6 +1383,716 @@ paths:
         "200": { description: "Per item: `ok` or `conflict` (changed meanwhile)." }
         "403": { $ref: "#/components/responses/SharingForbidden" }
         "409": { description: Not the current key epoch. }
+  /api/v1/account/recovery:
+    get:
+      summary: Recovery status of the account (recovery code, organization escrows)
+      operationId: recoveryStatus
+      tags: [recovery]
+      responses:
+        "200":
+          description: Status.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [recoveryCode, orgEscrows]
+                properties:
+                  recoveryCode:
+                    type: [object, "null"]
+                    properties: { createdAt: { type: integer } }
+                  orgEscrows:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        orgId: { $ref: "#/components/schemas/Id" }
+                        keyVersion: { type: integer }
+                        createdAt: { type: integer }
+  /api/v1/account/recovery-code/start:
+    post:
+      summary: Start registering the recovery code's OPAQUE record (login in the last 10 minutes)
+      operationId: recoveryCodeStart
+      tags: [recovery]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [registrationRequest]
+              properties: { registrationRequest: { $ref: "#/components/schemas/Base64Url" } }
+      responses:
+        "200":
+          description: OPAQUE registration response.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties: { registrationResponse: { $ref: "#/components/schemas/Base64Url" } }
+        "403": { description: "`reauthentication_required`." }
+  /api/v1/account/recovery-code:
+    post:
+      summary: Store the recovery code record and the account key wrapped with it (replaces an older code)
+      operationId: recoveryCodeFinish
+      tags: [recovery]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [registrationUpload, wrappedAccountKey]
+              properties:
+                registrationUpload: { $ref: "#/components/schemas/Base64Url" }
+                wrappedAccountKey: { type: string, description: "Envelope under HKDF(R, passbox/v1/recovery-code)." }
+      responses:
+        "204": { description: Stored; the account gets a `recovery_code_created` mail. }
+        "403": { description: "`reauthentication_required`." }
+    delete:
+      summary: Remove the recovery code (login in the last 10 minutes)
+      operationId: recoveryCodeDelete
+      tags: [recovery]
+      responses:
+        "204": { description: Removed. }
+  /api/v1/recovery/code/start:
+    post:
+      summary: Start an OPAQUE login with the recovery code
+      description: Unknown emails and accounts without a code run against a fake record.
+      operationId: recoveryLoginStart
+      tags: [recovery]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, credentialRequest]
+              properties:
+                email: { type: string }
+                credentialRequest: { $ref: "#/components/schemas/Base64Url" }
+      responses:
+        "200":
+          description: OPAQUE credential response.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  loginId: { type: string }
+                  credentialResponse: { $ref: "#/components/schemas/Base64Url" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /api/v1/recovery/code/finish:
+    post:
+      summary: Finish the recovery-code login
+      operationId: recoveryLoginFinish
+      tags: [recovery]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [loginId, credentialFinalization]
+              properties:
+                loginId: { type: string }
+                credentialFinalization: { $ref: "#/components/schemas/Base64Url" }
+                deviceName: { type: string }
+                clientKind: { type: string }
+      responses:
+        "200":
+          description: A recovery grant (with `twoFactorMethods` instead of the wrapped key when the account uses two-factor sign-in).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RecoveryGrant" }
+        "401": { description: "`invalid_credentials`, or `recovery_needs_security_key`." }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /api/v1/recovery/two-factor:
+    post:
+      summary: Second factor of a recovery (TOTP or two-factor recovery code)
+      operationId: recoveryTwoFactor
+      tags: [recovery]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [recoveryToken, method, code]
+              properties:
+                recoveryToken: { type: string }
+                method: { type: string, enum: [totp, recovery] }
+                code: { type: string }
+      responses:
+        "200":
+          description: The recovery grant with the wrapped account key.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RecoveryGrant" }
+        "401": { description: "`invalid_two_factor_code` or `two_factor_expired`." }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /api/v1/recovery/complete/start:
+    post:
+      summary: Start registering new credentials after a recovery
+      operationId: recoveryCompleteStart
+      tags: [recovery]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [recoveryToken, registrationRequest]
+              properties:
+                recoveryToken: { type: string }
+                registrationRequest: { $ref: "#/components/schemas/Base64Url" }
+                recoveryRegistrationRequest: { $ref: "#/components/schemas/Base64Url" }
+      responses:
+        "200":
+          description: OPAQUE registration responses (login and, if requested, a new recovery code).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  registrationResponse: { $ref: "#/components/schemas/Base64Url" }
+                  recoveryRegistrationResponse: { $ref: "#/components/schemas/Base64Url" }
+  /api/v1/recovery/complete/finish:
+    post:
+      summary: Store new credentials, revoke every session and sign in the recovering device
+      description: |
+        Sets the new OPAQUE record, KDF salt and wrapped account key (new
+        master password and Secret Key) and optionally a new recovery code.
+        Deletes all sessions, device tokens, device links and recovery
+        sessions of the account; the recovery token is single use.
+      operationId: recoveryCompleteFinish
+      tags: [recovery]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [recoveryToken, registrationUpload, kdfSalt, kdfParams, encryptedAccountKey]
+              properties:
+                recoveryToken: { type: string }
+                registrationUpload: { $ref: "#/components/schemas/Base64Url" }
+                kdfSalt: { $ref: "#/components/schemas/Base64Url" }
+                kdfParams: { $ref: "#/components/schemas/KdfParams" }
+                encryptedAccountKey: { type: string }
+                recoveryCode:
+                  type: object
+                  required: [registrationUpload, wrappedAccountKey]
+                  properties:
+                    registrationUpload: { $ref: "#/components/schemas/Base64Url" }
+                    wrappedAccountKey: { type: string }
+      responses:
+        "200":
+          description: A session for the recovering device.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Session" }
+        "401": { description: Unknown, used or expired recovery token. }
+  /api/v1/recovery/org/request:
+    post:
+      summary: Ask an organization's recovery admins for recovery (signed out)
+      description: Unknown emails and members who did not opt in get a fake request that never gets approved.
+      operationId: orgRecoveryRequest
+      tags: [recovery]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, ephemeralKey]
+              properties:
+                email: { type: string }
+                orgId: { $ref: "#/components/schemas/Id" }
+                ephemeralKey: { $ref: "#/components/schemas/Base64Url", description: X-Wing public key of the requesting device. }
+                deviceName: { type: string }
+      responses:
+        "201":
+          description: Request created; valid for 48 hours.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  requestId: { type: string }
+                  requestToken: { type: string }
+                  expiresAt: { type: integer }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /api/v1/recovery/org/status:
+    post:
+      summary: Poll an organization recovery request
+      operationId: orgRecoveryStatus
+      tags: [recovery]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/OrgRecoveryRequestRef" }
+      responses:
+        "200":
+          description: "`pending`, `approved` (with the signed approval, the re-sealed key and a recovery grant), `denied` or `expired`."
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, enum: [pending, approved, denied, expired] }
+                  expiresAt: { type: integer }
+                  approved:
+                    type: object
+                    properties:
+                      requestId: { type: string }
+                      accountId: { $ref: "#/components/schemas/Id" }
+                      approval: { type: string }
+                      approvalSignature: { type: string }
+                      sealedKey: { type: string }
+                      approverBundle: { type: string }
+                      approverBundleSignature: { type: string }
+                  recovery: { $ref: "#/components/schemas/RecoveryGrant" }
+  /api/v1/recovery/org/cancel:
+    post:
+      summary: Cancel an organization recovery request
+      operationId: orgRecoveryCancel
+      tags: [recovery]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/OrgRecoveryRequestRef" }
+      responses:
+        "204": { description: Cancelled. }
+  /api/v1/orgs/{orgId}/recovery:
+    get:
+      summary: Organization recovery key, grants and the caller's escrow
+      description: Admins also see the enrolled members and the number of pending requests.
+      operationId: orgRecovery
+      tags: [recovery]
+      parameters:
+        - { name: orgId, in: path, required: true, schema: { $ref: "#/components/schemas/Id" } }
+      responses:
+        "200":
+          description: State.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  key:
+                    type: [object, "null"]
+                    properties:
+                      keyVersion: { type: integer }
+                      bundle: { type: string }
+                      bundleSignature: { type: string }
+                      grants:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            accountId: { $ref: "#/components/schemas/Id" }
+                            keyVersion: { type: integer }
+                            grant: { type: string }
+                            grantSignature: { type: string }
+                            sealedKey: { type: string, description: Only the caller's own grant. }
+                  escrow:
+                    type: [object, "null"]
+                    properties:
+                      keyVersion: { type: integer }
+                      createdAt: { type: integer }
+                  enrolled: { type: array, items: { $ref: "#/components/schemas/Id" } }
+                  pendingRequests: { type: integer }
+        "403": { $ref: "#/components/responses/SharingForbidden" }
+  /api/v1/orgs/{orgId}/recovery/keys:
+    post:
+      summary: Create the organization recovery key (owners and admins)
+      operationId: createOrgRecoveryKey
+      tags: [recovery]
+      parameters:
+        - { name: orgId, in: path, required: true, schema: { $ref: "#/components/schemas/Id" } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [keyVersion, bundle, bundleSignature, grant]
+              properties:
+                keyVersion: { type: integer }
+                bundle: { type: string, description: Signed `RecoveryKeyBundle`. }
+                bundleSignature: { type: string }
+                grant: { $ref: "#/components/schemas/RecoveryGrantUpload" }
+      responses:
+        "204": { description: Created. }
+        "403": { $ref: "#/components/responses/SharingForbidden" }
+        "409": { description: A key with that version exists. }
+  /api/v1/orgs/{orgId}/recovery/grants:
+    post:
+      summary: Seal the recovery key to another admin
+      operationId: addOrgRecoveryGrant
+      tags: [recovery]
+      parameters:
+        - { name: orgId, in: path, required: true, schema: { $ref: "#/components/schemas/Id" } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RecoveryGrantUpload" }
+      responses:
+        "204": { description: Stored. }
+        "403": { $ref: "#/components/responses/SharingForbidden" }
+  /api/v1/orgs/{orgId}/recovery/escrow:
+    put:
+      summary: Opt in to organization recovery (signed escrow of the account key)
+      operationId: putOrgRecoveryEscrow
+      tags: [recovery]
+      parameters:
+        - { name: orgId, in: path, required: true, schema: { $ref: "#/components/schemas/Id" } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [keyVersion, escrow, escrowSignature, sealedKey]
+              properties:
+                keyVersion: { type: integer }
+                escrow: { type: string }
+                escrowSignature: { type: string }
+                sealedKey: { type: string }
+      responses:
+        "204": { description: Stored. }
+    delete:
+      summary: Withdraw from organization recovery
+      operationId: deleteOrgRecoveryEscrow
+      tags: [recovery]
+      parameters:
+        - { name: orgId, in: path, required: true, schema: { $ref: "#/components/schemas/Id" } }
+      responses:
+        "204": { description: Removed. }
+  /api/v1/orgs/{orgId}/recovery/requests:
+    get:
+      summary: Pending recovery requests (recovery admins)
+      operationId: orgRecoveryRequests
+      tags: [recovery]
+      parameters:
+        - { name: orgId, in: path, required: true, schema: { $ref: "#/components/schemas/Id" } }
+      responses:
+        "200":
+          description: Requests with the member's escrow and the requesting device's ephemeral key.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    id: { type: string }
+                    orgId: { $ref: "#/components/schemas/Id" }
+                    accountId: { $ref: "#/components/schemas/Id" }
+                    email: { type: string }
+                    deviceName: { type: string }
+                    ip: { type: string }
+                    createdAt: { type: integer }
+                    expiresAt: { type: integer }
+                    ephemeralKey: { type: string }
+                    keyVersion: { type: integer }
+                    escrow: { type: string }
+                    escrowSignature: { type: string }
+                    sealedKey: { type: string }
+        "403": { $ref: "#/components/responses/SharingForbidden" }
+  /api/v1/orgs/{orgId}/recovery/requests/{requestId}/approve:
+    post:
+      summary: Approve a recovery request (after an out-of-band identity check)
+      operationId: approveOrgRecovery
+      tags: [recovery]
+      parameters:
+        - { name: orgId, in: path, required: true, schema: { $ref: "#/components/schemas/Id" } }
+        - { name: requestId, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [approval, approvalSignature, sealedKey, requestCode]
+              properties:
+                approval: { type: string, description: Signed `RecoveryApproval`, bound to the ephemeral key hash. }
+                approvalSignature: { type: string }
+                sealedKey: { type: string, description: The account key sealed to the ephemeral key. }
+                requestCode: { type: string }
+      responses:
+        "204": { description: Approved; the member and the other recovery admins get a mail. }
+        "403": { $ref: "#/components/responses/SharingForbidden" }
+        "404": { description: No pending request. }
+  /api/v1/orgs/{orgId}/recovery/requests/{requestId}/deny:
+    post:
+      summary: Deny a recovery request
+      operationId: denyOrgRecovery
+      tags: [recovery]
+      parameters:
+        - { name: orgId, in: path, required: true, schema: { $ref: "#/components/schemas/Id" } }
+        - { name: requestId, in: path, required: true, schema: { type: string } }
+      responses:
+        "204": { description: Denied. }
+  /api/v1/emergency:
+    get:
+      summary: Emergency contacts granted and received
+      operationId: emergencyList
+      tags: [emergency]
+      responses:
+        "200":
+          description: Lists.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  granted: { type: array, items: { $ref: "#/components/schemas/EmergencyGrant" } }
+                  received: { type: array, items: { $ref: "#/components/schemas/EmergencyGrant" } }
+  /api/v1/emergency/grants:
+    post:
+      summary: Invite an emergency contact
+      operationId: emergencyCreate
+      tags: [emergency]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [granteeEmail, waitDays]
+              properties:
+                granteeEmail: { type: string }
+                waitDays: { type: integer, minimum: 1, maximum: 30 }
+                scope: { type: string, enum: [read], default: read }
+      responses:
+        "201":
+          description: Invited.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties: { id: { type: string } }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /api/v1/emergency/grants/{id}:
+    delete:
+      summary: Remove an emergency contact (owner) or decline it (contact)
+      operationId: emergencyDelete
+      tags: [emergency]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "204": { description: Removed. }
+  /api/v1/emergency/grants/{id}/accept:
+    post:
+      summary: Accept an invitation (contact)
+      operationId: emergencyAccept
+      tags: [emergency]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "204": { description: Accepted. }
+  /api/v1/emergency/grants/{id}/confirm:
+    post:
+      summary: Store the signed grant and the vault keys sealed to the contact (owner); also used to re-seal
+      operationId: emergencyConfirm
+      tags: [emergency]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [grant, grantSignature, sealedKeys, vaultIds, version, fingerprint]
+              properties:
+                grant: { type: string, description: Signed `EmergencyGrant` (grantee, waiting period, vaults, version). }
+                grantSignature: { type: string }
+                sealedKeys: { type: string }
+                vaultIds: { type: array, items: { $ref: "#/components/schemas/Id" } }
+                version: { type: integer, description: Must increase. }
+                fingerprint: { type: string }
+      responses:
+        "204": { description: Stored. }
+  /api/v1/emergency/grants/{id}/request:
+    post:
+      summary: Request access (contact); starts the waiting period
+      operationId: emergencyRequest
+      tags: [emergency]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "204": { description: Requested; the owner gets a mail. }
+  /api/v1/emergency/grants/{id}/approve:
+    post:
+      summary: Release access before the waiting period ends (owner)
+      operationId: emergencyApprove
+      tags: [emergency]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "204": { description: Approved. }
+  /api/v1/emergency/grants/{id}/deny:
+    post:
+      summary: Deny a pending or released request (owner)
+      operationId: emergencyDeny
+      tags: [emergency]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "204": { description: Denied. }
+  /api/v1/emergency/grants/{id}/access:
+    get:
+      summary: Sealed vault keys and the vaults' ciphertext (contact, after release)
+      operationId: emergencyAccess
+      tags: [emergency]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Access data, decrypted on the contact's device.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  grantorId: { $ref: "#/components/schemas/Id" }
+                  grant: { type: string }
+                  grantSignature: { type: string }
+                  sealedKeys: { type: string }
+                  vaults: { type: array, items: { type: object, additionalProperties: true } }
+                  items: { type: array, items: { type: object, additionalProperties: true } }
+        "403": { description: "`emergency_access_waiting`: no request, the waiting period has not ended, or the owner denied it." }
+  /api/v1/device-links:
+    post:
+      summary: Start adding a device by code (signed-in device)
+      operationId: deviceLinkCreate
+      tags: [devices]
+      responses:
+        "201":
+          description: Link; valid for 10 minutes. The secret part of the code never reaches the server.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string }
+                  shortId: { type: string }
+                  expiresAt: { type: integer }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /api/v1/device-links/{id}:
+    get:
+      summary: Link status, with the new device's ephemeral key and MAC once claimed
+      operationId: deviceLinkGet
+      tags: [devices]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: Status.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, enum: [open, claimed, approved] }
+                  expiresAt: { type: integer }
+                  ephemeralKey: { type: string }
+                  mac: { type: string }
+                  deviceName: { type: string }
+                  ip: { type: string }
+                  claimedAt: { type: integer }
+    delete:
+      summary: Cancel a link
+      operationId: deviceLinkDelete
+      tags: [devices]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "204": { description: Cancelled. }
+  /api/v1/device-links/{id}/approve:
+    post:
+      summary: Approve a claimed link with the sealed email and Secret Key
+      operationId: deviceLinkApprove
+      tags: [devices]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sealedPayload]
+              properties: { sealedPayload: { type: string } }
+      responses:
+        "204": { description: Approved. }
+  /api/v1/device-links/claim:
+    post:
+      summary: Claim a link from the new device
+      operationId: deviceLinkClaim
+      tags: [devices]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [shortId, ephemeralKey, mac]
+              properties:
+                shortId: { type: string }
+                ephemeralKey: { $ref: "#/components/schemas/Base64Url" }
+                mac: { type: string, description: HMAC under a key derived from the code's secret part. }
+                deviceName: { type: string }
+      responses:
+        "200":
+          description: Claimed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  claimToken: { type: string }
+                  expiresAt: { type: integer }
+        "403": { description: "`device_link_expired`: unknown, used or expired code." }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /api/v1/device-links/poll:
+    post:
+      summary: Poll a claimed link from the new device
+      operationId: deviceLinkPoll
+      tags: [devices]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [claimToken]
+              properties: { claimToken: { type: string } }
+      responses:
+        "200":
+          description: "`claimed` until approved, then `approved` with the sealed payload (returned once)."
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string }
+                  sealedPayload: { type: string }
 components:
   securitySchemes:
     session:
@@ -1730,3 +2444,53 @@ components:
         for the caller or its groups), `manifests` (full chain of vaults whose
         members changed), `signers` (bundles of manifest signers).
       additionalProperties: true
+    RecoveryGrant:
+      type: object
+      required: [recoveryToken, accountId, email, expiresAt, method]
+      properties:
+        recoveryToken: { type: string, description: Single use, valid for 15 minutes. }
+        accountId: { $ref: "#/components/schemas/Id" }
+        email: { type: string }
+        expiresAt: { type: integer }
+        method: { type: string, enum: [code, org] }
+        twoFactorMethods: { type: array, items: { type: string } }
+        wrappedAccountKey: { type: string }
+        accountKeys: { $ref: "#/components/schemas/AccountKeys" }
+    RecoveryGrantUpload:
+      type: object
+      required: [accountId, keyVersion, sealedKey, grant, grantSignature]
+      properties:
+        accountId: { $ref: "#/components/schemas/Id" }
+        keyVersion: { type: integer }
+        sealedKey: { type: string }
+        grant: { type: string, description: Signed `RecoveryKeyGrant`. }
+        grantSignature: { type: string }
+    OrgRecoveryRequestRef:
+      type: object
+      required: [requestId, requestToken]
+      properties:
+        requestId: { type: string }
+        requestToken: { type: string }
+        clientKind: { type: string }
+    EmergencyGrant:
+      type: object
+      properties:
+        id: { type: string }
+        grantorId: { $ref: "#/components/schemas/Id" }
+        grantorEmail: { type: string }
+        granteeId: { type: [string, "null"] }
+        granteeEmail: { type: string }
+        scope: { type: string, enum: [read] }
+        waitDays: { type: integer }
+        status: { type: string, enum: [invited, accepted, confirmed], description: "A request shows in `requestedAt`; `released` says whether access is open now." }
+        vaultIds: { type: array, items: { $ref: "#/components/schemas/Id" } }
+        version: { type: integer }
+        grant: { type: string }
+        grantSignature: { type: string }
+        requestedAt: { type: integer }
+        approvedAt: { type: integer }
+        deniedAt: { type: integer }
+        accessedAt: { type: integer }
+        releaseAt: { type: integer, description: When the server releases access without the owner's approval. }
+        released: { type: boolean }
+        createdAt: { type: integer }
