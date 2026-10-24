@@ -277,3 +277,42 @@ fn devices_activity_and_master_password_change() {
             .any(|e| e.kind == "password_changed")
     );
 }
+
+#[test]
+fn trash_and_password_history() {
+    let server = start_server();
+    let client = Client::new(&server, Arc::new(MemoryStore::new()));
+    client.sign_up(&email(), PASSWORD).unwrap();
+    let vault = client.vaults().unwrap().remove(0).id;
+    let id = client
+        .create_item(&vault, &login_item("Bank", "first"))
+        .unwrap();
+
+    // Changing the password records the old one; other edits do not.
+    let mut data = client.item(&id).unwrap().data;
+    data.set_field(field::PASSWORD, "Password", FieldType::Concealed, "second");
+    client.update_item(&id, &data).unwrap();
+    let mut data = client.item(&id).unwrap().data;
+    data.title = "My bank".into();
+    // A stale or forged history from the caller is ignored.
+    data.set_password_history(&[]);
+    client.update_item(&id, &data).unwrap();
+    let history = client.item(&id).unwrap().data.password_history();
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].value, "first");
+    assert!(history[0].replaced_at > 0);
+
+    // Trash hides the item from items() and Watchtower; restore brings it back.
+    client.trash_item(&id).unwrap();
+    assert!(client.items().unwrap().is_empty());
+    assert_eq!(client.trashed_items().unwrap()[0].id, id);
+    assert_eq!(client.health().unwrap().analyzed, 0);
+    assert_eq!(client.purge_trash(false).unwrap(), 0);
+    client.restore_item(&id).unwrap();
+    assert_eq!(client.items().unwrap()[0].data.title, "My bank");
+
+    client.trash_item(&id).unwrap();
+    assert_eq!(client.purge_trash(true).unwrap(), 1);
+    assert!(client.trashed_items().unwrap().is_empty());
+    assert!(matches!(client.item(&id), Err(Error::NotFound(_))));
+}
