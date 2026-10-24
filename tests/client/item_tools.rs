@@ -182,7 +182,7 @@ fn history_icons_breaches_usage_health_and_bulk() {
             ItemProblem::Breached,
         ]
     );
-    assert_eq!(health.reused_with, [id.clone()]);
+    assert_eq!(health.reused_with, std::slice::from_ref(&id));
     assert_eq!(health.breach_count, Some(9_659_365));
     let health = client.item_health(&strong).unwrap();
     assert_eq!(health.problems, [ItemProblem::MissingTotp]);

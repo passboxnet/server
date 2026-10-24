@@ -896,16 +896,16 @@ paths:
           schema: { type: string }
       responses:
         "200":
-          description: The icon (`Cache-Control: private, max-age=604800`).
+          description: "The icon, with `Cache-Control: private, max-age=604800`."
           content:
             image/png: {}
             image/x-icon: {}
             image/jpeg: {}
             image/gif: {}
             image/webp: {}
-        "400": { description: Not a valid public domain name (IP literal, port, single label, ...). }
+        "400": { description: "Not a valid public domain name: an IP literal, a port, a single label, ..." }
         "401": { $ref: "#/components/responses/Unauthorized" }
-        "404": { description: No icon, or icons are turned off (`Cache-Control: private, max-age=86400`). }
+        "404": { description: "No icon, or icons are turned off; `Cache-Control: private, max-age=86400`." }
         "429": { description: "`rate_limited`." }
   /api/v1/account/keys:
     get:
@@ -2279,7 +2279,8 @@ components:
         supportUrl: { type: [string, "null"] }
         defaultLocale: { type: string, enum: [en, de] }
         passwordPolicy: { $ref: "#/components/schemas/PasswordPolicy" }
-        icons: { type: boolean, description: "Whether `/api/v1/icons/{domain}` serves website icons (`PASSBOX_ICONS`)." }
+        icons:
+          { type: boolean, description: "Whether `/api/v1/icons/{domain}` serves website icons (`PASSBOX_ICONS`)." }
     PasswordPolicy:
       type: object
       description: Minimum for new master passwords; clients enforce it.
