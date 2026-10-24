@@ -918,6 +918,126 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { description: "No icon, or icons are turned off; `Cache-Control: private, max-age=86400`." }
         "429": { description: "`rate_limited`." }
+  /api/v1/breach/range/{prefix}:
+    get:
+      summary: Pwned Passwords range through the server (k-anonymity)
+      description: |
+        Returns Have I Been Pwned's padded range response for the first 5
+        hex characters of a password's SHA-1 hash, fetched by the server, so
+        Have I Been Pwned sees the server's IP address instead of the
+        user's. The server learns only hash prefixes (each matches hundreds
+        of passwords); matching happens on the device. Cached in memory for
+        24 hours; 3000 requests per account and hour. Turned off with
+        `PASSBOX_BREACH_PROXY=off` (then 404; see `ServerMeta.breachProxy`).
+      operationId: breachRange
+      parameters:
+        - name: prefix
+          in: path
+          required: true
+          description: 5 hex characters (case-insensitive).
+          schema: { type: string, pattern: "^[0-9A-Fa-f]{5}$" }
+      responses:
+        "200":
+          description: "`SUFFIX:COUNT` lines, padded with count-0 entries; `Cache-Control: private, no-store`."
+          content:
+            text/plain: {}
+        "400": { description: Not a 5-character hex prefix. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: "`breach_unavailable`: Have I Been Pwned could not be reached from the server." }
+        "404": { description: The proxy is turned off. }
+        "429": { description: "`rate_limited`." }
+  /api/v1/breach/emails:
+    get:
+      summary: Email breach monitoring of the account
+      description: |
+        Addresses the account monitors and the breaches Have I Been Pwned
+        reported for them. `available` is false when the operator has not
+        set `PASSBOX_HIBP_API_KEY`.
+      operationId: breachEmails
+      responses:
+        "200":
+          description: The monitored addresses.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EmailMonitoring" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      summary: Monitor an email address (sends a confirmation code)
+      description: |
+        Adds an address (lower-cased) or, for an unconfirmed one, sends a new
+        code. The code (6 digits, valid 30 minutes, 5 attempts) is mailed to
+        the address itself. Nothing is sent to Have I Been Pwned before the
+        address is confirmed. Up to 10 addresses per account; one code per
+        address and minute, 10 per account and hour.
+      operationId: addBreachEmail
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string }
+                locale: { type: string, enum: [en, de], description: Language of the confirmation mail. }
+      responses:
+        "200": { description: Already confirmed; the entry. }
+        "201":
+          description: Code sent.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MonitoredEmail" }
+        "400": { description: Not a valid address, or 10 addresses already. }
+        "403": { description: "`monitoring_unavailable`: no API key configured." }
+        "429": { description: "`rate_limited`." }
+  /api/v1/breach/emails/{id}:
+    delete:
+      summary: Stop monitoring an address
+      description: Deletes the address and its results.
+      operationId: deleteBreachEmail
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "204": { description: Deleted. }
+        "404": { description: Unknown address or another account's. }
+  /api/v1/breach/emails/{id}/verify:
+    post:
+      summary: Confirm an address with the mailed code
+      description: Confirms the address and runs the first check right away (its results are shown, not mailed).
+      operationId: verifyBreachEmail
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: { type: string }
+      responses:
+        "200":
+          description: The confirmed address with its breaches.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MonitoredEmail" }
+        "401": { description: "`invalid_two_factor_code`: wrong code." }
+        "403": { description: "`code_expired`: expired or too many attempts; request a new code." }
+  /api/v1/breach/emails/{id}/check:
+    post:
+      summary: Check a confirmed address now
+      description: At most every ten minutes per address. The server also checks every `PASSBOX_HIBP_CHECK_HOURS` and mails new breaches to the account.
+      operationId: checkBreachEmail
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: The address with its breaches.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MonitoredEmail" }
+        "429": { description: "`rate_limited`." }
   /api/v1/account/keys:
     get:
       summary: The account's own key pairs
@@ -2721,6 +2841,41 @@ components:
         passwordPolicy: { $ref: "#/components/schemas/PasswordPolicy" }
         icons:
           { type: boolean, description: "Whether `/api/v1/icons/{domain}` serves website icons (`PASSBOX_ICONS`)." }
+        breachProxy:
+          { type: boolean, description: "Whether `/api/v1/breach/range/{prefix}` proxies Have I Been Pwned (`PASSBOX_BREACH_PROXY`)." }
+        emailMonitoring:
+          { type: boolean, description: "Whether email breach monitoring is available (`PASSBOX_HIBP_API_KEY` set)." }
+    EmailBreach:
+      type: object
+      description: A breach from Have I Been Pwned's breach model.
+      required: [name, title, domain, breachDate, addedDate, pwnCount, dataClasses, firstSeenAt]
+      properties:
+        name: { type: string }
+        title: { type: string }
+        domain: { type: string }
+        breachDate: { type: string, description: "`YYYY-MM-DD`." }
+        addedDate: { type: string }
+        pwnCount: { type: integer }
+        dataClasses: { type: array, items: { type: string } }
+        firstSeenAt: { type: integer, description: When this server first saw the address in the breach (Unix ms). }
+    MonitoredEmail:
+      type: object
+      required: [id, email, verified, checkedAt, checkError, createdAt, breaches]
+      properties:
+        id: { type: string }
+        email: { type: string }
+        verified: { type: boolean }
+        checkedAt: { type: integer, description: Last check (Unix ms, 0 = never). }
+        checkError: { type: [string, "null"] }
+        createdAt: { type: integer }
+        breaches: { type: array, items: { $ref: "#/components/schemas/EmailBreach" } }
+    EmailMonitoring:
+      type: object
+      required: [available, checkIntervalHours, emails]
+      properties:
+        available: { type: boolean }
+        checkIntervalHours: { type: integer }
+        emails: { type: array, items: { $ref: "#/components/schemas/MonitoredEmail" } }
     PasswordPolicy:
       type: object
       description: Minimum for new master passwords; clients enforce it.

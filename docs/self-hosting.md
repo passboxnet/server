@@ -27,6 +27,10 @@ Every option can be set as a command-line flag or an environment variable.
 | `PASSBOX_SSO_ALLOW_HTTP_LOOPBACK` | unset | `1` allows `http://` identity providers on `localhost`/`127.0.0.1`/`[::1]`, for development only |
 | `PASSBOX_ADMIN_EMAILS` | unset | Comma-separated emails of accounts that are always instance admins, see [Administration](#administration) |
 | `PASSBOX_ICONS` | `on` | `on` lets signed-in apps load website icons through the server, `off` turns this off. See [Website icons](#website-icons) |
+| `PASSBOX_BREACH_PROXY` | `on` | `on` lets signed-in apps check passwords against Have I Been Pwned through the server (k-anonymity: only 5-character hash prefixes), so Have I Been Pwned never sees users' IP addresses; `off` turns the endpoint off. See [Breach checks and email monitoring](#breach-checks-and-email-monitoring) |
+| `PASSBOX_HIBP_API_KEY` | – | Have I Been Pwned API key ([subscription](https://haveibeenpwned.com/API/Key)). Turns on email breach monitoring: users confirm addresses by code, the server checks them and mails new breaches |
+| `PASSBOX_HIBP_CHECK_HOURS` | `24` | Hours between checks of each monitored address |
+| `PASSBOX_HIBP_RPM` | `10` | Breached-account requests per minute your subscription allows; the server paces its checks to it |
 | `PASSBOX_WEBHOOK_ALLOW_PRIVATE` | `false` | Allow organization webhooks to private and loopback addresses (and plain HTTP), for a SIEM in the same network. See [Administration](architecture/administration.md) |
 | `PASSBOX_LOG_FORMAT` | `pretty` | `pretty` or `json` |
 | `RUST_LOG` | `info` | Log level, for example `debug` or `passbox_server=debug` |
@@ -195,3 +199,11 @@ In the team's Single sign-on page, **Provisioning (SCIM)** shows the base URL. *
 - **Keycloak, authentik, ZITADEL, JumpCloud, OneLogin:** use their SCIM 2.0 outbound connector or plugin with the base URL and bearer token.
 
 What provisioning does: new people get an invitation mail (or join on their first SSO sign-in); existing members are linked. People who joined are **pending confirmation** until an owner or admin confirms them in the list (an admin's unlocked Passbox seals the organization key for them; the server cannot). Deactivating someone suspends the membership and immediately ends all their sessions and trusted devices; reactivating restores the membership. Directory groups are shown, but adding their members to Passbox groups is done by an admin.
+
+## Breach checks and email monitoring
+
+Passbox's security check (see [security-analysis.md](architecture/security-analysis.md)) can use Have I Been Pwned in two ways; both go through your server.
+
+**Leaked passwords** (`PASSBOX_BREACH_PROXY`, on by default). Apps send the first 5 characters of a password's SHA-1 hash to `GET /api/v1/breach/range/{prefix}`; the server fetches the padded range from `api.pwnedpasswords.com` (free, no key) and returns it, and the app compares locally. Have I Been Pwned sees your server's IP address, never the user's; your server sees hash prefixes, each shared by hundreds of passwords, never a password. Responses are cached in memory for a day; each account may fetch 3000 prefixes per hour. With the proxy off, apps fall back to asking Have I Been Pwned directly (users can also choose "Direkt" or "Über Passbox-Server" in the settings of the security check).
+
+**Email breach monitoring** (`PASSBOX_HIBP_API_KEY`, off without a key). Users add email addresses in the security check and confirm each with a 6-digit code mailed to it (so nobody can monitor someone else's address). The server stores only the address and the breach list (table `breach_monitor_emails`, `breach_monitor_results`), sends the address to `haveibeenpwned.com/api/v3/breachedaccount/…` with your key, re-checks every `PASSBOX_HIBP_CHECK_HOURS` (paced to `PASSBOX_HIBP_RPM`) and mails the account owner when a new breach appears. Removing an address deletes its results; deleting the account deletes everything. Mail must be configured (`PASSBOX_SMTP_URL`) for codes and alerts to arrive. Self-hosted instances get the full feature with their own key; Have I Been Pwned's terms apply to the key holder.
