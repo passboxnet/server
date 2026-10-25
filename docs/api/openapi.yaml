@@ -884,6 +884,244 @@ paths:
                 properties:
                   versions: { type: array, items: { $ref: "#/components/schemas/ItemVersion" } }
         "404": { description: Unknown or deleted item, or no access. }
+  /api/v1/items/move:
+    post:
+      summary: Move items into another vault (B5)
+      description: |
+        The client re-encrypts each item and the versions of its history it
+        can read for the target vault (bound to the target vault ID, the
+        revision and the target's current key epoch). The item keeps its ID,
+        creation date and attachments; its history is replaced by `versions`.
+        All items or none; at most 100. Needs write access to the source and
+        the target vault. Devices that can see the old vault receive a
+        tombstone (`deleted: true` with the old `vaultId`) in sync. See
+        docs/architecture/sharing.md.
+      operationId: moveItems
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [targetVaultId, items]
+              properties:
+                targetVaultId: { $ref: "#/components/schemas/Id" }
+                keyEpoch: { type: integer, default: 0 }
+                items:
+                  type: array
+                  maxItems: 100
+                  items:
+                    type: object
+                    required: [id, revision, encryptedData]
+                    properties:
+                      id: { $ref: "#/components/schemas/Id" }
+                      revision: { type: integer, description: Stored revision + 1 }
+                      encryptedData: { $ref: "#/components/schemas/Base64Url" }
+                      versions:
+                        type: array
+                        items:
+                          type: object
+                          required: [revision, encryptedData]
+                          properties:
+                            revision: { type: integer }
+                            encryptedData: { $ref: "#/components/schemas/Base64Url" }
+      responses:
+        "200":
+          description: Moved.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  moved:
+                    type: array
+                    items:
+                      type: object
+                      properties: { id: { type: string }, revision: { type: integer }, seq: { type: integer } }
+        "400": { description: Invalid request, or an item is already in the target vault. }
+        "403": { description: "`forbidden` (view-only), `policy_violation` (organization keeps its items) or `quota_exceeded` (attachments)." }
+        "404": { description: Unknown vault or item. }
+        "409": { description: "`details.itemId` and `details.currentRevision`, or `details.currentKeyEpoch`." }
+  /api/v1/attachments/{id}:
+    put:
+      summary: Upload an encrypted attachment blob (G2)
+      description: |
+        The raw body is the blob from `passbox_core::file_crypto` (the file
+        key, name and type are in the encrypted item). IDs come from the
+        client; a blob cannot be replaced. See docs/architecture/attachments.md.
+      operationId: uploadAttachment
+      parameters:
+        - { name: id, in: path, required: true, schema: { $ref: "#/components/schemas/Id" } }
+        - { name: itemId, in: query, required: true, schema: { $ref: "#/components/schemas/Id" } }
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: { type: string, format: binary }
+      responses:
+        "201": { description: "Stored: `{ id, size }`." }
+        "400": { description: Not an encrypted file, or 50 attachments already. }
+        "403": { description: "`forbidden`, `file_too_large` or `quota_exceeded`." }
+        "404": { description: Unknown item. }
+        "409": { description: An attachment with this ID exists. }
+    get:
+      summary: Download an encrypted attachment blob
+      operationId: downloadAttachment
+      parameters:
+        - { name: id, in: path, required: true, schema: { $ref: "#/components/schemas/Id" } }
+      responses:
+        "200":
+          description: The blob.
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        "404": { description: Unknown attachment or no access. }
+    delete:
+      summary: Delete an attachment
+      operationId: deleteAttachment
+      parameters:
+        - { name: id, in: path, required: true, schema: { $ref: "#/components/schemas/Id" } }
+      responses:
+        "204": { description: Deleted. }
+        "403": { description: View-only. }
+        "404": { description: Unknown attachment. }
+  /api/v1/attachments/usage:
+    get:
+      summary: Attachment limits and storage used
+      operationId: attachmentUsage
+      responses:
+        "200":
+          description: "`{ maxFileSize, usage: [{ owner: \"account\" | orgId, used, quota (0 = unlimited) }] }`"
+  /api/v1/share-links:
+    get:
+      summary: The account's share links that have not expired (B7)
+      operationId: shareLinks
+      responses:
+        "200": { description: "`{ links: [{ id, encryptedLabel, vaultId, expiresAt, maxViews, views, hasPassphrase, createdAt, lastViewedAt }] }`" }
+    post:
+      summary: Create a share link
+      description: |
+        The snapshot is encrypted on the device; the key is only in the
+        link's fragment. `authHash` is the hash of the access token
+        (`passbox_core::share_link`). Expires within 365 days; `maxViews` 0 =
+        unlimited (at most 1000). With `vaultId`, the policy of the vault's
+        organization applies (403 `policy_violation`).
+      operationId: createShareLink
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, encryptedLabel, blob, authHash, expiresAt]
+              properties:
+                id: { $ref: "#/components/schemas/Id" }
+                encryptedLabel: { $ref: "#/components/schemas/Base64Url" }
+                blob: { $ref: "#/components/schemas/Base64Url" }
+                authHash: { $ref: "#/components/schemas/Base64Url" }
+                salt: { $ref: "#/components/schemas/Base64Url" }
+                expiresAt: { type: integer }
+                maxViews: { type: integer, default: 0 }
+                vaultId: { $ref: "#/components/schemas/Id" }
+      responses:
+        "201": { description: Created. }
+        "403": { description: "`policy_violation`." }
+  /api/v1/share-links/{id}:
+    delete:
+      summary: End a share link
+      operationId: deleteShareLink
+      parameters:
+        - { name: id, in: path, required: true, schema: { $ref: "#/components/schemas/Id" } }
+      responses:
+        "204": { description: Ended. }
+        "404": { description: Unknown link. }
+  /api/v1/public/share-links/{id}:
+    get:
+      summary: What the viewer needs before opening (no session)
+      operationId: publicShareLink
+      security: []
+      parameters:
+        - { name: id, in: path, required: true, schema: { $ref: "#/components/schemas/Id" } }
+      responses:
+        "200": { description: "`{ salt (null without passphrase), expiresAt, viewsLeft (null = unlimited) }`" }
+        "404": { description: Unknown, expired or used up. }
+  /api/v1/public/share-links/{id}/open:
+    post:
+      summary: The encrypted snapshot, for the access token (no session; counts a view)
+      operationId: openShareLink
+      security: []
+      parameters:
+        - { name: id, in: path, required: true, schema: { $ref: "#/components/schemas/Id" } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [auth], properties: { auth: { $ref: "#/components/schemas/Base64Url" } } }
+      responses:
+        "200": { description: "`{ blob, expiresAt, viewsLeft }`; the last allowed view deletes the link." }
+        "403": { description: "`wrong_passphrase`; after 10 the link is deleted." }
+        "404": { description: Unknown, expired or used up. }
+  /api/v1/vaults/{id}/access-request:
+    get:
+      summary: Whether this account can open a vault, and its own request (B9)
+      operationId: vaultAccessRequest
+      parameters:
+        - { name: id, in: path, required: true, schema: { $ref: "#/components/schemas/Id" } }
+      responses:
+        "200": { description: "`{ orgId, hasAccess, request }`" }
+        "404": { description: Unknown vault or not a confirmed member of its organization. }
+  /api/v1/vaults/{id}/access-requests:
+    post:
+      summary: Ask the vault's managers for access
+      operationId: requestVaultAccess
+      parameters:
+        - { name: id, in: path, required: true, schema: { $ref: "#/components/schemas/Id" } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [role], properties: { role: { type: string, enum: [view, edit, manage] } } }
+      responses:
+        "201": { description: The request. }
+        "400": { description: Already has this access. }
+        "404": { description: Unknown vault or not a confirmed member of its organization. }
+        "409": { description: A request is pending. }
+        "429": { description: More than 20 requests a day. }
+  /api/v1/access-requests:
+    get:
+      summary: Pending requests for vaults this account manages, and its own
+      operationId: accessRequests
+      responses:
+        "200": { description: "`{ incoming: [...], outgoing: [...] }` with `{ id, vaultId, orgId, accountId, email, role, status, createdAt, decidedAt }`" }
+  /api/v1/access-requests/{id}:
+    delete:
+      summary: Withdraw an own pending request
+      operationId: cancelAccessRequest
+      parameters:
+        - { name: id, in: path, required: true, schema: { $ref: "#/components/schemas/Id" } }
+      responses:
+        "204": { description: Withdrawn. }
+        "404": { description: Unknown or not pending. }
+  /api/v1/access-requests/{id}/approve:
+    post:
+      summary: Mark a request approved (after sharing the vault with the requester)
+      operationId: approveAccessRequest
+      parameters:
+        - { name: id, in: path, required: true, schema: { $ref: "#/components/schemas/Id" } }
+      responses:
+        "204": { description: Approved. }
+        "404": { description: Unknown request or not a manager. }
+        "409": { description: Already decided, or the requester has no access yet. }
+  /api/v1/access-requests/{id}/deny:
+    post:
+      summary: Decline a request
+      operationId: denyAccessRequest
+      parameters:
+        - { name: id, in: path, required: true, schema: { $ref: "#/components/schemas/Id" } }
+      responses:
+        "204": { description: Declined. }
+        "404": { description: Unknown request or not a manager. }
+        "409": { description: Already decided. }
   /api/v1/icons/{domain}:
     get:
       summary: A website's icon, fetched by the server

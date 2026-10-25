@@ -14,6 +14,7 @@ crates/core-wasm/pkg/
 
 # Local data and secrets
 /data/
+/blobs/
 .env
 .env.*
 !.env.example
