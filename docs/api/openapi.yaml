@@ -1142,10 +1142,13 @@ paths:
         HTTPS on port 443 only, refusing IP literals and every non-public
         address (also after DNS resolution and on redirects; at most 3
         redirects, 3 s per request, 200 KB). Only PNG, ICO, JPEG, GIF and
-        WebP images whose bytes match are returned. Hits are cached for 7
-        days and misses for a day. 600 requests per session and minute.
-        Turned off with `PASSBOX_ICONS=off` (then always 404; see
-        `ServerMeta.icons`). The server learns which domains users look at.
+        WebP images whose bytes match are returned. Results are stored once
+        for all users of the instance (refreshed after 30 days, misses
+        retried after 7 days) and never linked to the account that asked.
+        600 requests per session and minute. Turned off with
+        `PASSBOX_ICONS=off` (then always 404; see `ServerMeta.icons`). The
+        server learns which domains users look at; clients bundle the icons
+        of popular sites (`@passbox/site-icons`) and do not ask for those.
       operationId: icon
       parameters:
         - name: domain
