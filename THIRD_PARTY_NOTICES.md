@@ -39,3 +39,33 @@ for its data, so it is not bundled.
 
 Refresh both lists with `python3 scripts/update-site-directories.py` and
 update the snapshot dates above.
+
+## Brand icons of third-party services
+
+- **What:** the public website icons (favicons, apple-touch-icons or app
+  icons) of the services Passbox names in its user interface: import sources
+  (1Password, Bitwarden, LastPass, Dashlane, Keeper, Proton Pass, KeePass,
+  KeePassXC, Passbolt, NordPass, Enpass, RoboForm, Google Password Manager,
+  Apple Passwords), browsers and platforms (Chrome, Edge, Firefox, Safari,
+  Brave, Windows, macOS, Linux, iOS, App Store, Android, Google Play), email
+  alias providers (SimpleLogin, addy.io, Fastmail, DuckDuckGo, Firefox Relay),
+  identity providers (Microsoft Entra ID, Google, Okta, Keycloak, authentik,
+  ZITADEL), SIEMs (Splunk, Microsoft Sentinel, Elastic, Graylog, Wazuh), AI
+  agent clients and providers (Claude, Anthropic, Cursor, Visual Studio Code,
+  OpenAI, GitHub, Langdock, Mistral AI, IONOS, STACKIT, Scaleway, Ollama),
+  Have I Been Pwned and 2fa.directory.
+- **Bundled as:** `packages/brand-icons/icons/<id>.png` (scaled to 64×64
+  pixels), with `packages/brand-icons/manifest.json` naming each icon's
+  domain, source URL and the date it was fetched.
+- **Source:** each service's own website, as listed in the manifest.
+- **Rights:** the names, logos and icons are trademarks or other marks of
+  their respective owners. They are not covered by Passbox's MIT license.
+  Passbox uses them only to identify the services it works with or imports
+  from (nominative use); this implies no endorsement by, or affiliation
+  with, their owners. Owners who want an icon removed or replaced can open an
+  issue.
+
+Refresh the icons with `node scripts/update-brand-icons.mjs` (all) or
+`node scripts/update-brand-icons.mjs okta github` (some); the service list is
+`packages/brand-icons/services.json`. The apps never load these icons from
+the services at run time.
