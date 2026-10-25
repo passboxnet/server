@@ -69,3 +69,31 @@ Refresh the icons with `node scripts/update-brand-icons.mjs` (all) or
 `node scripts/update-brand-icons.mjs okta github` (some); the service list is
 `packages/brand-icons/services.json`. The apps never load these icons from
 the services at run time.
+
+## Plus Jakarta Sans and JetBrains Mono (fonts)
+
+- **What:** the Passbox typefaces (docs/design/system.md).
+- **Bundled as:** web, extension, desktop and website through the npm
+  packages `@fontsource-variable/plus-jakarta-sans` and
+  `@fontsource-variable/jetbrains-mono` (each ships its license); iOS
+  `apps/ios/Shared/Fonts/PlusJakartaSans-*.ttf` (with
+  `PlusJakartaSans-OFL.txt`); Android
+  `apps/android/app/src/main/res/font/plus_jakarta_sans_*.ttf`. The static
+  TTFs are unmodified weight instances of the variable font; their name
+  tables keep the copyright and license notice.
+- **Source:** <https://github.com/tokotype/PlusJakartaSans>,
+  <https://github.com/JetBrains/JetBrainsMono> (via Google Fonts).
+- **License:** SIL Open Font License 1.1. Copyright 2020 The Plus Jakarta
+  Sans Project Authors; Copyright 2020 The JetBrains Mono Project Authors.
+
+## Lucide icons
+
+- **What:** the Passbox outline icon family (docs/design/brand.md).
+- **Bundled as:** the npm package `lucide-react` on the web; on iOS
+  `apps/ios/Shared/Icons.xcassets` and on Android
+  `apps/android/app/src/main/res/drawable/pb_icon_*.xml`, exported from it by
+  `scripts/generate-brand-assets.mjs` (list: `packages/ui/brand/icons.json`).
+- **Source:** <https://lucide.dev>, <https://github.com/lucide-icons/lucide>.
+- **License:** ISC License, Copyright (c) Lucide Icons and Contributors;
+  icons derived from Feather: MIT License, Copyright (c) 2013-present Cole
+  Bemis.
