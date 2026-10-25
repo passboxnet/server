@@ -78,7 +78,9 @@ the services at run time.
   `@fontsource-variable/jetbrains-mono` (each ships its license); iOS
   `apps/ios/Shared/Fonts/PlusJakartaSans-*.ttf` (with
   `PlusJakartaSans-OFL.txt`); Android
-  `apps/android/app/src/main/res/font/plus_jakarta_sans_*.ttf`. The static
+  `apps/android/app/src/main/res/font/plus_jakarta_sans_*.ttf`; the server's
+  own pages `crates/server/assets/fonts/plus-jakarta-sans-*.woff2` (copied
+  from the npm package, with `PlusJakartaSans-OFL.txt`). The static
   TTFs are unmodified weight instances of the variable font; their name
   tables keep the copyright and license notice.
 - **Source:** <https://github.com/tokotype/PlusJakartaSans>,

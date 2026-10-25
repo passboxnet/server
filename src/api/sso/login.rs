@@ -21,7 +21,7 @@
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
-use axum::http::{StatusCode, header};
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use data_encoding::HEXLOWER;
 use passbox_core::oidc::{self as core_oidc, Expectations, Jwks};
@@ -320,20 +320,41 @@ fn test_marker(test: bool) -> &'static str {
     if test { "&test=1" } else { "" }
 }
 
-fn error_page(state: &AppState, code: &str, test: bool) -> Response {
-    match state.mailer.public_url() {
-        Some(base) => redirect(&format!(
+async fn error_page(state: &AppState, headers: &HeaderMap, code: &str, test: bool) -> Response {
+    if let Some(base) = state.mailer.public_url() {
+        return redirect(&format!(
             "{}/#/sso?error={code}{}",
             base.trim_end_matches('/'),
             test_marker(test)
-        )),
-        None => (
-            StatusCode::BAD_REQUEST,
-            [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
-            "This single sign-on link is invalid or has expired. Start the sign-in again in Passbox.",
-        )
-            .into_response(),
+        ));
     }
+    // Without a public URL there is no web app to send the person to: the
+    // server explains it on its own page.
+    let (instance, locale) = crate::brand::pages::context(state, headers).await;
+    let de = locale == crate::mail::Locale::De;
+    crate::brand::Page {
+        locale,
+        status: StatusCode::BAD_REQUEST,
+        instance_name: &instance,
+        eyebrow: "Single Sign-on".to_owned(),
+        title: if de {
+            "Anmeldung nicht möglich"
+        } else {
+            "Sign-in not possible"
+        }
+        .to_owned(),
+        paragraphs: vec![if de {
+            "Dieser Link für die Single Sign-on-Anmeldung ist ungültig oder abgelaufen. Starten Sie \
+             die Anmeldung in Passbox erneut."
+                .to_owned()
+        } else {
+            "This single sign-on link is invalid or has expired. Start the sign-in again in Passbox."
+                .to_owned()
+        }],
+        code: None,
+        action: None,
+    }
+    .into_response()
 }
 
 /// What the callback established about the person.
@@ -775,6 +796,7 @@ async fn handle_callback(
 pub async fn callback(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
+    headers: HeaderMap,
     Query(query): Query<CallbackQuery>,
 ) -> Response {
     if let Err(error) = limit(&state, format!("sso-callback:{ip}"), 60, 60) {
@@ -783,10 +805,10 @@ pub async fn callback(
     let mut test = false;
     match handle_callback(&state, &ip, query, &mut test).await {
         Ok(Ok(location)) => redirect(&location),
-        Ok(Err(code)) => error_page(&state, code, test),
+        Ok(Err(code)) => error_page(&state, &headers, code, test).await,
         Err(error) => {
             let _ = error.into_response();
-            error_page(&state, "sso_failed", test)
+            error_page(&state, &headers, "sso_failed", test).await
         }
     }
 }
