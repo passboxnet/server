@@ -22,6 +22,7 @@ export PASSBOX_E2E_DATABASE_URL=$PASSBOX_TEST_DATABASE_URL
 
 - `PASSBOX_TEST_DATABASE_URL` is a superuser connection. Every Rust test run creates a database of its own (`passbox_test_*`), provisions the roles with `crates/server/sql/roles.sql`, migrates it as `passbox_migrator` and connects as `passbox_app` and `passbox_worker`, so the tests see row level security exactly as production does. The database is dropped afterwards (servers started by client tests leave theirs; a later run drops those that are older than half an hour and no longer in use).
 - `PASSBOX_E2E_DATABASE_URL` is the same for `pnpm e2e`: `e2e/database.sh` (needs `psql`) recreates one database per test server.
+- The Android and iOS host tests (`apps/android/ffi-test`, `apps/ios/scripts/test-kit.sh`) use `PASSBOX_TEST_DATABASE_URL` too: every server they start gets a database of its own from `scripts/test-database.sh` (needs `psql`), which is dropped when the server stops.
 - **Query cache:** `sqlx::query!` checks queries at compile time. Without `DATABASE_URL` the macros read the committed cache in `.sqlx/`, which is what CI does (`SQLX_OFFLINE=true`). After adding or changing a query, migrate a development database and rebuild with it, writing the cache:
 
   ```sh
