@@ -204,4 +204,3 @@ jobs:
             echo
             for tag in $TAGS; do echo "- \`$tag\`"; done
           } >> "$GITHUB_STEP_SUMMARY"
-
