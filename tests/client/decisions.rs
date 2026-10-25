@@ -326,6 +326,10 @@ fn agent_reveal_on(server: &str) {
         matches!(result, Err(GrantState::Pending { .. })),
         "{result:?}"
     );
+    // The person denies that one (the broker would pick up a later approval).
+    for grant in owner.agent_grants().unwrap() {
+        owner.decide_agent_grant(&grant, false, 0).unwrap();
+    }
 
     // The organization's vault: no policy allows it, so the approver's
     // core refuses the tick and the server refuses the reveal.
