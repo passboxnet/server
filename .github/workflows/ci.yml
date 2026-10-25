@@ -29,11 +29,17 @@ jobs:
           POSTGRES_DB: passbox_test
         ports: ["5432:5432"]
         options: >-
-          --health-cmd "pg_isready -U passbox" --health-interval 5s --health-timeout 5s --health-retries 10
+          --health-cmd "pg_isready -U passbox -d passbox_test" --health-interval 5s --health-timeout 5s --health-retries 10
     env:
       PASSBOX_TEST_DATABASE_URL: postgres://passbox:passbox@localhost:5432/passbox_test
     steps:
       - uses: actions/checkout@v5
+      # The workspace's debug and test binaries outgrow the runner's free disk;
+      # drop preinstalled SDKs this job does not use.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          df -h /
       - name: Install system libraries for the desktop app (Tauri)
         run: |
           sudo apt-get update
@@ -72,7 +78,7 @@ jobs:
       - run: pnpm build
       - name: Start a server for client integration tests
         run: |
-          cargo build --package passbox-server --locked
+          cargo build --package passbox-server --package passbox-cli --locked
           PASSBOX_DATABASE_URL=sqlite::memory: PASSBOX_BIND=127.0.0.1:8080 PASSBOX_AUTH_RATE_LIMIT=1000 ./target/debug/passbox-server &
           for i in $(seq 1 30); do curl -sf http://127.0.0.1:8080/health && break; sleep 1; done
       - run: pnpm test
