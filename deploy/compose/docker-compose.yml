@@ -1,0 +1,174 @@
+# Passbox self-hosting with Docker Compose: Passbox, PostgreSQL, Caddy with
+# automatic HTTPS and encrypted nightly backups.
+#
+#   cp .env.example .env    # then fill in every value
+#   docker compose up -d
+#
+# Full guide: docs/self-hosting.md#docker-compose
+name: passbox
+
+x-hardening: &hardening
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+
+x-passbox-env: &passbox-env
+  # Three database roles, created by initdb/10-passbox-roles.sh on the first
+  # start: the app role is subject to row-level security, the migrator owns
+  # the schema, the worker runs background jobs.
+  PASSBOX_DATABASE_URL: postgres://passbox_app:${PASSBOX_APP_DB_PASSWORD:?set in .env}@postgres:5432/passbox
+  PASSBOX_MIGRATION_DATABASE_URL: postgres://passbox_migrator:${PASSBOX_MIGRATOR_DB_PASSWORD:?set in .env}@postgres:5432/passbox
+  PASSBOX_WORKER_DATABASE_URL: postgres://passbox_worker:${PASSBOX_WORKER_DB_PASSWORD:?set in .env}@postgres:5432/passbox
+
+services:
+  postgres:
+    image: docker.io/library/postgres:17.10-bookworm@sha256:9b18b78397054fce88a9552e9d5a3ad5bb7fd258c5b3cc1c5028e46373d6ea8f
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256 --data-checksums
+      # Read by initdb/10-passbox-roles.sh on the very first start only.
+      PASSBOX_MIGRATOR_DB_PASSWORD: ${PASSBOX_MIGRATOR_DB_PASSWORD}
+      PASSBOX_APP_DB_PASSWORD: ${PASSBOX_APP_DB_PASSWORD}
+      PASSBOX_WORKER_DB_PASSWORD: ${PASSBOX_WORKER_DB_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./initdb:/docker-entrypoint-initdb.d:ro
+    networks: [backend]
+    shm_size: 256mb
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d passbox"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  # One-shot: applies database migrations, then exits. `docker compose up`
+  # runs it again after every image update, before Passbox starts.
+  migrate:
+    image: ${PASSBOX_IMAGE:-ghcr.io/relationsoftware/passbox:latest}
+    # `docker compose up -d --build` builds the image from this checkout
+    # instead of pulling it (for testing unreleased versions).
+    build: &passbox-build
+      context: ../..
+    command: ["migrate"]
+    restart: "no"
+    <<: *hardening
+    environment:
+      <<: *passbox-env
+      RUST_LOG: info
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [backend]
+
+  passbox:
+    image: ${PASSBOX_IMAGE:-ghcr.io/relationsoftware/passbox:latest}
+    build: *passbox-build
+    restart: unless-stopped
+    <<: *hardening
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    environment:
+      <<: *passbox-env
+      PASSBOX_AUTO_MIGRATE: "false"
+      PASSBOX_PUBLIC_URL: https://${PASSBOX_DOMAIN:?set in .env}
+      # Caddy sets X-Forwarded-For to the real client address.
+      PASSBOX_TRUST_PROXY: "true"
+      PASSBOX_SMTP_URL: ${PASSBOX_SMTP_URL:-}
+      PASSBOX_MAIL_FROM: ${PASSBOX_MAIL_FROM:-}
+      PASSBOX_ADMIN_EMAILS: ${PASSBOX_ADMIN_EMAILS:-}
+      PASSBOX_HIBP_API_KEY: ${PASSBOX_HIBP_API_KEY:-}
+      RUST_LOG: ${RUST_LOG:-info}
+    volumes:
+      - passbox-blobs:/data/blobs
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    # backend: database; frontend: Caddy and outbound internet (mail,
+    # website icons, Have I Been Pwned).
+    networks: [backend, frontend]
+
+  caddy:
+    image: docker.io/library/caddy:2.11.6-alpine@sha256:d44355d3c2149dc580ce2cac735955d1c08d3d00882c30489c241aa51a5c10d9
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      PASSBOX_DOMAIN: ${PASSBOX_DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL:?set in .env}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on: [passbox]
+    networks: [frontend]
+
+  # Encrypted backups: pg_dump of the database and a tar of the attachment
+  # blobs, encrypted with age to BACKUP_AGE_RECIPIENT (public key; the private
+  # key stays offline). Copy ./backups off this machine, see the guide.
+  backup:
+    build: ./backup
+    image: passbox-backup:local
+    restart: unless-stopped
+    environment:
+      PGHOST: postgres
+      PGUSER: postgres
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: passbox
+      BACKUP_AGE_RECIPIENT: ${BACKUP_AGE_RECIPIENT:?set in .env}
+      BACKUP_INTERVAL_HOURS: ${BACKUP_INTERVAL_HOURS:-24}
+      BACKUP_KEEP_DAYS: ${BACKUP_KEEP_DAYS:-14}
+    volumes:
+      - passbox-blobs:/data/blobs:ro
+      - ${BACKUP_DIR:-./backups}:/backups
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [backend]
+
+  # Only for restores (profile "restore"), see the guide:
+  #   docker compose stop passbox backup
+  #   BACKUP_AGE_KEY_FILE=/path/to/passbox-backup-key.txt \
+  #     docker compose run --rm restore <timestamp>
+  restore:
+    profiles: [restore]
+    image: passbox-backup:local
+    build: ./backup
+    entrypoint: ["/usr/local/bin/restore.sh"]
+    # Root, so it can read a key file only the host admin can read and give
+    # the restored blobs back to the Passbox user (65532).
+    user: "0:0"
+    environment:
+      PGHOST: postgres
+      PGUSER: postgres
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: passbox
+    volumes:
+      - passbox-blobs:/data/blobs
+      - ${BACKUP_DIR:-./backups}:/backups:ro
+      - ${BACKUP_AGE_KEY_FILE:-/dev/null}:/run/secrets/age-key:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [backend]
+
+networks:
+  # No route to the internet: only Passbox, migrations and backups reach the
+  # database.
+  backend:
+    internal: true
+  frontend: {}
+
+volumes:
+  postgres-data:
+  passbox-blobs:
+  caddy-data:
+  caddy-config:
