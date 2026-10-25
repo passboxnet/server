@@ -123,6 +123,9 @@ pub async fn create(
             None => return Err(ApiError::NotFound),
             Some(access::VaultAccess::Personal) => {}
             Some(access::VaultAccess::Shared { org_id: org, .. }) => {
+                if access::is_guest(&mut tx, &org, &session.account_id).await? {
+                    return Err(access::guest_view_only());
+                }
                 if let Some(rules) = super::org_policy::current_rules(&mut tx, &org).await? {
                     check_policy(&rules, now, req.expires_at, req.max_views)?;
                 }

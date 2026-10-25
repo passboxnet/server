@@ -74,7 +74,13 @@ pub struct InstanceSettings {
     /// Language of mails to accounts without a language preference.
     pub default_locale: Locale,
     pub password_policy: PasswordPolicy,
+    /// AI agents and service accounts per member (fair use). `None` uses
+    /// `PASSBOX_AGENT_LIMIT_PER_MEMBER`; `Some(0)` is unlimited.
+    pub agent_limit_per_member: Option<u32>,
 }
+
+/// Highest agent limit an admin can set (per member).
+pub const MAX_AGENT_LIMIT_PER_MEMBER: u32 = 10_000;
 
 impl Default for InstanceSettings {
     fn default() -> Self {
@@ -85,6 +91,7 @@ impl Default for InstanceSettings {
             support_url: String::new(),
             default_locale: Locale::En,
             password_policy: PasswordPolicy::default(),
+            agent_limit_per_member: None,
         }
     }
 }
@@ -148,6 +155,14 @@ impl InstanceSettings {
             return Err(ApiError::bad_request(
                 "passwordPolicy.minLength must be between 12 and 128",
             ));
+        }
+        if self
+            .agent_limit_per_member
+            .is_some_and(|limit| limit > MAX_AGENT_LIMIT_PER_MEMBER)
+        {
+            return Err(ApiError::bad_request(format!(
+                "agentLimitPerMember must be between 0 (unlimited) and {MAX_AGENT_LIMIT_PER_MEMBER}"
+            )));
         }
         Ok(self)
     }

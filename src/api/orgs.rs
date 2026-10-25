@@ -792,6 +792,10 @@ pub struct InvitationPreview {
     expires_at: i64,
     /// Email of the admin who invited (also named in the invitation mail).
     inviter_email: String,
+    /// The organization's admins can restore the invitee's access once they
+    /// joined (C1): recovery is set up and its policy requires enrollment.
+    /// Never for guests. The app says so before the invitee accepts.
+    recovery: bool,
 }
 
 /// What an invitation link is for, before signing in. Unknown, used,
@@ -822,6 +826,20 @@ pub async fn preview(
     .await?;
     let (org_id, org_kind, email, role, expires_at, inviter_email) =
         row.ok_or(ApiError::NotFound)?;
+    let recovery = if role == "guest" {
+        false
+    } else {
+        let mut conn = state.db.acquire().await?;
+        let key: Option<i64> =
+            sqlx::query_scalar("SELECT MAX(key_version) FROM org_recovery_keys WHERE org_id = $1")
+                .bind(&org_id)
+                .fetch_one(&mut *conn)
+                .await?;
+        key.is_some()
+            && super::org_policy::current_rules(&mut conn, &org_id)
+                .await?
+                .is_some_and(|r| r.require_recovery_enrollment)
+    };
     Ok(Json(InvitationPreview {
         org_id,
         org_kind,
@@ -829,6 +847,7 @@ pub async fn preview(
         role,
         expires_at,
         inviter_email,
+        recovery,
     }))
 }
 

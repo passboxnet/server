@@ -32,8 +32,8 @@ use crate::error::{ApiError, ApiResult};
 use crate::security::ClientIp;
 use crate::state::AppState;
 
-/// Service accounts per account.
-const MAX_PER_ACCOUNT: i64 = 50;
+/// Error code when the fair-use limit for agents is reached.
+pub const AGENT_LIMIT_REACHED: &str = "agent_limit_reached";
 /// Vault grants per service account (all epochs).
 const MAX_GRANTS: i64 = 200;
 const MAX_NAME_LEN: usize = 100;
@@ -131,7 +131,16 @@ async fn check_grant(
         .ok_or(ApiError::NotFound)?;
     let current = match &access {
         VaultAccess::Personal => 0,
-        VaultAccess::Shared { key_epoch, .. } => *key_epoch,
+        VaultAccess::Shared {
+            key_epoch, org_id, ..
+        } => {
+            // Guests are view-only (B8): no machine access to the vaults
+            // shared with them.
+            if access::is_guest(conn, org_id, owner_id).await? {
+                return Err(access::guest_view_only());
+            }
+            *key_epoch
+        }
     };
     if upload.key_epoch != current {
         return Err(ApiError::conflict(
@@ -311,6 +320,128 @@ async fn info(conn: &mut AnyConnection, row: SaRow) -> ApiResult<ServiceAccountI
     })
 }
 
+/// The fair-use limit for AI agents and service accounts as it applies to
+/// one account. They never count as members; guests add no allowance.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentUsage {
+    /// Per member; 0 = unlimited.
+    pub limit_per_member: u32,
+    /// Active (neither revoked nor expired) service accounts in the pool.
+    pub used: i64,
+    /// Size of the pool; 0 = unlimited.
+    pub allowed: i64,
+    /// `personal` (the account's own) or `organization` (shared by the
+    /// organization's members).
+    pub pool: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub org_id: Option<String>,
+    /// Members the organization's pool is based on (not guests).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub members: Option<i64>,
+}
+
+impl AgentUsage {
+    pub fn has_room(&self) -> bool {
+        self.allowed == 0 || self.used < self.allowed
+    }
+}
+
+/// The limit in force: the instance setting, else
+/// `PASSBOX_AGENT_LIMIT_PER_MEMBER`.
+pub async fn agent_limit_per_member(state: &AppState, conn: &mut AnyConnection) -> ApiResult<u32> {
+    let stored: Option<String> =
+        sqlx::query_scalar("SELECT value FROM instance_state WHERE name = 'settings'")
+            .fetch_optional(&mut *conn)
+            .await?;
+    let setting = stored
+        .and_then(|json| serde_json::from_str::<crate::instance::InstanceSettings>(&json).ok())
+        .and_then(|s| s.agent_limit_per_member);
+    Ok(setting.unwrap_or(state.agent_limit_per_member))
+}
+
+/// How many service accounts the account may still create. Members of
+/// organizations draw from their organization's pool (`limit` times the
+/// confirmed members who are not guests; the organization with the most
+/// room counts), everyone else from their own allowance of `limit`.
+pub async fn agent_usage(
+    conn: &mut AnyConnection,
+    limit: u32,
+    account_id: &str,
+) -> ApiResult<AgentUsage> {
+    let now = now_ms();
+    let own: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM service_accounts sa WHERE sa.account_id = $1 \
+         AND sa.revoked_at = 0 AND (sa.expires_at = 0 OR sa.expires_at > $2)",
+    )
+    .bind(account_id)
+    .bind(now)
+    .fetch_one(&mut *conn)
+    .await?;
+    let personal = AgentUsage {
+        limit_per_member: limit,
+        used: own,
+        allowed: i64::from(limit),
+        pool: "personal",
+        org_id: None,
+        members: None,
+    };
+    if limit == 0 {
+        return Ok(personal);
+    }
+    let orgs: Vec<String> = sqlx::query_scalar(
+        "SELECT org_id FROM org_members WHERE account_id = $1 AND status = 'confirmed' \
+         AND role <> 'guest' ORDER BY org_id",
+    )
+    .bind(account_id)
+    .fetch_all(&mut *conn)
+    .await?;
+    let mut best: Option<AgentUsage> = None;
+    for org_id in orgs {
+        let members: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM org_members WHERE org_id = $1 AND status = 'confirmed' \
+             AND role <> 'guest'",
+        )
+        .bind(&org_id)
+        .fetch_one(&mut *conn)
+        .await?;
+        let used: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM service_accounts sa WHERE sa.revoked_at = 0 \
+             AND (sa.expires_at = 0 OR sa.expires_at > $2) AND sa.account_id IN \
+             (SELECT account_id FROM org_members WHERE org_id = $1 AND status = 'confirmed' \
+              AND role <> 'guest')",
+        )
+        .bind(&org_id)
+        .bind(now)
+        .fetch_one(&mut *conn)
+        .await?;
+        let usage = AgentUsage {
+            limit_per_member: limit,
+            used,
+            allowed: i64::from(limit) * members.max(1),
+            pool: "organization",
+            org_id: Some(org_id),
+            members: Some(members),
+        };
+        if best
+            .as_ref()
+            .is_none_or(|b| usage.allowed - usage.used > b.allowed - b.used)
+        {
+            best = Some(usage);
+        }
+    }
+    Ok(best.unwrap_or(personal))
+}
+
+/// `GET /agent-limit`: the fair-use limit for agents and service accounts.
+pub async fn limit(State(state): State<AppState>, session: Session) -> ApiResult<Json<AgentUsage>> {
+    let mut conn = state.db.acquire().await?;
+    let limit = agent_limit_per_member(&state, &mut conn).await?;
+    Ok(Json(
+        agent_usage(&mut conn, limit, &session.account_id).await?,
+    ))
+}
+
 /// `GET /service-accounts`: the account's service accounts, newest first.
 pub async fn list(
     State(state): State<AppState>,
@@ -376,15 +507,22 @@ pub async fn create(
             "the public key does not match the request",
         ));
     }
-    let count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM service_accounts WHERE account_id = $1")
-            .bind(&session.account_id)
-            .fetch_one(&mut *tx)
-            .await?;
-    if count >= MAX_PER_ACCOUNT {
-        return Err(ApiError::bad_request(format!(
-            "an account can have at most {MAX_PER_ACCOUNT} service accounts; delete one first"
-        )));
+    let limit = agent_limit_per_member(&state, &mut tx).await?;
+    let usage = agent_usage(&mut tx, limit, &session.account_id).await?;
+    if !usage.has_room() {
+        let message = match usage.members {
+            Some(members) => format!(
+                "your organization has reached its fair-use limit of {} AI agents and service accounts \
+                 ({limit} per member, {members} members); revoke one you no longer need, or ask an \
+                 administrator of this server to raise the limit",
+                usage.allowed
+            ),
+            None => format!(
+                "you have reached the fair-use limit of {limit} AI agents and service accounts; \
+                 revoke one you no longer need, or ask an administrator of this server to raise the limit"
+            ),
+        };
+        return Err(ApiError::forbidden(AGENT_LIMIT_REACHED, message));
     }
     for grant in &req.grants {
         check_grant(

@@ -171,6 +171,9 @@ pub async fn create(
     }
     let mut tx = db::begin_write(&state.db).await?;
     let org_id = vault_org(&mut tx, &vault_id, &session.account_id).await?;
+    if role > VaultRole::View && access::is_guest(&mut tx, &org_id, &session.account_id).await? {
+        return Err(access::guest_view_only());
+    }
     if let Some(current) =
         access::shared_role(&mut tx, &vault_id, &org_id, &session.account_id).await?
         && current >= role

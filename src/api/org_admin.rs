@@ -109,6 +109,16 @@ pub struct OrgReport {
     pub pending_recovery_requests: i64,
     pub recovery_set_up: bool,
     pub policy_version: i64,
+    /// Confirmed members who are not guests: the billable members of the
+    /// hosted service. Guests, AI agents and service accounts never count.
+    pub member_count: i64,
+    /// Confirmed guests (free, view-only).
+    pub guest_count: i64,
+    /// Active service accounts (and with them AI agents) of the members,
+    /// with the fair-use limit that applies (`limit_per_member` 0 =
+    /// unlimited).
+    pub service_account_count: i64,
+    pub agent_limit_per_member: u32,
 }
 
 fn role_rank(role: &str) -> u8 {
@@ -338,7 +348,7 @@ pub async fn reports(
             via,
         })
         .collect();
-    let members = members
+    let members: Vec<MemberReport> = members
         .into_iter()
         .map(|(account_id, email, role, status, joined_at)| {
             let mut methods = Vec::new();
@@ -393,7 +403,31 @@ pub async fn reports(
             .fetch_optional(&mut *conn)
             .await?
             .flatten();
+    let count_role = |guest: bool| {
+        members
+            .iter()
+            .filter(|m| m.status == "confirmed" && (m.role == "guest") == guest)
+            .count() as i64
+    };
+    let member_count = count_role(false);
+    let guest_count = count_role(true);
+    let agent_limit_per_member =
+        super::service_accounts::agent_limit_per_member(&state, &mut conn).await?;
+    let service_account_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM service_accounts sa WHERE sa.revoked_at = 0 \
+         AND (sa.expires_at = 0 OR sa.expires_at > $2) AND sa.account_id IN \
+         (SELECT account_id FROM org_members WHERE org_id = $1 AND status = 'confirmed' \
+          AND role <> 'guest')",
+    )
+    .bind(&org_id)
+    .bind(now)
+    .fetch_one(&mut *conn)
+    .await?;
     Ok(Json(OrgReport {
+        member_count,
+        guest_count,
+        service_account_count,
+        agent_limit_per_member,
         generated_at: now,
         unused_after_days: UNUSED_AFTER_DAYS,
         members,

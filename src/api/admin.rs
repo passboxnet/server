@@ -395,6 +395,56 @@ pub struct SettingsResponse {
     mail: MailStatus,
     /// Accounts that are admins through `PASSBOX_ADMIN_EMAILS`.
     env_admin_emails: Vec<String>,
+    /// `PASSBOX_AGENT_LIMIT_PER_MEMBER`, used when the setting
+    /// `agentLimitPerMember` is not set (0 = unlimited).
+    env_agent_limit_per_member: u32,
+    usage: InstanceUsage,
+}
+
+/// What the server holds, with members and guests counted separately:
+/// guests, AI agents and service accounts are never billable members.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstanceUsage {
+    accounts: i64,
+    organizations: i64,
+    /// Distinct accounts that are confirmed members (not guests) of at
+    /// least one organization.
+    members: i64,
+    /// Distinct accounts that are confirmed guests and members of no
+    /// organization.
+    guests: i64,
+    /// Active service accounts (neither revoked nor expired).
+    service_accounts: i64,
+}
+
+async fn instance_usage(state: &AppState) -> ApiResult<InstanceUsage> {
+    let count = |sql: &'static str| async move {
+        sqlx::query_scalar::<_, i64>(sql)
+            .bind(now_ms())
+            .fetch_one(&state.db)
+            .await
+    };
+    Ok(InstanceUsage {
+        accounts: count("SELECT COUNT(*) FROM accounts WHERE created_at <= $1").await?,
+        organizations: count("SELECT COUNT(*) FROM organizations WHERE created_at <= $1").await?,
+        members: count(
+            "SELECT COUNT(DISTINCT account_id) FROM org_members WHERE status = 'confirmed' \
+             AND role <> 'guest' AND created_at <= $1",
+        )
+        .await?,
+        guests: count(
+            "SELECT COUNT(DISTINCT g.account_id) FROM org_members g WHERE g.status = 'confirmed' \
+             AND g.role = 'guest' AND g.created_at <= $1 AND NOT EXISTS (SELECT 1 FROM org_members m \
+             WHERE m.account_id = g.account_id AND m.status = 'confirmed' AND m.role <> 'guest')",
+        )
+        .await?,
+        service_accounts: count(
+            "SELECT COUNT(*) FROM service_accounts WHERE revoked_at = 0 \
+             AND (expires_at = 0 OR expires_at > $1)",
+        )
+        .await?,
+    })
 }
 
 async fn settings_response(state: &AppState) -> ApiResult<SettingsResponse> {
@@ -402,6 +452,8 @@ async fn settings_response(state: &AppState) -> ApiResult<SettingsResponse> {
         settings: instance::load_settings(&state.db).await?,
         mail: state.mailer.status().await?,
         env_admin_emails: state.admin_emails.to_vec(),
+        env_agent_limit_per_member: state.agent_limit_per_member,
+        usage: instance_usage(state).await?,
     })
 }
 

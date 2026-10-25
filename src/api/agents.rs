@@ -11,6 +11,13 @@
 //! The broker reports what the agent did with a grant (`run`, `inject`,
 //! `create`, ...) as agent events: tool, items, the command's first word
 //! plus a hash, and the result. Never values.
+//!
+//! `reveal` (`passbox_reveal`, ADR 0006) is checked here too, as far as a
+//! server can: a decision that allows revealing is refused when an item's
+//! vault belongs to an organization whose policy does not allow agent
+//! reveals, and a successful `reveal` event (which the broker must report
+//! before it hands out the value) is refused unless it names an approved,
+//! unexpired grant whose signed decision allows revealing those items.
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
@@ -45,6 +52,7 @@ const TOOLS: &[&str] = &[
     "inject",
     "create",
     "generate",
+    "reveal",
 ];
 const RESULTS: &[&str] = &["ok", "failed", "denied", "expired", "blocked"];
 
@@ -464,6 +472,11 @@ pub async fn decide(
         &req.decision_signature,
     )
     .map_err(|e| ApiError::bad_request(format!("invalid decision: {e}")))?;
+    if decision.reveal_allowed {
+        let parsed = GrantRequest::from_canonical(&request_bytes).map_err(internal)?;
+        let vaults: Vec<String> = parsed.items.iter().map(|i| i.vault_id.clone()).collect();
+        check_reveal_policy(&mut tx, &vaults).await?;
+    }
     let status = if decision.approved {
         "approved"
     } else {
@@ -555,6 +568,86 @@ pub struct EventRequest {
     client_name: String,
 }
 
+/// Refuses (403 `policy_violation`) when one of the vaults belongs to an
+/// organization whose policy does not allow revealing values to AI agents
+/// (`allow_agent_reveal`, off by default and without a policy).
+async fn check_reveal_policy(conn: &mut AnyConnection, vault_ids: &[String]) -> ApiResult<()> {
+    for vault_id in vault_ids {
+        let org: Option<Option<String>> =
+            sqlx::query_scalar("SELECT org_id FROM vaults WHERE id = $1")
+                .bind(vault_id)
+                .fetch_optional(&mut *conn)
+                .await?;
+        if let Some(Some(org_id)) = org {
+            let allowed = super::org_policy::current_rules(conn, &org_id)
+                .await?
+                .is_some_and(|r| r.allow_agent_reveal);
+            if !allowed {
+                return Err(ApiError::forbidden(
+                    "policy_violation",
+                    "the organization's policy does not allow revealing values of its vaults to AI agents",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// A successful `reveal` must name an approved, unexpired grant of this
+/// principal whose signed decision allows revealing, covering the items,
+/// and the organizations' policies must allow it (403 otherwise; the
+/// broker then reveals nothing).
+async fn check_reveal(
+    state: &AppState,
+    principal: &Principal<'_>,
+    req: &EventRequest,
+) -> ApiResult<()> {
+    let denied =
+        |message: &str| ApiError::forbidden("agent_reveal_not_allowed", message.to_owned());
+    if req.grant_id.is_empty() || req.item_ids.is_empty() {
+        return Err(denied("a reveal needs an approved grant"));
+    }
+    let mut conn = state.db.acquire().await?;
+    let row: Option<(String, String, Option<String>, i64)> = sqlx::query_as(
+        "SELECT request, status, decision, not_after FROM agent_grants \
+         WHERE id = $1 AND account_id = $2 AND principal_kind = $3 AND principal_id = $4",
+    )
+    .bind(&req.grant_id)
+    .bind(principal.account_id)
+    .bind(principal.kind.as_str())
+    .bind(principal.id)
+    .fetch_optional(&mut *conn)
+    .await?;
+    let Some((request, status, decision, not_after)) = row else {
+        return Err(denied("the grant does not exist"));
+    };
+    if status != "approved" || not_after <= now_ms() {
+        return Err(denied(
+            "the grant is not approved, was revoked or has expired",
+        ));
+    }
+    let decision = encoding::decode(decision.as_deref().unwrap_or_default())
+        .ok()
+        .and_then(|bytes| Decision::from_canonical(&bytes).ok());
+    if !decision.is_some_and(|d| d.approved && d.reveal_allowed) {
+        return Err(denied(
+            "the person did not allow revealing values for this grant",
+        ));
+    }
+    let parsed = GrantRequest::decode(&request).map_err(internal)?;
+    if !parsed.asks_reveal() {
+        return Err(denied("the grant does not cover revealing values"));
+    }
+    let mut vaults = Vec::new();
+    for item_id in &req.item_ids {
+        let Some(item) = parsed.items.iter().find(|i| &i.item_id == item_id) else {
+            return Err(denied("the grant does not cover this item"));
+        };
+        vaults.push(item.vault_id.clone());
+    }
+    check_reveal_policy(&mut conn, &vaults).await
+}
+
 async fn record_agent_event(
     state: &AppState,
     principal: Principal<'_>,
@@ -585,6 +678,9 @@ async fn record_agent_event(
         .any(char::is_control)
     {
         return Err(ApiError::bad_request("control characters are not allowed"));
+    }
+    if req.tool == "reveal" && req.result == "ok" {
+        check_reveal(state, &principal, &req).await?;
     }
     sqlx::query(
         "INSERT INTO agent_events (id, account_id, grant_id, principal_kind, principal_id, client_name, \

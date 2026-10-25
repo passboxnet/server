@@ -165,13 +165,15 @@ fn organization_recovery_and_emergency_access() {
     alice.client.confirm_member(&org_id, &bob.id()).unwrap();
     bob.client.sync().unwrap();
 
-    // Recovery through the organization.
-    assert!(!bob.client.org_recovery(&org_id).unwrap().available);
-    alice.client.set_up_org_recovery(&org_id).unwrap();
+    // Recovery through the organization: on by default for new
+    // organizations; Bob's client enrolls once he is confirmed.
     let info = bob.client.org_recovery(&org_id).unwrap();
     assert!(info.available && !info.enrolled && !info.can_approve);
     assert_eq!(info.admins, vec![alice.id()]);
-    bob.client.enroll_org_recovery(&org_id).unwrap();
+    assert_eq!(
+        bob.client.enroll_required_org_recovery().unwrap(),
+        vec![org_id.clone()]
+    );
     assert!(bob.client.org_recovery(&org_id).unwrap().enrolled);
 
     let device = new_device(&server);

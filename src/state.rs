@@ -47,6 +47,9 @@ pub struct AppState {
     /// Have I Been Pwned proxy and email monitoring (`PASSBOX_BREACH_PROXY`,
     /// `PASSBOX_HIBP_API_KEY`).
     pub breach: Arc<BreachService>,
+    /// `PASSBOX_AGENT_LIMIT_PER_MEMBER` (0 = unlimited); the instance
+    /// setting `agentLimitPerMember` overrides it.
+    pub agent_limit_per_member: u32,
 }
 
 impl AppState {
@@ -95,6 +98,7 @@ impl AppState {
             blobs: Arc::new(DiskBlobStore::temporary()),
             attachment_limits: AttachmentLimits::default(),
             breach: Arc::new(BreachService::http()),
+            agent_limit_per_member: 0,
             db,
             opaque: Arc::new(opaque),
             prelogin_key: Arc::new(prelogin_key),

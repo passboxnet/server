@@ -521,6 +521,68 @@ pub async fn delete_escrow(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// `DELETE /orgs/{id}/recovery`: turns recovery off for the whole
+/// organization (owners and admins). Deletes the recovery key, every
+/// admin's copy and every member's escrow, and cancels open requests.
+/// Refused while the policy requires recovery (403 `recovery_required`):
+/// change the policy first. Recovery can be set up again later; members
+/// then enroll again.
+pub async fn turn_off(
+    State(state): State<AppState>,
+    ClientIp(ip): ClientIp,
+    session: Session,
+    Path(org_id): Path<String>,
+) -> ApiResult<StatusCode> {
+    validate::id("organization id", &org_id)?;
+    let mut tx = db::begin_write(&state.db).await?;
+    access::require_admin(&mut tx, &org_id, &session.account_id).await?;
+    if current_key(&mut tx, &org_id).await?.is_none() {
+        return Err(ApiError::NotFound);
+    }
+    if super::org_policy::current_rules(&mut tx, &org_id)
+        .await?
+        .is_some_and(|r| r.require_recovery_enrollment)
+    {
+        return Err(ApiError::forbidden(
+            "recovery_required",
+            "the organization's policy requires recovery; turn off \"Require recovery\" in the policy first",
+        ));
+    }
+    sqlx::query(
+        "UPDATE org_recovery_requests SET status = 'cancelled' WHERE org_id = $1 \
+         AND status IN ('pending', 'approved')",
+    )
+    .bind(&org_id)
+    .execute(&mut *tx)
+    .await?;
+    for sql in [
+        "DELETE FROM org_recovery_escrows WHERE org_id = $1",
+        "DELETE FROM org_recovery_grants WHERE org_id = $1",
+        "DELETE FROM org_recovery_keys WHERE org_id = $1",
+    ] {
+        sqlx::query(sql).bind(&org_id).execute(&mut *tx).await?;
+    }
+    tx.commit().await?;
+    super::org_audit::record(
+        &state,
+        &org_id,
+        &super::org_audit::Actor::of(&session, &ip),
+        "recovery_turned_off",
+        super::org_audit::Target::org(&org_id),
+        json!({}),
+    )
+    .await;
+    event(
+        &state,
+        &session.account_id,
+        "org_recovery_disabled",
+        &session,
+        &ip,
+    )
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 // --- Requests (admins) -------------------------------------------------------------------
 
 #[derive(Serialize)]

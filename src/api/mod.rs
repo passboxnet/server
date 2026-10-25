@@ -196,7 +196,10 @@ pub fn router() -> Router<AppState> {
         .route("/recovery/org/status", post(recovery::org_status))
         .route("/recovery/org/cancel", post(recovery::org_cancel))
         // Organization recovery: the organization.
-        .route("/orgs/{org_id}/recovery", get(org_recovery::get))
+        .route(
+            "/orgs/{org_id}/recovery",
+            get(org_recovery::get).delete(org_recovery::turn_off),
+        )
         .route(
             "/orgs/{org_id}/recovery/keys",
             post(org_recovery::create_key),
@@ -459,4 +462,6 @@ fn comfort_routes() -> Router<AppState> {
             post(access_requests::approve),
         )
         .route("/access-requests/{id}/deny", post(access_requests::deny))
+        // Fair-use limit for AI agents and service accounts.
+        .route("/agent-limit", get(service_accounts::limit))
 }

@@ -443,6 +443,13 @@ pub async fn put_member(
     let mut tx = db::begin_write(&state.db).await?;
     let (org_id, key_epoch) =
         require_vault_manager(&mut tx, &vault_id, &session.account_id).await?;
+    // Guests are view-only (B8): sharing with them means `view`.
+    if principal_type == PrincipalType::Account
+        && role > VaultRole::View
+        && access::is_guest(&mut tx, &org_id, &req.principal_id).await?
+    {
+        return Err(access::guest_view_only());
+    }
     let key_epoch = u32::try_from(key_epoch).map_err(|_| bad("invalid key epoch"))?;
     let me = signed::own_bundle(&mut tx, &session.account_id).await?;
     let latest = latest_manifest(&mut tx, &vault_id).await?;

@@ -112,18 +112,38 @@ impl VaultAccess {
     }
 }
 
+/// Error code for anything a guest tries beyond viewing (B8).
+pub const GUEST_VIEW_ONLY: &str = "guest_view_only";
+
+/// The 403 a guest gets for creating or changing anything.
+pub fn guest_view_only() -> ApiError {
+    ApiError::forbidden(
+        GUEST_VIEW_ONLY,
+        "guests can only view, copy and fill items of the vaults shared with them; \
+         ask an admin of the organization to make you a member",
+    )
+}
+
+/// Whether the account is a guest of the organization.
+pub async fn is_guest(conn: &mut AnyConnection, org_id: &str, account_id: &str) -> ApiResult<bool> {
+    Ok(membership(conn, org_id, account_id)
+        .await?
+        .is_some_and(|m| m.role == OrgRole::Guest))
+}
+
 /// The account's role in a shared vault via direct membership or groups,
-/// if it is a confirmed member of the vault's organization.
+/// if it is a confirmed member of the vault's organization. Guests are
+/// view-only: their role is capped at `view` whatever the manifest says.
 pub async fn shared_role(
     conn: &mut AnyConnection,
     vault_id: &str,
     org_id: &str,
     account_id: &str,
 ) -> ApiResult<Option<VaultRole>> {
-    match membership(conn, org_id, account_id).await? {
-        Some(m) if m.is_confirmed() => {}
+    let guest = match membership(conn, org_id, account_id).await? {
+        Some(m) if m.is_confirmed() => m.role == OrgRole::Guest,
         _ => return Ok(None),
-    }
+    };
     let direct: Vec<String> = sqlx::query_scalar(
         "SELECT role FROM vault_members WHERE vault_id = $1 AND principal_type = 'account' \
          AND principal_id = $2",
@@ -144,11 +164,16 @@ pub async fn shared_role(
     .bind(account_id)
     .fetch_all(&mut *conn)
     .await?;
-    Ok(direct
+    let role = direct
         .iter()
         .chain(via_groups.iter())
         .filter_map(|r| VaultRole::parse(r).ok())
-        .max())
+        .max();
+    Ok(if guest {
+        role.map(|r| r.min(VaultRole::View))
+    } else {
+        role
+    })
 }
 
 /// The account's access to a vault; `None` if it has none (callers answer
@@ -189,6 +214,11 @@ pub async fn require_vault_write(
         .await?
         .ok_or(ApiError::NotFound)?;
     if !access.can_write() {
+        if let VaultAccess::Shared { org_id, .. } = &access
+            && is_guest(conn, org_id, account_id).await?
+        {
+            return Err(guest_view_only());
+        }
         return Err(ApiError::forbidden(
             "forbidden",
             "you can only view this vault",

@@ -30,6 +30,7 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
     state.auth_rate_limit = config.auth_rate_limit;
     state.admin_emails = std::sync::Arc::new(admin_emails(&config.admin_emails));
     state.webhook_allow_private = config.webhook_allow_private;
+    state.agent_limit_per_member = config.agent_limit_per_member;
     state.blobs = std::sync::Arc::new(blobs::DiskBlobStore::new(&config.blob_dir));
     state.attachment_limits = api::attachments::AttachmentLimits::from_mib(
         config.attachment_max_mb,

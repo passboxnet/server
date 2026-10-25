@@ -87,6 +87,15 @@ pub struct Config {
     /// Attachment storage per organization (shared vaults) in MiB; 0 = unlimited.
     #[arg(long, env = "PASSBOX_ORG_ATTACHMENT_QUOTA_MB", default_value_t = 0)]
     pub org_attachment_quota_mb: u64,
+
+    /// AI agents and service accounts per member (fair use; they never
+    /// count as members). An account may own this many active service
+    /// accounts; members of an organization share a pool of this number
+    /// times the organization's members (guests do not count). 0 =
+    /// unlimited, the default for self-hosting; the hosted service uses 10.
+    /// Instance admins can override it in the admin console.
+    #[arg(long, env = "PASSBOX_AGENT_LIMIT_PER_MEMBER", default_value_t = 0)]
+    pub agent_limit_per_member: u32,
     /// Have I Been Pwned "Pwned Passwords" through this server: `on` lets
     /// signed-in clients check passwords via `/api/v1/breach/range/{prefix}`
     /// (k-anonymity; the server sees only 5-character hash prefixes and Have
@@ -139,6 +148,7 @@ impl std::fmt::Debug for Config {
             .field("attachment_max_mb", &self.attachment_max_mb)
             .field("attachment_quota_mb", &self.attachment_quota_mb)
             .field("org_attachment_quota_mb", &self.org_attachment_quota_mb)
+            .field("agent_limit_per_member", &self.agent_limit_per_member)
             .field("breach_proxy", &self.breach_proxy)
             .field(
                 "hibp_api_key",
@@ -183,6 +193,7 @@ impl Default for Config {
             attachment_max_mb: 100,
             attachment_quota_mb: 0,
             org_attachment_quota_mb: 0,
+            agent_limit_per_member: 0,
             breach_proxy: Switch::On,
             hibp_api_key: None,
             hibp_check_hours: 24,
