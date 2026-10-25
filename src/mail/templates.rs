@@ -1,7 +1,7 @@
 //! Mail templates in English and German (formal "Sie").
 //!
-//! Every template is plain text plus a simple HTML version with the same
-//! content. Templates take their parameters from a JSON object; unknown
+//! Every template is plain text plus an HTML version with the same content
+//! in the shared layout (see `layout.rs`). Templates take their parameters from a JSON object; unknown
 //! parameters are ignored and missing ones are rendered as empty text, so a
 //! mail queued by an older version still renders.
 
@@ -158,7 +158,7 @@ pub struct Rendered {
     pub html: String,
 }
 
-enum Block {
+pub(super) enum Block {
     Paragraph(String),
     /// A link shown as a button in HTML.
     Action {
@@ -813,7 +813,7 @@ pub fn render(template: Template, locale: Locale, params: &Value, ctx: &Context<
 
     Rendered {
         text: render_text(&blocks),
-        html: render_html(&subject, &blocks, locale),
+        html: super::layout::render(&subject, &blocks, locale, ctx),
         subject,
     }
 }
@@ -861,65 +861,6 @@ pub fn escape_html(text: &str) -> String {
         }
     }
     out
-}
-
-fn render_html(subject: &str, blocks: &[Block], locale: Locale) -> String {
-    let mut body = String::new();
-    for block in blocks {
-        match block {
-            Block::Paragraph(text) => {
-                body.push_str(&format!(
-                    "<p style=\"margin:0 0 16px\">{}</p>\n",
-                    escape_html(text)
-                ));
-            }
-            Block::Action { label, url } => {
-                // Only web links become buttons; anything else stays text.
-                if url.starts_with("https://") || url.starts_with("http://") {
-                    body.push_str(&format!(
-                        "<p style=\"margin:24px 0\"><a href=\"{}\" style=\"display:inline-block;padding:10px 18px;\
-                         border-radius:8px;background:#2563eb;color:#ffffff;text-decoration:none;font-weight:600\">{}</a></p>\n\
-                         <p style=\"margin:0 0 16px;font-size:12px;color:#6b7280;word-break:break-all\">{}</p>\n",
-                        escape_html(url),
-                        escape_html(label),
-                        escape_html(url)
-                    ));
-                } else {
-                    body.push_str(&format!(
-                        "<p style=\"margin:0 0 16px\">{}: {}</p>\n",
-                        escape_html(label),
-                        escape_html(url)
-                    ));
-                }
-            }
-            Block::Details(details) if !details.is_empty() => {
-                body.push_str("<table role=\"presentation\" style=\"margin:0 0 16px;border-collapse:collapse\">\n");
-                for (label, value) in details {
-                    body.push_str(&format!(
-                        "<tr><td style=\"padding:2px 16px 2px 0;color:#6b7280\">{}</td><td style=\"padding:2px 0\">{}</td></tr>\n",
-                        escape_html(label),
-                        escape_html(value)
-                    ));
-                }
-                body.push_str("</table>\n");
-            }
-            Block::Details(_) => {}
-            Block::Footer(text) => {
-                body.push_str(&format!(
-                    "<p style=\"margin:24px 0 0;font-size:12px;color:#6b7280\">{}</p>\n",
-                    escape_html(text)
-                ));
-            }
-        }
-    }
-    format!(
-        "<!doctype html>\n<html lang=\"{lang}\">\n<head><meta charset=\"utf-8\"><title>{title}</title></head>\n\
-         <body style=\"margin:0;padding:24px;background:#f5f5f4;font-family:-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;\
-         font-size:15px;line-height:1.5;color:#1c1917\">\n\
-         <div style=\"max-width:560px;margin:0 auto;padding:32px;background:#ffffff;border-radius:12px\">\n{body}</div>\n</body>\n</html>\n",
-        lang = locale.as_str(),
-        title = escape_html(subject),
-    )
 }
 
 #[cfg(test)]

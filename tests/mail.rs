@@ -143,6 +143,10 @@ async fn outbox_worker_delivers_over_smtp() {
     );
     assert!(mail.contains("multipart/alternative"), "{mail}");
     assert!(mail.contains("text/html"), "{mail}");
+    // The logos travel inline with the HTML part instead of being loaded.
+    assert!(mail.contains("multipart/related"), "{mail}");
+    assert!(mail.contains("Content-ID: <logo-light@passbox>"), "{mail}");
+    assert!(mail.contains("Content-ID: <logo-dark@passbox>"), "{mail}");
 
     // Wait until the worker has recorded the delivery.
     let mut status = String::new();

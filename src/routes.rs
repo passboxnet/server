@@ -25,8 +25,13 @@ pub fn router(config: &Config, state: AppState) -> Router {
         .route("/health", get(health))
         .route("/ready", get(ready))
         .nest("/api/v1", api)
-        .with_state(state)
-        .layer(cors());
+        // Email logos and the typeface of the server's own pages.
+        .merge(crate::brand::routes());
+    if config.web_dir.is_none() {
+        // Without a web vault the server answers browsers with its own pages.
+        app = app.fallback(crate::brand::pages::fallback);
+    }
+    let mut app = app.with_state(state).layer(cors());
 
     if let Some(dir) = &config.web_dir {
         // Unknown paths fall back to index.html so client-side routing works.
@@ -251,6 +256,76 @@ mod tests {
     async fn unknown_route_is_not_found_without_web_dir() {
         let (status, _) = get_json(app().await, "/does-not-exist").await;
         assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn browsers_get_branded_pages_without_web_dir() {
+        let (app, _database) = app().await;
+        let get = |uri: &str, accept: &str, language: &str| {
+            Request::get(uri)
+                .header("accept", accept)
+                .header("accept-language", language)
+                .header("host", "vault.example.com")
+                .body(Body::empty())
+                .unwrap()
+        };
+        let html = "text/html,application/xhtml+xml";
+        let response = app
+            .clone()
+            .oneshot(get("/does-not-exist", html, "de-DE"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert!(
+            response.headers()["content-type"]
+                .to_str()
+                .unwrap()
+                .starts_with("text/html")
+        );
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body.contains("Seite nicht gefunden"), "{body}");
+        assert!(body.contains("lang=\"de\""));
+
+        let response = app.clone().oneshot(get("/", html, "en")).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body.contains("Passbox is running"), "{body}");
+        assert!(body.contains("https://vault.example.com"));
+
+        // API clients keep getting a plain 404.
+        let response = app.oneshot(get("/api/v1/nope", html, "en")).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert!(response.headers().get("content-type").is_none());
+    }
+
+    #[tokio::test]
+    async fn brand_assets_are_served() {
+        let (app, _database) = app().await;
+        for (uri, content_type) in [
+            ("/assets/mail/logo-light.png", "image/png"),
+            ("/assets/mail/logo-dark.png", "image/png"),
+            ("/assets/brand/plus-jakarta-sans-latin.woff2", "font/woff2"),
+            (
+                "/assets/brand/plus-jakarta-sans-latin-ext.woff2",
+                "font/woff2",
+            ),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(Request::get(uri).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{uri}");
+            assert_eq!(response.headers()["content-type"], content_type);
+            assert!(
+                response.headers()["cache-control"]
+                    .to_str()
+                    .unwrap()
+                    .contains("max-age")
+            );
+        }
     }
 
     #[test]

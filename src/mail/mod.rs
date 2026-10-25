@@ -8,13 +8,15 @@
 //! instead (development mode), and the administration shows that mail is not
 //! configured.
 
+pub mod layout;
 pub mod templates;
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context as _;
-use lettre::message::{Mailbox, MultiPart};
+use lettre::message::header::ContentType;
+use lettre::message::{Attachment, Mailbox, MultiPart, SinglePart};
 use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
 use passbox_core::id;
 use serde::Serialize;
@@ -413,7 +415,7 @@ impl Mailer {
                     .from(self.inner.from.clone())
                     .to(to)
                     .subject(mail.subject)
-                    .multipart(MultiPart::alternative_plain_html(mail.text, mail.html))
+                    .multipart(multipart(mail.text, mail.html))
                     .map_err(|e| Failure::permanent(format!("could not build mail: {e}")))?;
                 transport
                     .send(message)
@@ -506,6 +508,21 @@ async fn insert(
     .execute(conn)
     .await?;
     Ok(id)
+}
+
+/// Plain text and HTML alternatives; the HTML part carries the logos it
+/// references as inline images (`cid:`), so no remote image is loaded.
+fn multipart(text: String, html: String) -> MultiPart {
+    let mut related = MultiPart::related().singlepart(SinglePart::html(html));
+    for image in &layout::INLINE_IMAGES {
+        related = related.singlepart(Attachment::new_inline(image.content_id.to_owned()).body(
+            image.bytes.to_vec(),
+            ContentType::parse("image/png").expect("valid type"),
+        ));
+    }
+    MultiPart::alternative()
+        .singlepart(SinglePart::plain(text))
+        .multipart(related)
 }
 
 /// The host of an SMTP URL, without credentials.
