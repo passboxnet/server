@@ -22,7 +22,6 @@ docs
 # Local data and secrets
 /data
 /blobs
-/passbox.db*
 **/.env
 **/.env.*
 **/*.pem

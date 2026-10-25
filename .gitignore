@@ -28,5 +28,3 @@ crates/core-wasm/pkg/
 # Local agent worktrees
 .claude/worktrees/
 
-# Default SQLite database of a local server run
-/passbox.db*

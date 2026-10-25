@@ -74,7 +74,10 @@ RUN set -eu; \
     rustup target add "$(cat /rust-target)"
 ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
     CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc \
-    AR_aarch64_unknown_linux_gnu=aarch64-linux-gnu-ar
+    AR_aarch64_unknown_linux_gnu=aarch64-linux-gnu-ar \
+    SQLX_OFFLINE=true
+# SQLX_OFFLINE: the queries are checked against the committed .sqlx cache, so
+# the build needs no database.
 COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target,id=passbox-target-${TARGETARCH} \

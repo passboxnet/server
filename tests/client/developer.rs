@@ -1,6 +1,6 @@
 //! Service accounts (F2) and the agent broker (F7) against a real,
-//! in-process server. Runs on SQLite, and on PostgreSQL too when
-//! `PASSBOX_TEST_DATABASE_URL` is set.
+//! in-process server. Needs `PASSBOX_TEST_DATABASE_URL` (a PostgreSQL
+//! superuser).
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
