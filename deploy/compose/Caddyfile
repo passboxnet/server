@@ -1,0 +1,25 @@
+# Caddy in front of Passbox: automatic HTTPS (Let's Encrypt or ZeroSSL) for
+# PASSBOX_DOMAIN, HTTP/3, compression and an active health check.
+{
+	email {$ACME_EMAIL}
+}
+
+{$PASSBOX_DOMAIN} {
+	encode zstd gzip
+
+	# Passbox serves its own security headers (CSP, HSTS, ...). Caddy does not
+	# trust incoming X-Forwarded-For headers from clients and sets it to the
+	# real client address, which Passbox uses for rate limiting.
+	reverse_proxy passbox:8080 {
+		health_uri /ready
+		health_interval 10s
+		health_timeout 3s
+		# Hold requests briefly while Passbox restarts instead of failing.
+		lb_try_duration 15s
+	}
+
+	log {
+		output stdout
+		format json
+	}
+}
