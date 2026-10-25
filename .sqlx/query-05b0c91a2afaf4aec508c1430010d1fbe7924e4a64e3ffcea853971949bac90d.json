@@ -1,0 +1,98 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE site_icons SET claimed_until = $2\n           WHERE domain IN (\n               SELECT domain FROM site_icons\n               WHERE claimed_until < $1\n                 AND ((image IS NOT NULL AND fetched_at < $3) OR (image IS NULL AND retry_after <= $1))\n               ORDER BY last_requested_at DESC\n               LIMIT $4\n               FOR UPDATE SKIP LOCKED)\n           RETURNING domain, image IS NOT NULL AS \"hit!\", sha256, source_url, etag, last_modified, failures",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "domain",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "site_icons",
+            "name": "domain"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "hit!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "sha256",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "site_icons",
+            "name": "sha256"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "source_url",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "site_icons",
+            "name": "source_url"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "etag",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "site_icons",
+            "name": "etag"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "last_modified",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "site_icons",
+            "name": "last_modified"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "failures",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "site_icons",
+            "name": "failures"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      true,
+      true,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "05b0c91a2afaf4aec508c1430010d1fbe7924e4a64e3ffcea853971949bac90d"
+}

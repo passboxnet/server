@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE site_icons SET last_requested_at = $2 WHERE domain = $1 AND last_requested_at < $3",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "bea583c65efc23f53123a885ac215f912b10dac07889bb1293a0bbb4c31dae9a"
+}

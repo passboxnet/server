@@ -110,6 +110,7 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
     api::org_events::spawn_worker(state.clone());
     api::attachments::spawn_sweeper(state.clone());
     api::breach::spawn_worker(state.clone());
+    api::icons::spawn_refresher(state.clone());
     if let Some(bind) = config.metrics_bind {
         let metrics_app = metrics::router(state.metrics.clone(), state.db.clone());
         let listener = TcpListener::bind(bind)
