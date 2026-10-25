@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE service_accounts SET last_used_at = $1, last_used_ip = $2 WHERE id = $3",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ce0c8f4a4d150b1e74beb5218a9415730859d7e8208a9586e9238ce661682ea7"
+}

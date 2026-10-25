@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE access_requests SET status = 'cancelled', decided_at = $1 WHERE id = $2 AND account_id = $3 AND status = 'pending'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d316e6f31e16881f95c0760ee20794c1ad35a603f47c7aa1cf170e72581cbcbe"
+}

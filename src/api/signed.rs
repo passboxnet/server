@@ -7,18 +7,19 @@
 
 use passbox_core::identity::SignedBundle;
 use passbox_core::sharing::objects::{Canonical, Signed};
-use sqlx::AnyConnection;
+use sqlx::PgConnection;
 
 use super::validate;
 use crate::error::{ApiError, ApiResult};
 
 /// The latest published bundle of an account.
-pub async fn bundle(conn: &mut AnyConnection, account_id: &str) -> ApiResult<Option<SignedBundle>> {
-    let row: Option<(String, String)> = sqlx::query_as(
-        "SELECT bundle, bundle_signature FROM account_keys WHERE account_id = $1 \
-         ORDER BY key_version DESC LIMIT 1",
+pub async fn bundle(conn: &mut PgConnection, account_id: &str) -> ApiResult<Option<SignedBundle>> {
+    let row: Option<(String, String)> = sqlx::query!(
+        r#"SELECT bundle AS "bundle!", bundle_signature AS "bundle_signature!" FROM public_keys
+           WHERE account_id = $1 ORDER BY key_version DESC LIMIT 1"#,
+        account_id,
     )
-    .bind(account_id)
+    .map(|row| (row.bundle, row.bundle_signature))
     .fetch_optional(&mut *conn)
     .await?;
     row.map(|(b, s)| {
@@ -28,7 +29,7 @@ pub async fn bundle(conn: &mut AnyConnection, account_id: &str) -> ApiResult<Opt
 }
 
 /// The uploader's bundle; 400 if the account has not published keys yet.
-pub async fn own_bundle(conn: &mut AnyConnection, account_id: &str) -> ApiResult<SignedBundle> {
+pub async fn own_bundle(conn: &mut PgConnection, account_id: &str) -> ApiResult<SignedBundle> {
     bundle(conn, account_id)
         .await?
         .ok_or_else(|| ApiError::bad_request("publish your account keys first"))

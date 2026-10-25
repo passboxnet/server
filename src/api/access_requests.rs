@@ -15,13 +15,13 @@ use axum::http::StatusCode;
 use passbox_core::sharing::objects::VaultRole;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use sqlx::AnyConnection;
+use sqlx::PgConnection;
 
 use super::access;
 use super::auth::Session;
 use super::org_audit::{self, Actor, Target};
 use super::validate;
-use crate::db::{self, now_ms};
+use crate::db::now_ms;
 use crate::error::{ApiError, ApiResult};
 use crate::security::ClientIp;
 use crate::state::AppState;
@@ -95,18 +95,14 @@ fn request(row: Row) -> AccessRequest {
 }
 
 const SELECT: &str = "SELECT r.id, r.vault_id, r.org_id, r.account_id, a.email, r.role, r.status, \
-     r.created_at, r.decided_at FROM access_requests r JOIN accounts a ON a.id = r.account_id";
+     r.created_at, r.decided_at FROM access_requests r JOIN account_directory a ON a.id = r.account_id";
 
 /// The vault's organization, if the account is a confirmed member of it.
-async fn vault_org(
-    conn: &mut AnyConnection,
-    vault_id: &str,
-    account_id: &str,
-) -> ApiResult<String> {
-    let org: Option<Option<String>> = sqlx::query_scalar("SELECT org_id FROM vaults WHERE id = $1")
-        .bind(vault_id)
-        .fetch_optional(&mut *conn)
-        .await?;
+async fn vault_org(conn: &mut PgConnection, vault_id: &str, account_id: &str) -> ApiResult<String> {
+    let org: Option<Option<String>> =
+        sqlx::query_scalar!("SELECT org_id FROM vaults WHERE id = $1", vault_id,)
+            .fetch_optional(&mut *conn)
+            .await?;
     let org = org.flatten().ok_or(ApiError::NotFound)?;
     match access::membership(conn, &org, account_id).await? {
         Some(m) if m.is_confirmed() => Ok(org),
@@ -115,7 +111,7 @@ async fn vault_org(
 }
 
 async fn newest_own(
-    conn: &mut AnyConnection,
+    conn: &mut PgConnection,
     vault_id: &str,
     account_id: &str,
 ) -> ApiResult<Option<AccessRequest>> {
@@ -139,7 +135,7 @@ pub async fn state_for_vault(
     Path(vault_id): Path<String>,
 ) -> ApiResult<Json<VaultRequestState>> {
     validate::id("vault id", &vault_id)?;
-    let mut conn = state.db.acquire().await?;
+    let mut conn = state.db.as_account(&session.account_id).await?;
     let org_id = vault_org(&mut conn, &vault_id, &session.account_id).await?;
     let has_access = access::shared_role(&mut conn, &vault_id, &org_id, &session.account_id)
         .await?
@@ -169,7 +165,7 @@ pub async fn create(
     ) {
         return Err(ApiError::RateLimited(wait));
     }
-    let mut tx = db::begin_write(&state.db).await?;
+    let mut tx = state.db.as_account(&session.account_id).await?;
     let org_id = vault_org(&mut tx, &vault_id, &session.account_id).await?;
     if role > VaultRole::View && access::is_guest(&mut tx, &org_id, &session.account_id).await? {
         return Err(access::guest_view_only());
@@ -190,16 +186,16 @@ pub async fn create(
     }
     let id = passbox_core::id::new_id().map_err(|e| ApiError::Internal(e.into()))?;
     let now = now_ms();
-    sqlx::query(
+    sqlx::query!(
         "INSERT INTO access_requests (id, vault_id, org_id, account_id, role, status, created_at, decided_by, decided_at) \
          VALUES ($1, $2, $3, $4, $5, 'pending', $6, NULL, 0)",
+        &id,
+        &vault_id,
+        &org_id,
+        &session.account_id,
+        role.as_str(),
+        now,
     )
-    .bind(&id)
-    .bind(&vault_id)
-    .bind(&org_id)
-    .bind(&session.account_id)
-    .bind(role.as_str())
-    .bind(now)
     .execute(&mut *tx)
     .await?;
     org_audit::record_in(
@@ -211,10 +207,12 @@ pub async fn create(
         json!({ "role": role.as_str(), "requestId": id }),
     )
     .await?;
-    let email: String = sqlx::query_scalar("SELECT email FROM accounts WHERE id = $1")
-        .bind(&session.account_id)
-        .fetch_one(&mut *tx)
-        .await?;
+    let email: String = sqlx::query_scalar!(
+        "SELECT email FROM accounts WHERE id = $1",
+        &session.account_id,
+    )
+    .fetch_one(&mut *tx)
+    .await?;
     tx.commit().await?;
     Ok((
         StatusCode::CREATED,
@@ -237,7 +235,7 @@ pub async fn list(
     State(state): State<AppState>,
     session: Session,
 ) -> ApiResult<Json<ListResponse>> {
-    let mut conn = state.db.acquire().await?;
+    let mut conn = state.db.as_account(&session.account_id).await?;
     let pending: Vec<Row> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "{SELECT} JOIN org_members m ON m.org_id = r.org_id AND m.account_id = $1 \
          WHERE r.status = 'pending' AND m.status = 'confirmed' ORDER BY r.created_at"
@@ -271,7 +269,7 @@ pub async fn list(
     }))
 }
 
-async fn pending(conn: &mut AnyConnection, id: &str) -> ApiResult<AccessRequest> {
+async fn pending(conn: &mut PgConnection, id: &str) -> ApiResult<AccessRequest> {
     let row: Option<Row> = sqlx::query_as(sqlx::AssertSqlSafe(format!("{SELECT} WHERE r.id = $1")))
         .bind(id)
         .fetch_optional(&mut *conn)
@@ -294,7 +292,7 @@ async fn decide(
     approve: bool,
 ) -> ApiResult<StatusCode> {
     validate::id("request id", id)?;
-    let mut tx = db::begin_write(&state.db).await?;
+    let mut tx = state.db.as_account(&session.account_id).await?;
     let req = pending(&mut tx, id).await?;
     // Non-managers get 404, like for other vault management calls.
     match access::require_vault_manager(&mut tx, &req.vault_id, &session.account_id).await {
@@ -313,13 +311,13 @@ async fn decide(
         ));
     }
     let status = if approve { "approved" } else { "denied" };
-    sqlx::query(
+    sqlx::query!(
         "UPDATE access_requests SET status = $1, decided_by = $2, decided_at = $3 WHERE id = $4",
+        status,
+        &session.account_id,
+        now_ms(),
+        id,
     )
-    .bind(status)
-    .bind(&session.account_id)
-    .bind(now_ms())
-    .bind(id)
     .execute(&mut *tx)
     .await?;
     org_audit::record_in(
@@ -367,15 +365,17 @@ pub async fn cancel(
     Path(id): Path<String>,
 ) -> ApiResult<StatusCode> {
     validate::id("request id", &id)?;
-    let result = sqlx::query(
+    let mut tx = state.db.as_account(&session.account_id).await?;
+    let result = sqlx::query!(
         "UPDATE access_requests SET status = 'cancelled', decided_at = $1 \
          WHERE id = $2 AND account_id = $3 AND status = 'pending'",
+        now_ms(),
+        &id,
+        &session.account_id,
     )
-    .bind(now_ms())
-    .bind(&id)
-    .bind(&session.account_id)
-    .execute(&state.db)
+    .execute(&mut *tx)
     .await?;
+    tx.commit().await?;
     if result.rows_affected() == 0 {
         return Err(ApiError::NotFound);
     }

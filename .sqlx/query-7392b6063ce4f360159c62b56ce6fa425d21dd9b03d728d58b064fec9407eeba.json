@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE device_tokens SET two_factor_until = 0 WHERE account_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "7392b6063ce4f360159c62b56ce6fa425d21dd9b03d728d58b064fec9407eeba"
+}

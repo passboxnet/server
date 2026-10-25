@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE accounts SET opaque_record = $1, kdf_salt = $2, kdf_memory_kib = $3, kdf_iterations = $4, kdf_parallelism = $5, encrypted_account_key = $6 WHERE id = $7",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Bytea",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Bytea",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a1be00604d560b41d4bc52d9afb5f5570c7808baad5d5ee25922ea90b49813b0"
+}

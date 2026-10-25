@@ -22,7 +22,7 @@ use serde_json::Value;
 use tokio::sync::Notify;
 
 pub use self::templates::{Locale, Template};
-use crate::db::{Db, now_ms};
+use crate::db::{Conn, Db, Job, now_ms};
 
 /// Mails per worker round.
 const BATCH: i64 = 20;
@@ -190,7 +190,9 @@ impl Mailer {
         locale: Locale,
         params: Value,
     ) -> anyhow::Result<String> {
-        let id = insert(&self.inner.db, to, template, locale, &params).await?;
+        let mut tx = self.inner.db.system(Job::Outbox).await?;
+        let id = insert(&mut tx, to, template, locale, &params).await?;
+        tx.commit().await?;
         self.inner.wake.notify_one();
         Ok(id)
     }
@@ -198,13 +200,13 @@ impl Mailer {
     /// Queues a mail inside a write transaction, so it is sent only if the
     /// transaction commits. Call [`Mailer::wake`] after committing.
     pub async fn enqueue_in(
-        tx: &mut sqlx::Transaction<'_, sqlx::Any>,
+        conn: &mut Conn,
         to: &str,
         template: Template,
         locale: Locale,
         params: &Value,
     ) -> anyhow::Result<String> {
-        insert(&mut **tx, to, template, locale, params).await
+        insert(conn, to, template, locale, params).await
     }
 
     /// Queues a mail to an account in the account's language (or the
@@ -216,18 +218,23 @@ impl Mailer {
         template: Template,
         mut params: Value,
     ) -> anyhow::Result<Option<String>> {
-        let row: Option<(String, String)> =
-            sqlx::query_as("SELECT email, locale FROM accounts WHERE id = $1")
-                .bind(account_id)
-                .fetch_optional(&self.inner.db)
-                .await?;
-        let Some((email, locale)) = row else {
+        // The recipient may be another account than the one the request
+        // runs for; the function reveals only the address and language.
+        let mut tx = self.inner.db.system(Job::Outbox).await?;
+        let row = sqlx::query!(
+            r#"SELECT email AS "email!", locale AS "locale!" FROM passbox.mail_recipient($1)
+               WHERE email IS NOT NULL"#,
+            account_id
+        )
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(row) = row else {
             return Ok(None);
         };
-        let locale = match Locale::parse(&locale) {
+        let locale = match Locale::parse(&row.locale) {
             Some(locale) => locale,
             None => {
-                crate::instance::load_settings(&self.inner.db)
+                crate::instance::load_settings(&mut tx)
                     .await?
                     .default_locale
             }
@@ -235,11 +242,12 @@ impl Mailer {
         if let Some(object) = params.as_object_mut() {
             object
                 .entry("email")
-                .or_insert_with(|| Value::String(email.clone()));
+                .or_insert_with(|| Value::String(row.email.clone()));
         }
-        self.enqueue(&email, template, locale, params)
-            .await
-            .map(Some)
+        let id = insert(&mut tx, &row.email, template, locale, &params).await?;
+        tx.commit().await?;
+        self.inner.wake.notify_one();
+        Ok(Some(id))
     }
 
     /// Wakes the worker, for example after committing [`Mailer::enqueue_in`].
@@ -247,26 +255,23 @@ impl Mailer {
         self.inner.wake.notify_one();
     }
 
-    /// Delivery status for the administration.
-    pub async fn status(&self) -> anyhow::Result<MailStatus> {
-        let db = &self.inner.db;
-        let pending: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM mail_outbox WHERE status = 'pending'")
-                .fetch_one(db)
-                .await?;
-        let failed: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM mail_outbox WHERE status = 'failed'")
-                .fetch_one(db)
-                .await?;
-        let last_sent_at: Option<i64> =
-            sqlx::query_scalar("SELECT MAX(sent_at) FROM mail_outbox WHERE status = 'sent'")
-                .fetch_one(db)
-                .await?;
-        let last_error: Option<String> = sqlx::query_scalar(
-            "SELECT last_error FROM mail_outbox WHERE last_error <> '' \
-             ORDER BY created_at DESC LIMIT 1",
+    /// Delivery status for the administration (in an instance admin's
+    /// transaction).
+    pub async fn status(&self, conn: &mut Conn) -> anyhow::Result<MailStatus> {
+        let counts = sqlx::query!(
+            r#"SELECT count(*) FILTER (WHERE status = 'pending') AS "pending!",
+                      count(*) FILTER (WHERE status = 'failed') AS "failed!",
+                      max(sent_at) FILTER (WHERE status = 'sent') AS last_sent_at
+               FROM mail_outbox"#
         )
-        .fetch_optional(db)
+        .fetch_one(&mut *conn)
+        .await?;
+        let (pending, failed, last_sent_at) = (counts.pending, counts.failed, counts.last_sent_at);
+        let last_error = sqlx::query_scalar!(
+            "SELECT last_error FROM mail_outbox WHERE last_error <> '' \
+             ORDER BY created_at DESC LIMIT 1"
+        )
+        .fetch_optional(&mut *conn)
         .await?;
         let (configured, transport, host) = match &self.inner.transport {
             Transport::Log => (false, "log", None),
@@ -290,87 +295,81 @@ impl Mailer {
     pub async fn process_due(&self) -> anyhow::Result<usize> {
         let db = &self.inner.db;
         let now = now_ms();
-        let due: Vec<String> = sqlx::query_scalar(
+        let mut tx = db.system(Job::Mail).await?;
+        let due = sqlx::query_scalar!(
             "SELECT id FROM mail_outbox WHERE status = 'pending' AND next_attempt_at <= $1 \
-             AND locked_until <= $2 ORDER BY next_attempt_at, created_at LIMIT $3",
+             AND locked_until <= $1 ORDER BY next_attempt_at, created_at LIMIT $2",
+            now,
+            BATCH,
         )
-        .bind(now)
-        .bind(now)
-        .bind(BATCH)
-        .fetch_all(db)
+        .fetch_all(&mut *tx)
         .await?;
         if due.is_empty() {
             return Ok(0);
         }
-        let settings = crate::instance::load_settings(db).await?;
+        let settings = crate::instance::load_settings(&mut tx).await?;
+        tx.commit().await?;
         let mut processed = 0;
         for id in due {
             // Several server processes may share the database: only the one
             // that takes the lease sends the mail.
             let now = now_ms();
-            let claimed = sqlx::query(
-                "UPDATE mail_outbox SET locked_until = $1 WHERE id = $2 AND status = 'pending' \
-                 AND locked_until <= $3",
+            let mut tx = db.system(Job::Mail).await?;
+            let claimed = sqlx::query!(
+                r#"UPDATE mail_outbox SET locked_until = $1 WHERE id = $2 AND status = 'pending'
+                   AND locked_until <= $3
+                   RETURNING recipient, template, locale, params, attempts"#,
+                now + LEASE_MS,
+                id,
+                now,
             )
-            .bind(now + LEASE_MS)
-            .bind(&id)
-            .bind(now)
-            .execute(db)
+            .fetch_optional(&mut *tx)
             .await?;
-            if claimed.rows_affected() == 0 {
+            tx.commit().await?;
+            let Some(mail) = claimed else {
                 continue;
-            }
-            let (recipient, template, locale, params, attempts): (
-                String,
-                String,
-                String,
-                String,
-                i64,
-            ) = sqlx::query_as(
-                "SELECT recipient, template, locale, params, attempts FROM mail_outbox WHERE id = $1",
-            )
-            .bind(&id)
-            .fetch_one(db)
-            .await?;
+            };
             let result = self
                 .deliver(
-                    &recipient,
-                    &template,
-                    &locale,
-                    &params,
+                    &mail.recipient,
+                    &mail.template,
+                    &mail.locale,
+                    mail.params,
                     &settings.instance_name,
                 )
                 .await;
             let now = now_ms();
+            let mut tx = db.system(Job::Mail).await?;
             match result {
                 Ok(()) => {
-                    sqlx::query(
+                    sqlx::query!(
                         "UPDATE mail_outbox SET status = 'sent', params = '{}', attempts = $1, \
                          sent_at = $2, locked_until = 0, last_error = '' WHERE id = $3",
+                        mail.attempts + 1,
+                        now,
+                        id,
                     )
-                    .bind(attempts + 1)
-                    .bind(now)
-                    .bind(&id)
-                    .execute(db)
+                    .execute(&mut *tx)
                     .await?;
                 }
                 Err(failure) => {
-                    let attempts = attempts + 1;
+                    let attempts = mail.attempts + 1;
                     let give_up = failure.permanent || attempts >= MAX_ATTEMPTS;
                     tracing::warn!(mail_id = %id, attempts, give_up, error = %failure.message, "mail delivery failed");
-                    sqlx::query(
+                    sqlx::query!(
                         "UPDATE mail_outbox SET status = $1, attempts = $2, next_attempt_at = $3, \
                          locked_until = 0, last_error = $4 WHERE id = $5",
+                        if give_up { "failed" } else { "pending" },
+                        attempts,
+                        now + backoff_ms(attempts),
+                        failure.message.chars().take(500).collect::<String>(),
+                        id,
                     )
-                    .bind(if give_up { "failed" } else { "pending" })
-                    .bind(attempts)
-                    .bind(now + backoff_ms(attempts))
-                    .bind(failure.message.chars().take(500).collect::<String>())
-                    .bind(&id)
-                    .execute(db)
+                    .execute(&mut *tx)
                     .await?;
                 }
             }
+            tx.commit().await?;
             processed += 1;
         }
         Ok(processed)
@@ -381,14 +380,12 @@ impl Mailer {
         recipient: &str,
         template: &str,
         locale: &str,
-        params: &str,
+        params: Value,
         instance_name: &str,
     ) -> Result<(), Failure> {
         let template = Template::parse(template)
             .ok_or_else(|| Failure::permanent(format!("unknown template {template}")))?;
         let locale = Locale::parse(locale).unwrap_or_default();
-        let params: Value = serde_json::from_str(params)
-            .map_err(|e| Failure::permanent(format!("invalid parameters: {e}")))?;
         let mail = templates::render(
             template,
             locale,
@@ -433,14 +430,15 @@ impl Mailer {
     /// Deletes old sent and failed mails.
     pub async fn prune(&self) -> anyhow::Result<()> {
         let cutoff = now_ms() - RETENTION_MS;
-        sqlx::query(
+        let mut tx = self.inner.db.system(Job::Mail).await?;
+        sqlx::query!(
             "DELETE FROM mail_outbox WHERE (status = 'sent' AND sent_at < $1) \
-             OR (status = 'failed' AND created_at < $2)",
+             OR (status = 'failed' AND created_at < $1)",
+            cutoff,
         )
-        .bind(cutoff)
-        .bind(cutoff)
-        .execute(&self.inner.db)
+        .execute(&mut *tx)
         .await?;
+        tx.commit().await?;
         Ok(())
     }
 
@@ -485,31 +483,27 @@ impl Failure {
     }
 }
 
-async fn insert<'c, E>(
-    executor: E,
+async fn insert(
+    conn: &mut Conn,
     to: &str,
     template: Template,
     locale: Locale,
     params: &Value,
-) -> anyhow::Result<String>
-where
-    E: sqlx::Executor<'c, Database = sqlx::Any>,
-{
+) -> anyhow::Result<String> {
     let id = id::new_id()?;
     let now = now_ms();
-    sqlx::query(
+    sqlx::query!(
         "INSERT INTO mail_outbox (id, recipient, template, locale, params, status, attempts, \
          next_attempt_at, locked_until, last_error, created_at, sent_at) \
-         VALUES ($1, $2, $3, $4, $5, 'pending', 0, $6, 0, '', $7, 0)",
+         VALUES ($1, $2, $3, $4, $5, 'pending', 0, $6, 0, '', $6, 0)",
+        id,
+        to,
+        template.as_str(),
+        locale.as_str(),
+        params,
+        now,
     )
-    .bind(&id)
-    .bind(to)
-    .bind(template.as_str())
-    .bind(locale.as_str())
-    .bind(params.to_string())
-    .bind(now)
-    .bind(now)
-    .execute(executor)
+    .execute(conn)
     .await?;
     Ok(id)
 }

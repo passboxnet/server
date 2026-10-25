@@ -580,7 +580,7 @@ async fn attachments(
     assert_eq!(status, StatusCode::NOT_FOUND);
 
     // Size limit and quota, on a server with small limits.
-    let mut state = AppState::load(server.db().clone()).await.unwrap();
+    let mut state = AppState::load(server.pools().clone()).await.unwrap();
     state.attachment_limits = AttachmentLimits {
         max_file: 200,
         account_quota: 300,

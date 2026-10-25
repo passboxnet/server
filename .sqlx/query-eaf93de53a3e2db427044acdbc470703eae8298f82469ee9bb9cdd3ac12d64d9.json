@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE agent_grants SET status = 'expired' WHERE account_id = $1 AND status = 'pending' AND expires_at <= $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "eaf93de53a3e2db427044acdbc470703eae8298f82469ee9bb9cdd3ac12d64d9"
+}

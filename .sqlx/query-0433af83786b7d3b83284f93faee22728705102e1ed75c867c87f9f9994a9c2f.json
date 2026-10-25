@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT DISTINCT signer_id FROM vault_manifests WHERE vault_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "signer_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "vault_manifests",
+            "name": "signer_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "0433af83786b7d3b83284f93faee22728705102e1ed75c867c87f9f9994a9c2f"
+}

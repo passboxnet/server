@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT vault_members.role FROM vault_members JOIN org_groups ON org_groups.id = vault_members.principal_id JOIN group_members ON group_members.group_id = org_groups.id AND group_members.key_version = org_groups.key_version WHERE vault_members.vault_id = $1 AND vault_members.principal_type = 'group' AND group_members.account_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "role",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "vault_members",
+            "name": "role"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "d01cf329e208cd0c3a4ad8e0aead812ba179c870fa6627dd69d227f345f93243"
+}

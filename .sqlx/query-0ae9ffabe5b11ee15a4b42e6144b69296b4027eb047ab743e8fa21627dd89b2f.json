@@ -1,0 +1,66 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT item_id, from_vault_id, revision, moved_at FROM item_moves WHERE from_vault_id = $1 AND seq > $2 AND seq <= $3 ORDER BY seq",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "item_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "item_moves",
+            "name": "item_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "from_vault_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "item_moves",
+            "name": "from_vault_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "revision",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "item_moves",
+            "name": "revision"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "moved_at",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "item_moves",
+            "name": "moved_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "0ae9ffabe5b11ee15a4b42e6144b69296b4027eb047ab743e8fa21627dd89b2f"
+}

@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT group_members.group_id, group_members.seq FROM group_members JOIN org_groups ON org_groups.id = group_members.group_id AND org_groups.key_version = group_members.key_version WHERE group_members.account_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "group_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "group_members",
+            "name": "group_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "seq",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "group_members",
+            "name": "seq"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "af72cbaf5ce899fd20e7b8fecf238969b413a66b0ccd1b114b408dc9bde9b87c"
+}

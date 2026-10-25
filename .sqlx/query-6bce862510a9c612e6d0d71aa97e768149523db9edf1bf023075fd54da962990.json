@@ -1,0 +1,90 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id, status, decision, decision_signature, not_after, expires_at FROM agent_grants WHERE id = $1 AND principal_kind = $2 AND principal_id = $3",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "agent_grants",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "status",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "agent_grants",
+            "name": "status"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "decision",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "agent_grants",
+            "name": "decision"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "decision_signature",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "agent_grants",
+            "name": "decision_signature"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "not_after",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "agent_grants",
+            "name": "not_after"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "expires_at",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "agent_grants",
+            "name": "expires_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "6bce862510a9c612e6d0d71aa97e768149523db9edf1bf023075fd54da962990"
+}

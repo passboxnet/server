@@ -12,12 +12,13 @@ use std::collections::BTreeMap;
 
 use axum::Json;
 use axum::extract::{Query, State};
+use passbox_core::encoding;
 use passbox_core::sharing::data::{
     BundleRecord, GroupKeyRecord, ManifestRecord, OrgKeyRecord, SharingDelta, VaultAccessRecord,
     VaultKeyRecord,
 };
 use serde::{Deserialize, Serialize};
-use sqlx::AnyConnection;
+use sqlx::PgConnection;
 
 use super::auth::Session;
 use crate::db;
@@ -80,19 +81,28 @@ pub struct SyncResponse {
     sharing: Option<SharingDelta>,
 }
 
-type ItemRow = (String, String, i64, Option<String>, i64, i64, i64, i64);
+/// An item row as sync reads it.
+struct ItemRow {
+    id: String,
+    vault_id: String,
+    revision: i64,
+    encrypted_data: Option<Vec<u8>>,
+    deleted: bool,
+    updated_at: i64,
+    key_epoch: i64,
+    created_at: i64,
+}
 
 fn item(row: ItemRow) -> SyncItem {
-    let (id, vault_id, revision, encrypted_data, deleted, updated_at, key_epoch, created_at) = row;
     SyncItem {
-        id,
-        vault_id,
-        revision,
-        encrypted_data,
-        deleted: deleted != 0,
-        updated_at,
-        key_epoch,
-        created_at,
+        id: row.id,
+        vault_id: row.vault_id,
+        revision: row.revision,
+        encrypted_data: row.encrypted_data.as_deref().map(encoding::encode),
+        deleted: row.deleted,
+        updated_at: row.updated_at,
+        key_epoch: row.key_epoch,
+        created_at: row.created_at,
     }
 }
 
@@ -104,30 +114,31 @@ pub async fn sync(
     if query.since < 0 {
         return Err(ApiError::bad_request("since must not be negative"));
     }
+    let mut conn = state.db.as_account(&session.account_id).await?;
     // Read the cursor first: anything committed later has a higher sequence
     // number and will be included in the next sync.
-    let cursor = db::current_seq(&state.db).await?;
-    let mut conn = state.db.acquire().await?;
+    let cursor = db::current_seq(&mut conn).await?;
 
-    let vaults: Vec<(String, String, String, i64, i64)> = sqlx::query_as(
+    let vaults = sqlx::query!(
         "SELECT id, encrypted_key, encrypted_meta, revision, updated_at FROM vaults \
          WHERE account_id = $1 AND org_id IS NULL AND seq > $2 AND seq <= $3 ORDER BY seq",
+        session.account_id,
+        query.since,
+        cursor,
     )
-    .bind(&session.account_id)
-    .bind(query.since)
-    .bind(cursor)
     .fetch_all(&mut *conn)
     .await?;
 
-    let items: Vec<ItemRow> = sqlx::query_as(
+    let items = sqlx::query_as!(
+        ItemRow,
         "SELECT items.id, items.vault_id, items.revision, items.encrypted_data, items.deleted, items.updated_at, \
          items.key_epoch, items.created_at FROM items JOIN vaults ON vaults.id = items.vault_id \
          WHERE vaults.account_id = $1 AND vaults.org_id IS NULL AND items.seq > $2 AND items.seq <= $3 \
          ORDER BY items.seq",
+        session.account_id,
+        query.since,
+        cursor,
     )
-    .bind(&session.account_id)
-    .bind(query.since)
-    .bind(cursor)
     .fetch_all(&mut *conn)
     .await?;
 
@@ -135,17 +146,15 @@ pub async fn sync(
         cursor,
         vaults: vaults
             .into_iter()
-            .map(
-                |(id, encrypted_key, encrypted_meta, revision, updated_at)| SyncVault {
-                    id,
-                    encrypted_key,
-                    encrypted_meta,
-                    revision,
-                    updated_at,
-                    org_id: None,
-                    key_epoch: 0,
-                },
-            )
+            .map(|v| SyncVault {
+                id: v.id,
+                encrypted_key: encoding::encode(&v.encrypted_key),
+                encrypted_meta: encoding::encode(&v.encrypted_meta),
+                revision: v.revision,
+                updated_at: v.updated_at,
+                org_id: None,
+                key_epoch: 0,
+            })
             .collect(),
         items: items.into_iter().map(item).collect(),
         sharing: None,
@@ -153,11 +162,12 @@ pub async fn sync(
     // Vaults whose moved-out items need tombstones (not for full sends).
     let mut moved_from: Vec<String> = Vec::new();
     if query.since > 0 {
-        moved_from =
-            sqlx::query_scalar("SELECT id FROM vaults WHERE account_id = $1 AND org_id IS NULL")
-                .bind(&session.account_id)
-                .fetch_all(&mut *conn)
-                .await?;
+        moved_from = sqlx::query_scalar!(
+            "SELECT id FROM vaults WHERE account_id = $1 AND org_id IS NULL",
+            session.account_id
+        )
+        .fetch_all(&mut *conn)
+        .await?;
     }
     if query.sharing == 1 {
         let sharing = sync_sharing(
@@ -195,7 +205,7 @@ pub async fn sync(
 /// Adds shared vaults and items to `response` and returns the sharing delta.
 #[allow(clippy::type_complexity)]
 async fn sync_sharing(
-    conn: &mut AnyConnection,
+    conn: &mut PgConnection,
     me: &str,
     since: i64,
     cursor: i64,
@@ -221,25 +231,25 @@ async fn sync_sharing(
         if !confirmed {
             continue;
         }
-        let keys: Vec<(i64, String, String, String)> = sqlx::query_as(
+        let keys = sqlx::query!(
             "SELECT epoch, sealed_key, grant_data, grant_signature FROM org_keys \
              WHERE org_id = $1 AND account_id = $2 AND seq > $3 AND seq <= $4",
+            org.id,
+            me,
+            since,
+            cursor,
         )
-        .bind(&org.id)
-        .bind(me)
-        .bind(since)
-        .bind(cursor)
         .fetch_all(&mut *conn)
         .await?;
-        delta.org_keys.extend(keys.into_iter().map(
-            |(epoch, sealed_key, grant, grant_signature)| OrgKeyRecord {
+        delta
+            .org_keys
+            .extend(keys.into_iter().map(|key| OrgKeyRecord {
                 org_id: org.id.clone(),
-                epoch: u32::try_from(epoch).unwrap_or_default(),
-                sealed_key,
-                grant,
-                grant_signature,
-            },
-        ));
+                epoch: u32::try_from(key.epoch).unwrap_or_default(),
+                sealed_key: encoding::encode(&key.sealed_key),
+                grant: key.grant_data,
+                grant_signature: key.grant_signature,
+            }));
         if org.role != "guest" {
             delta
                 .groups
@@ -249,7 +259,7 @@ async fn sync_sharing(
 
     // Group keys sealed for this account (all versions; old ones open vault
     // keys of older epochs).
-    let group_keys: Vec<(String, i64, String, String, String, String, String, i64)> = sqlx::query_as(
+    let group_keys = sqlx::query!(
         "SELECT group_members.group_id, group_members.key_version, group_versions.bundle, \
          group_versions.bundle_signature, group_members.sealed_key, group_members.grant_data, \
          group_members.grant_signature, group_members.seq FROM group_members \
@@ -258,42 +268,33 @@ async fn sync_sharing(
          JOIN org_groups ON org_groups.id = group_members.group_id \
          JOIN org_members ON org_members.org_id = org_groups.org_id AND org_members.account_id = group_members.account_id \
          WHERE group_members.account_id = $1 AND org_members.status = 'confirmed'",
+        me
     )
-    .bind(me)
     .fetch_all(&mut *conn)
     .await?;
     // Current group memberships, and when they began.
-    let my_groups: BTreeMap<String, i64> = sqlx::query_as::<_, (String, i64)>(
+    let my_groups: BTreeMap<String, i64> = sqlx::query!(
         "SELECT group_members.group_id, group_members.seq FROM group_members \
          JOIN org_groups ON org_groups.id = group_members.group_id \
            AND org_groups.key_version = group_members.key_version \
          WHERE group_members.account_id = $1",
+        me
     )
-    .bind(me)
     .fetch_all(&mut *conn)
     .await?
     .into_iter()
+    .map(|row| (row.group_id, row.seq))
     .collect();
-    for (
-        group_id,
-        key_version,
-        bundle,
-        bundle_signature,
-        sealed_key,
-        grant,
-        grant_signature,
-        seq,
-    ) in group_keys
-    {
-        if seq > since && seq <= cursor {
+    for key in group_keys {
+        if key.seq > since && key.seq <= cursor {
             delta.group_keys.push(GroupKeyRecord {
-                group_id,
-                key_version: u32::try_from(key_version).unwrap_or_default(),
-                bundle,
-                bundle_signature,
-                sealed_key,
-                grant,
-                grant_signature,
+                group_id: key.group_id,
+                key_version: u32::try_from(key.key_version).unwrap_or_default(),
+                bundle: key.bundle,
+                bundle_signature: key.bundle_signature,
+                sealed_key: encoding::encode(&key.sealed_key),
+                grant: key.grant_data,
+                grant_signature: key.grant_signature,
             });
         }
     }
@@ -301,41 +302,40 @@ async fn sync_sharing(
     // Shared vaults this account can open.
     let mut signer_ids: Vec<String> = Vec::new();
     for (org, org_seq) in orgs.iter().filter(|(o, _)| o.status == "confirmed") {
-        let vaults: Vec<(String, String, i64, i64, i64, i64, i64)> = sqlx::query_as(
+        let vaults = sqlx::query!(
             "SELECT id, encrypted_meta, revision, updated_at, key_epoch, rotation_pending, seq FROM vaults \
              WHERE org_id = $1",
+            org.id
         )
-        .bind(&org.id)
         .fetch_all(&mut *conn)
         .await?;
-        for (
-            vault_id,
-            encrypted_meta,
-            revision,
-            updated_at,
-            key_epoch,
-            rotation_pending,
-            vault_seq,
-        ) in vaults
-        {
+        for vault in vaults {
+            let (vault_id, revision, updated_at, key_epoch, rotation_pending, vault_seq) = (
+                vault.id,
+                vault.revision,
+                vault.updated_at,
+                vault.key_epoch,
+                vault.rotation_pending,
+                vault.seq,
+            );
             let Some(role) = super::access::shared_role(conn, &vault_id, &org.id, me).await? else {
                 continue;
             };
             // When did access begin? A newer membership means a full send.
-            let memberships: Vec<(String, String, i64)> = sqlx::query_as(
+            let memberships = sqlx::query!(
                 "SELECT principal_type, principal_id, seq FROM vault_members WHERE vault_id = $1",
+                vault_id
             )
-            .bind(&vault_id)
             .fetch_all(&mut *conn)
             .await?;
             let mut access_seq = *org_seq;
-            for (principal_type, principal_id, seq) in &memberships {
-                if principal_type == "account" && principal_id == me {
-                    access_seq = access_seq.max(*seq);
-                } else if principal_type == "group"
-                    && let Some(joined) = my_groups.get(principal_id)
+            for member in &memberships {
+                if member.principal_type == "account" && member.principal_id == me {
+                    access_seq = access_seq.max(member.seq);
+                } else if member.principal_type == "group"
+                    && let Some(joined) = my_groups.get(&member.principal_id)
                 {
-                    access_seq = access_seq.max(*seq).max(*joined);
+                    access_seq = access_seq.max(member.seq).max(*joined);
                 }
             }
             let vault_since = if access_seq > since { 0 } else { since };
@@ -349,80 +349,71 @@ async fn sync_sharing(
                 org_id: org.id.clone(),
                 role: role.as_str().to_owned(),
                 key_epoch: u32::try_from(key_epoch).unwrap_or_default(),
-                rotation_pending: rotation_pending != 0,
+                rotation_pending,
             });
             if vault_seq > vault_since && vault_seq <= cursor {
                 response.vaults.push(SyncVault {
                     id: vault_id.clone(),
                     encrypted_key: String::new(),
-                    encrypted_meta,
+                    encrypted_meta: encoding::encode(&vault.encrypted_meta),
                     revision,
                     updated_at,
                     org_id: Some(org.id.clone()),
                     key_epoch,
                 });
             }
-            let items: Vec<ItemRow> = sqlx::query_as(
+            let items = sqlx::query_as!(
+                ItemRow,
                 "SELECT id, vault_id, revision, encrypted_data, deleted, updated_at, key_epoch, created_at FROM items \
                  WHERE vault_id = $1 AND seq > $2 AND seq <= $3 ORDER BY seq",
+                vault_id,
+                vault_since,
+                cursor,
             )
-            .bind(&vault_id)
-            .bind(vault_since)
-            .bind(cursor)
             .fetch_all(&mut *conn)
             .await?;
             response.items.extend(items.into_iter().map(item));
 
-            let keys: Vec<(i64, String, String, String, Option<String>, String, String, i64)> = sqlx::query_as(
+            let keys = sqlx::query!(
                 "SELECT key_epoch, principal_type, principal_id, sealed_key, wrapped_key, grant_data, \
-                 grant_signature, seq FROM vault_keys WHERE vault_id = $1 AND seq > $2 AND seq <= $3",
+                 grant_signature FROM vault_keys WHERE vault_id = $1 AND seq > $2 AND seq <= $3",
+                vault_id,
+                vault_since,
+                cursor,
             )
-            .bind(&vault_id)
-            .bind(vault_since)
-            .bind(cursor)
             .fetch_all(&mut *conn)
             .await?;
-            for (
-                epoch,
-                principal_type,
-                principal_id,
-                sealed_key,
-                wrapped_key,
-                grant,
-                grant_signature,
-                _,
-            ) in keys
-            {
-                let mine = (principal_type == "account" && principal_id == me)
-                    || (principal_type == "group" && my_groups.contains_key(&principal_id));
+            for key in keys {
+                let mine = (key.principal_type == "account" && key.principal_id == me)
+                    || (key.principal_type == "group" && my_groups.contains_key(&key.principal_id));
                 if mine {
                     delta.vault_keys.push(VaultKeyRecord {
                         vault_id: vault_id.clone(),
-                        key_epoch: u32::try_from(epoch).unwrap_or_default(),
-                        principal_type,
-                        principal_id,
-                        sealed_key,
-                        wrapped_key,
-                        grant,
-                        grant_signature,
+                        key_epoch: u32::try_from(key.key_epoch).unwrap_or_default(),
+                        principal_type: key.principal_type,
+                        principal_id: key.principal_id,
+                        sealed_key: encoding::encode(&key.sealed_key),
+                        wrapped_key: key.wrapped_key.as_deref().map(encoding::encode),
+                        grant: key.grant_data,
+                        grant_signature: key.grant_signature,
                     });
                 }
             }
 
-            let newest_manifest: Option<i64> = sqlx::query_scalar(
+            let newest_manifest = sqlx::query_scalar!(
                 "SELECT MAX(seq) FROM vault_manifests WHERE vault_id = $1 AND seq <= $2",
+                vault_id,
+                cursor,
             )
-            .bind(&vault_id)
-            .bind(cursor)
             .fetch_one(&mut *conn)
             .await?;
             if newest_manifest.is_some_and(|seq| seq > vault_since) {
                 let chain: Vec<ManifestRecord> =
                     super::shared::manifest_chain(conn, &vault_id).await?;
-                let signers: Vec<String> = sqlx::query_scalar(
+                let signers = sqlx::query_scalar!(
                     "SELECT DISTINCT signer_id FROM vault_manifests WHERE vault_id = $1",
+                    vault_id
                 )
-                .bind(&vault_id)
                 .fetch_all(&mut *conn)
                 .await?;
                 signer_ids.extend(signers);
@@ -433,20 +424,19 @@ async fn sync_sharing(
     signer_ids.sort();
     signer_ids.dedup();
     for signer in signer_ids {
-        let bundles: Vec<(String, String)> = sqlx::query_as(
-            "SELECT bundle, bundle_signature FROM account_keys WHERE account_id = $1",
+        let bundles = sqlx::query!(
+            r#"SELECT bundle AS "bundle!", bundle_signature AS "bundle_signature!" FROM public_keys
+               WHERE account_id = $1"#,
+            signer
         )
-        .bind(&signer)
         .fetch_all(&mut *conn)
         .await?;
-        delta.signers.extend(
-            bundles
-                .into_iter()
-                .map(|(bundle, bundle_signature)| BundleRecord {
-                    bundle,
-                    bundle_signature,
-                }),
-        );
+        delta
+            .signers
+            .extend(bundles.into_iter().map(|row| BundleRecord {
+                bundle: row.bundle,
+                bundle_signature: row.bundle_signature,
+            }));
     }
     // Policies (D2): the newest of every organization, every time.
     let org_ids: Vec<String> = orgs.iter().map(|(o, _)| o.id.clone()).collect();

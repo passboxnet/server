@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE org_sso SET jwks = $1, jwks_fetched_at = $2 WHERE org_id = $3",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8ec8f6d6326ccb6106ed5883b9af053f5eb088e446b93b4a56d2a7736bde5d96"
+}

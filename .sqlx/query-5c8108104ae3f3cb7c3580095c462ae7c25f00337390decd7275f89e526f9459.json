@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE org_recovery_requests SET status = 'approved', approval = $1, approval_signature = $2, sealed_key = $3, request_code = $4, decided_by = $5, decided_at = $6 WHERE id = $7",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Int8",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "5c8108104ae3f3cb7c3580095c462ae7c25f00337390decd7275f89e526f9459"
+}

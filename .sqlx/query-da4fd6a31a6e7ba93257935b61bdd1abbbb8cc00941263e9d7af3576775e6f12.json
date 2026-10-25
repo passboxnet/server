@@ -1,0 +1,125 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id, name, public_key, public_key_signature, expires_at, revoked_at, last_used_at, last_used_ip, created_at FROM service_accounts WHERE id = $1 AND account_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "service_accounts",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "service_accounts",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "public_key",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "service_accounts",
+            "name": "public_key"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "public_key_signature",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "service_accounts",
+            "name": "public_key_signature"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "expires_at",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "service_accounts",
+            "name": "expires_at"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "revoked_at",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "service_accounts",
+            "name": "revoked_at"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "last_used_at",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "service_accounts",
+            "name": "last_used_at"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "last_used_ip",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "service_accounts",
+            "name": "last_used_ip"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "created_at",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "service_accounts",
+            "name": "created_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "da4fd6a31a6e7ba93257935b61bdd1abbbb8cc00941263e9d7af3576775e6f12"
+}

@@ -1,0 +1,64 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT seq, hash, pruned_seq, pruned_hash FROM org_audit_heads WHERE org_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "seq",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "org_audit_heads",
+            "name": "seq"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "hash",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "org_audit_heads",
+            "name": "hash"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "pruned_seq",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "org_audit_heads",
+            "name": "pruned_seq"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "pruned_hash",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "org_audit_heads",
+            "name": "pruned_hash"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "fcc198818b85063b7c32c472af5f6a09ef5543f167cbc03b046af18d9f37e518"
+}

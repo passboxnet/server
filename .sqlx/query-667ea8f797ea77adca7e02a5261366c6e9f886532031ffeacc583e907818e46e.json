@@ -1,0 +1,161 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT r.id, r.account_id, a.email AS \"email!\", r.device_name, r.ip, r.created_at, r.expires_at, r.ephemeral_key, e.key_version, e.escrow, e.escrow_signature, e.sealed_key FROM org_recovery_requests r JOIN account_directory a ON a.id = r.account_id JOIN org_recovery_escrows e ON e.org_id = r.org_id AND e.account_id = r.account_id WHERE r.org_id = $1 AND r.status = 'pending' AND r.expires_at > $2 ORDER BY r.created_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "org_recovery_requests",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "account_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "org_recovery_requests",
+            "name": "account_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "email!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "account_directory",
+            "name": "email"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "device_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "org_recovery_requests",
+            "name": "device_name"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "ip",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "org_recovery_requests",
+            "name": "ip"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "created_at",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "org_recovery_requests",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "expires_at",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "org_recovery_requests",
+            "name": "expires_at"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "ephemeral_key",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "org_recovery_requests",
+            "name": "ephemeral_key"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "key_version",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "org_recovery_escrows",
+            "name": "key_version"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "escrow",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "org_recovery_escrows",
+            "name": "escrow"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "escrow_signature",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "org_recovery_escrows",
+            "name": "escrow_signature"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "sealed_key",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "org_recovery_escrows",
+            "name": "sealed_key"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "667ea8f797ea77adca7e02a5261366c6e9f886532031ffeacc583e907818e46e"
+}

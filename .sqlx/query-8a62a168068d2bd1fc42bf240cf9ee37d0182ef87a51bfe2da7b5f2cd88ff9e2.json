@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT sso_until FROM device_tokens WHERE token_hash = $1 AND account_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "sso_until",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "device_tokens",
+            "name": "sso_until"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "8a62a168068d2bd1fc42bf240cf9ee37d0182ef87a51bfe2da7b5f2cd88ff9e2"
+}

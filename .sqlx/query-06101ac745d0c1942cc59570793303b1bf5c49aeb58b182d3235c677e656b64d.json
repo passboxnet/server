@@ -1,0 +1,90 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT account_id, webauthn_challenge, rp_id, device_name, client_kind, device_token_hash FROM two_factor_challenges WHERE token_hash = $1 AND purpose = $2 AND expires_at > $3",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "account_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "two_factor_challenges",
+            "name": "account_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "webauthn_challenge",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "two_factor_challenges",
+            "name": "webauthn_challenge"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "rp_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "two_factor_challenges",
+            "name": "rp_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "device_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "two_factor_challenges",
+            "name": "device_name"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "client_kind",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "two_factor_challenges",
+            "name": "client_kind"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "device_token_hash",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "two_factor_challenges",
+            "name": "device_token_hash"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "06101ac745d0c1942cc59570793303b1bf5c49aeb58b182d3235c677e656b64d"
+}

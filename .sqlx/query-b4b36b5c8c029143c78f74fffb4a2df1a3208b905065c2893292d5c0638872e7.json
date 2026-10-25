@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE org_recovery_requests SET status = 'denied', decided_by = $1, decided_at = $2 WHERE id = $3",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b4b36b5c8c029143c78f74fffb4a2df1a3208b905065c2893292d5c0638872e7"
+}

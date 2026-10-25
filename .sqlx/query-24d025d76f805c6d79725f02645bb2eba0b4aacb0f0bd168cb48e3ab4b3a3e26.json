@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT DISTINCT group_members.group_id FROM group_members JOIN org_groups ON org_groups.id = group_members.group_id WHERE org_groups.org_id = $1 AND group_members.account_id = $2 AND group_members.key_version = org_groups.key_version",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "group_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "group_members",
+            "name": "group_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "24d025d76f805c6d79725f02645bb2eba0b4aacb0f0bd168cb48e3ab4b3a3e26"
+}

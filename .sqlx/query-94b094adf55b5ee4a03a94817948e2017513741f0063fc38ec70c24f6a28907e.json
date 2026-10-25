@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT disabled_at AS \"disabled_at!\" FROM passbox.account_by_email($1)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "disabled_at!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "94b094adf55b5ee4a03a94817948e2017513741f0063fc38ec70c24f6a28907e"
+}

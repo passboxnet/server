@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT value FROM counters WHERE name = 'change_seq'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "value",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "counters",
+            "name": "value"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "1310947d5c63da10e559542ab2ac6be9c292850dd6f7328cb0e5dd1399d7cfe0"
+}

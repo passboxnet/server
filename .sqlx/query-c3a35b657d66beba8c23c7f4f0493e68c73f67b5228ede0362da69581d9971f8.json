@@ -1,0 +1,124 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM sso_tickets WHERE ticket_hash = $1 RETURNING binding_hash, org_id, purpose, outcome, account_id, email, result, initiated_by, expires_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "binding_hash",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sso_tickets",
+            "name": "binding_hash"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "org_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sso_tickets",
+            "name": "org_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "purpose",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sso_tickets",
+            "name": "purpose"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "outcome",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sso_tickets",
+            "name": "outcome"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "account_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sso_tickets",
+            "name": "account_id"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "email",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sso_tickets",
+            "name": "email"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "result",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sso_tickets",
+            "name": "result"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "initiated_by",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sso_tickets",
+            "name": "initiated_by"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "expires_at",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "sso_tickets",
+            "name": "expires_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "c3a35b657d66beba8c23c7f4f0493e68c73f67b5228ede0362da69581d9971f8"
+}

@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE vaults SET rotation_pending = true, seq = $1 WHERE id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "36b6e35b2d34aa1bdeedd5fc7735e2f871fa8c013e21b1b479890ff9aacd9468"
+}

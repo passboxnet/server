@@ -45,26 +45,25 @@ pub async fn events(
     Query(query): Query<EventsQuery>,
 ) -> ApiResult<Json<Vec<AccountEvent>>> {
     let limit = query.limit.clamp(1, 200);
-    let rows: Vec<(String, String, String, String, String, i64)> = sqlx::query_as(
+    let mut tx = state.db.as_account(&session.account_id).await?;
+    let rows = sqlx::query!(
         "SELECT id, kind, device_name, client_kind, ip, created_at FROM account_events \
          WHERE account_id = $1 ORDER BY created_at DESC LIMIT $2",
+        session.account_id,
+        limit,
     )
-    .bind(&session.account_id)
-    .bind(limit)
-    .fetch_all(&state.db)
+    .fetch_all(&mut *tx)
     .await?;
     Ok(Json(
         rows.into_iter()
-            .map(
-                |(id, kind, device_name, client_kind, ip, created_at)| AccountEvent {
-                    id,
-                    kind,
-                    device_name,
-                    client_kind,
-                    ip,
-                    created_at,
-                },
-            )
+            .map(|row| AccountEvent {
+                id: row.id,
+                kind: row.kind,
+                device_name: row.device_name,
+                client_kind: row.client_kind,
+                ip: row.ip,
+                created_at: row.created_at,
+            })
             .collect(),
     ))
 }
@@ -142,36 +141,40 @@ pub async fn password_finish(
     let record = opaque::registration_record(&upload)
         .map_err(|_| ApiError::bad_request("invalid registrationUpload"))?;
 
-    let mut tx = crate::db::begin_write(&state.db).await?;
-    sqlx::query(
+    let kdf_salt = super::vaults::decode(&req.kdf_salt)?;
+    let encrypted_account_key = super::vaults::decode(&req.encrypted_account_key)?;
+    let mut tx = state.db.as_account(&session.account_id).await?;
+    sqlx::query!(
         "UPDATE accounts SET opaque_record = $1, kdf_salt = $2, kdf_memory_kib = $3, kdf_iterations = $4, \
          kdf_parallelism = $5, encrypted_account_key = $6 WHERE id = $7",
+        record,
+        kdf_salt,
+        i64::from(req.kdf_params.memory_kib),
+        i64::from(req.kdf_params.iterations),
+        i64::from(req.kdf_params.parallelism),
+        encrypted_account_key,
+        session.account_id,
     )
-    .bind(encoding::encode(&record))
-    .bind(&req.kdf_salt)
-    .bind(i64::from(req.kdf_params.memory_kib))
-    .bind(i64::from(req.kdf_params.iterations))
-    .bind(i64::from(req.kdf_params.parallelism))
-    .bind(&req.encrypted_account_key)
-    .bind(&session.account_id)
     .execute(&mut *tx)
     .await?;
     // Other devices must enter the new password anyway, so they lose their
     // exemption from the per-email lockout too. This device keeps the device
     // token issued with its session.
-    sqlx::query(
+    sqlx::query!(
         "DELETE FROM device_tokens WHERE account_id = $1 AND token_hash NOT IN \
          (SELECT device_token_hash FROM sessions WHERE token_hash = $2)",
+        session.account_id,
+        session.token_hash(),
     )
-    .bind(&session.account_id)
-    .bind(session.token_hash())
     .execute(&mut *tx)
     .await?;
-    sqlx::query("DELETE FROM sessions WHERE account_id = $1 AND token_hash <> $2")
-        .bind(&session.account_id)
-        .bind(session.token_hash())
-        .execute(&mut *tx)
-        .await?;
+    sqlx::query!(
+        "DELETE FROM sessions WHERE account_id = $1 AND token_hash <> $2",
+        session.account_id,
+        session.token_hash(),
+    )
+    .execute(&mut *tx)
+    .await?;
     tx.commit().await?;
     record_event(
         &state,

@@ -20,7 +20,7 @@ use super::access;
 use super::auth::{Session, record_event};
 use super::org_audit::{self, Actor, Target};
 use super::validate;
-use crate::db::{self, now_ms};
+use crate::db::now_ms;
 use crate::error::{ApiError, ApiResult};
 use crate::security::ClientIp;
 use crate::state::AppState;
@@ -136,41 +136,41 @@ pub async fn reports(
     Path(org_id): Path<String>,
 ) -> ApiResult<Json<OrgReport>> {
     validate::id("organization id", &org_id)?;
-    let mut conn = state.db.acquire().await?;
+    let mut conn = state.db.as_account(&session.account_id).await?;
     access::require_admin(&mut conn, &org_id, &session.account_id).await?;
     let now = now_ms();
 
-    let members: Vec<(String, String, String, String, i64)> = sqlx::query_as(
-        "SELECT m.account_id, a.email, m.role, m.status, m.created_at FROM org_members m \
-         JOIN accounts a ON a.id = m.account_id WHERE m.org_id = $1 ORDER BY a.email",
-    )
-    .bind(&org_id)
+    let members: Vec<(String, String, String, String, i64)> = sqlx::query!(
+        r#"SELECT m.account_id, a.email AS "email!", m.role, m.status, m.created_at FROM org_members m
+         JOIN account_directory a ON a.id = m.account_id WHERE m.org_id = $1 ORDER BY a.email"#,
+        &org_id,
+    ).map(|row| (row.account_id, row.email, row.role, row.status, row.created_at))
     .fetch_all(&mut *conn)
     .await?;
-    let totp: BTreeSet<String> = sqlx::query_scalar(
+    let totp: BTreeSet<String> = sqlx::query_scalar!(
         "SELECT t.account_id FROM two_factor_totp t JOIN org_members m ON m.account_id = t.account_id \
-         WHERE m.org_id = $1 AND t.confirmed = 1",
+         WHERE m.org_id = $1 AND t.confirmed = true",
+        &org_id,
     )
-    .bind(&org_id)
     .fetch_all(&mut *conn)
     .await?
     .into_iter()
     .collect();
-    let webauthn: BTreeSet<String> = sqlx::query_scalar(
+    let webauthn: BTreeSet<String> = sqlx::query_scalar!(
         "SELECT DISTINCT w.account_id FROM webauthn_credentials w \
          JOIN org_members m ON m.account_id = w.account_id WHERE m.org_id = $1",
+        &org_id,
     )
-    .bind(&org_id)
     .fetch_all(&mut *conn)
     .await?
     .into_iter()
     .collect();
-    let enrolled: BTreeSet<String> = sqlx::query_scalar(
+    let enrolled: BTreeSet<String> = sqlx::query_scalar!(
         "SELECT account_id FROM org_recovery_escrows WHERE org_id = $1 \
          AND key_version = (SELECT MAX(key_version) FROM org_recovery_keys WHERE org_id = $2)",
+        &org_id,
+        &org_id,
     )
-    .bind(&org_id)
-    .bind(&org_id)
     .fetch_all(&mut *conn)
     .await?
     .into_iter()
@@ -215,12 +215,13 @@ pub async fn reports(
     )
     .collect();
     // Current group memberships.
-    let group_members: Vec<(String, String)> = sqlx::query_as(
+    let group_members: Vec<(String, String)> = sqlx::query!(
         "SELECT gm.group_id, gm.account_id FROM group_members gm \
          JOIN org_groups g ON g.id = gm.group_id AND gm.key_version = g.key_version \
          WHERE g.org_id = $1",
+        &org_id,
     )
-    .bind(&org_id)
+    .map(|row| (row.group_id, row.account_id))
     .fetch_all(&mut *conn)
     .await?;
     let mut groups_of: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -236,15 +237,24 @@ pub async fn reports(
             .push(account.clone());
     }
 
-    let vault_rows: Vec<(String, i64, i64, i64, i64)> = sqlx::query_as(
+    let vault_rows: Vec<(String, i64, i64, i64, bool)> = sqlx::query!(
         "SELECT id, created_at, updated_at, key_epoch, rotation_pending FROM vaults \
          WHERE org_id = $1 ORDER BY created_at",
+        &org_id,
     )
-    .bind(&org_id)
+    .map(|row| {
+        (
+            row.id,
+            row.created_at,
+            row.updated_at,
+            row.key_epoch,
+            row.rotation_pending,
+        )
+    })
     .fetch_all(&mut *conn)
     .await?;
     let item_stats: BTreeMap<String, (i64, i64)> = sqlx::query_as::<_, (String, i64, i64)>(
-        "SELECT i.vault_id, SUM(CASE WHEN i.deleted = 0 THEN 1 ELSE 0 END), MAX(i.updated_at) \
+        "SELECT i.vault_id, SUM(CASE WHEN i.deleted = false THEN 1 ELSE 0 END), MAX(i.updated_at) \
          FROM items i JOIN vaults v ON v.id = i.vault_id WHERE v.org_id = $1 GROUP BY i.vault_id",
     )
     .bind(&org_id)
@@ -253,12 +263,13 @@ pub async fn reports(
     .into_iter()
     .map(|(vault, count, last)| (vault, (count, last)))
     .collect();
-    let used: Vec<(String, i64)> = sqlx::query_as(
+    let used: Vec<(String, i64)> = sqlx::query!(
         "SELECT details, created_at FROM org_audit_events WHERE org_id = $1 AND client_event <> '' \
          AND created_at > $2",
+        &org_id,
+        now - UNUSED_AFTER_DAYS * 24 * 60 * 60 * 1000,
     )
-    .bind(&org_id)
-    .bind(now - UNUSED_AFTER_DAYS * 24 * 60 * 60 * 1000)
+    .map(|row| (row.details, row.created_at))
     .fetch_all(&mut *conn)
     .await?;
     let mut last_used: BTreeMap<String, i64> = BTreeMap::new();
@@ -271,11 +282,12 @@ pub async fn reports(
             *entry = (*entry).max(at);
         }
     }
-    let vault_members: Vec<(String, String, String, String)> = sqlx::query_as(
+    let vault_members: Vec<(String, String, String, String)> = sqlx::query!(
         "SELECT vm.vault_id, vm.principal_type, vm.principal_id, vm.role FROM vault_members vm \
          JOIN vaults v ON v.id = vm.vault_id WHERE v.org_id = $1",
+        &org_id,
     )
-    .bind(&org_id)
+    .map(|row| (row.vault_id, row.principal_type, row.principal_id, row.role))
     .fetch_all(&mut *conn)
     .await?;
 
@@ -329,7 +341,7 @@ pub async fn reports(
                     vault_id,
                     created_at,
                     key_epoch,
-                    rotation_pending: rotation_pending != 0,
+                    rotation_pending,
                     item_count,
                     last_write_at,
                     last_used_at,
@@ -378,31 +390,33 @@ pub async fn reports(
             m
         })
         .collect();
-    let pending_invitations: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM org_invitations WHERE org_id = $1 AND status = 'pending' AND expires_at > $2",
+    let pending_invitations: i64 = sqlx::query_scalar!(
+        "SELECT COUNT(*) AS \"count!\" FROM org_invitations WHERE org_id = $1 AND status = 'pending' AND expires_at > $2",
+        &org_id,
+        now,
     )
-    .bind(&org_id)
-    .bind(now)
     .fetch_one(&mut *conn)
     .await?;
-    let pending_recovery_requests: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM org_recovery_requests WHERE org_id = $1 AND status = 'pending' AND expires_at > $2",
+    let pending_recovery_requests: i64 = sqlx::query_scalar!(
+        "SELECT COUNT(*) AS \"count!\" FROM org_recovery_requests WHERE org_id = $1 AND status = 'pending' AND expires_at > $2",
+        &org_id,
+        now,
     )
-    .bind(&org_id)
-    .bind(now)
     .fetch_one(&mut *conn)
     .await?;
-    let recovery_set_up: Option<i64> =
-        sqlx::query_scalar("SELECT 1 FROM org_recovery_keys WHERE org_id = $1 LIMIT 1")
-            .bind(&org_id)
-            .fetch_optional(&mut *conn)
-            .await?;
-    let policy_version: Option<i64> =
-        sqlx::query_scalar("SELECT MAX(version) FROM org_policies WHERE org_id = $1")
-            .bind(&org_id)
-            .fetch_optional(&mut *conn)
-            .await?
-            .flatten();
+    let recovery_set_up: Option<i64> = sqlx::query_scalar!(
+        "SELECT 1::BIGINT AS \"one!\" FROM org_recovery_keys WHERE org_id = $1 LIMIT 1",
+        &org_id,
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
+    let policy_version: Option<i64> = sqlx::query_scalar!(
+        "SELECT MAX(version) FROM org_policies WHERE org_id = $1",
+        &org_id,
+    )
+    .fetch_optional(&mut *conn)
+    .await?
+    .flatten();
     let count_role = |guest: bool| {
         members
             .iter()
@@ -413,14 +427,14 @@ pub async fn reports(
     let guest_count = count_role(true);
     let agent_limit_per_member =
         super::service_accounts::agent_limit_per_member(&state, &mut conn).await?;
-    let service_account_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM service_accounts sa WHERE sa.revoked_at = 0 \
+    let service_account_count: i64 = sqlx::query_scalar!(
+        "SELECT COUNT(*) AS \"count!\" FROM service_accounts sa WHERE sa.revoked_at = 0 \
          AND (sa.expires_at = 0 OR sa.expires_at > $2) AND sa.account_id IN \
          (SELECT account_id FROM org_members WHERE org_id = $1 AND status = 'confirmed' \
           AND role <> 'guest')",
+        &org_id,
+        now,
     )
-    .bind(&org_id)
-    .bind(now)
     .fetch_one(&mut *conn)
     .await?;
     Ok(Json(OrgReport {
@@ -482,30 +496,32 @@ pub async fn put_security_report(
     ) {
         return Err(ApiError::RateLimited(wait));
     }
-    let mut tx = db::begin_write(&state.db).await?;
+    let mut tx = state.db.as_account(&session.account_id).await?;
     access::require_confirmed(&mut tx, &org_id, &session.account_id).await?;
-    sqlx::query("DELETE FROM org_security_reports WHERE org_id = $1 AND account_id = $2")
-        .bind(&org_id)
-        .bind(&session.account_id)
-        .execute(&mut *tx)
-        .await?;
-    sqlx::query(
+    sqlx::query!(
+        "DELETE FROM org_security_reports WHERE org_id = $1 AND account_id = $2",
+        &org_id,
+        &session.account_id,
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query!(
         "INSERT INTO org_security_reports (org_id, account_id, score, total, weak, reused, unsecured, \
          password_policy, reported_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
-    )
-    .bind(&org_id)
-    .bind(&session.account_id)
-    .bind(req.score)
-    .bind(req.total)
-    .bind(req.weak)
-    .bind(req.reused)
-    .bind(req.unsecured)
-    .bind(match req.password_meets_policy {
+        &org_id,
+        &session.account_id,
+        req.score,
+        req.total,
+        req.weak,
+        req.reused,
+        req.unsecured,
+        match req.password_meets_policy {
         Some(true) => 1i64,
         Some(false) => 0,
         None => -1,
-    })
-    .bind(now_ms())
+    },
+        now_ms(),
+    )
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
@@ -521,12 +537,13 @@ pub struct OrgSettings {
     pub audit_retention_days: i64,
 }
 
-async fn load_settings(conn: &mut sqlx::AnyConnection, org_id: &str) -> ApiResult<OrgSettings> {
-    let days: Option<i64> =
-        sqlx::query_scalar("SELECT audit_retention_days FROM org_settings WHERE org_id = $1")
-            .bind(org_id)
-            .fetch_optional(&mut *conn)
-            .await?;
+async fn load_settings(conn: &mut sqlx::PgConnection, org_id: &str) -> ApiResult<OrgSettings> {
+    let days: Option<i64> = sqlx::query_scalar!(
+        "SELECT audit_retention_days FROM org_settings WHERE org_id = $1",
+        org_id,
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
     Ok(OrgSettings {
         audit_retention_days: days.unwrap_or(0),
     })
@@ -539,7 +556,7 @@ pub async fn get_settings(
     Path(org_id): Path<String>,
 ) -> ApiResult<Json<OrgSettings>> {
     validate::id("organization id", &org_id)?;
-    let mut conn = state.db.acquire().await?;
+    let mut conn = state.db.as_account(&session.account_id).await?;
     access::require_admin(&mut conn, &org_id, &session.account_id).await?;
     Ok(Json(load_settings(&mut conn, &org_id).await?))
 }
@@ -558,20 +575,19 @@ pub async fn put_settings(
             "keep audit entries forever (0) or for 30 to 3650 days",
         ));
     }
-    let mut tx = db::begin_write(&state.db).await?;
+    let mut tx = state.db.as_account(&session.account_id).await?;
     access::require_admin(&mut tx, &org_id, &session.account_id).await?;
     let before = load_settings(&mut tx, &org_id).await?;
-    sqlx::query("DELETE FROM org_settings WHERE org_id = $1")
-        .bind(&org_id)
+    sqlx::query!("DELETE FROM org_settings WHERE org_id = $1", &org_id,)
         .execute(&mut *tx)
         .await?;
-    sqlx::query(
+    sqlx::query!(
         "INSERT INTO org_settings (org_id, audit_retention_days, updated_by, updated_at) VALUES ($1, $2, $3, $4)",
+        &org_id,
+        req.audit_retention_days,
+        &session.account_id,
+        now_ms(),
     )
-    .bind(&org_id)
-    .bind(req.audit_retention_days)
-    .bind(&session.account_id)
-    .bind(now_ms())
     .execute(&mut *tx)
     .await?;
     if before.audit_retention_days != req.audit_retention_days {
@@ -604,12 +620,12 @@ pub async fn end_sessions(
 ) -> ApiResult<Json<serde_json::Value>> {
     validate::id("organization id", &org_id)?;
     validate::id("account id", &account_id)?;
-    let mut tx = db::begin_write(&state.db).await?;
+    let mut tx = state.db.as_account(&session.account_id).await?;
     let me = access::require_admin(&mut tx, &org_id, &session.account_id).await?;
-    let kind: String = sqlx::query_scalar("SELECT kind FROM organizations WHERE id = $1")
-        .bind(&org_id)
-        .fetch_one(&mut *tx)
-        .await?;
+    let kind: String =
+        sqlx::query_scalar!("SELECT kind FROM organizations WHERE id = $1", &org_id,)
+            .fetch_one(&mut *tx)
+            .await?;
     if kind != "team" {
         return Err(ApiError::forbidden(
             "forbidden",
@@ -631,8 +647,7 @@ pub async fn end_sessions(
             "only the owner can sign out admins, and nobody the owner",
         ));
     }
-    let ended = sqlx::query("DELETE FROM sessions WHERE account_id = $1")
-        .bind(&account_id)
+    let ended = sqlx::query!("DELETE FROM sessions WHERE account_id = $1", &account_id,)
         .execute(&mut *tx)
         .await?
         .rows_affected();

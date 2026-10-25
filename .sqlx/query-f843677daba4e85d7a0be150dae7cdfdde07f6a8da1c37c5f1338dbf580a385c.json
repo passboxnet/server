@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM device_tokens WHERE account_id = $1 AND (expires_at <= $2 OR token_hash = $3)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f843677daba4e85d7a0be150dae7cdfdde07f6a8da1c37c5f1338dbf580a385c"
+}

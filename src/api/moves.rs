@@ -11,7 +11,7 @@ use axum::Json;
 use axum::extract::State;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use sqlx::AnyConnection;
+use sqlx::PgConnection;
 
 use super::access::{self, VaultAccess};
 use super::auth::Session;
@@ -77,7 +77,7 @@ fn org_of(access: &VaultAccess) -> Option<&str> {
 
 /// 403 `policy_violation` if the source organization keeps its items inside.
 async fn check_policy(
-    conn: &mut AnyConnection,
+    conn: &mut PgConnection,
     account_id: &str,
     source: &VaultAccess,
     target: &VaultAccess,
@@ -141,7 +141,7 @@ pub async fn move_items(
         }
     }
 
-    let mut tx = db::begin_write(&state.db).await?;
+    let mut tx = state.db.as_account(&session.account_id).await?;
     let target = super::items::require_write(
         &mut tx,
         &session.account_id,
@@ -154,15 +154,17 @@ pub async fn move_items(
     let now = now_ms();
     let mut moved = Vec::with_capacity(req.items.len());
     for item in &req.items {
-        let row: Option<(String, i64, i64)> =
-            sqlx::query_as("SELECT vault_id, revision, deleted FROM items WHERE id = $1")
-                .bind(&item.id)
-                .fetch_optional(&mut *tx)
-                .await?;
+        let row: Option<(String, i64, bool)> = sqlx::query!(
+            "SELECT vault_id, revision, deleted FROM items WHERE id = $1",
+            &item.id,
+        )
+        .map(|row| (row.vault_id, row.revision, row.deleted))
+        .fetch_optional(&mut *tx)
+        .await?;
         let Some((source_vault, current, deleted)) = row else {
             return Err(ApiError::NotFound);
         };
-        if deleted != 0 {
+        if deleted {
             return Err(ApiError::NotFound);
         }
         if access::vault_access(&mut tx, &source_vault, &session.account_id)
@@ -185,10 +187,10 @@ pub async fn move_items(
         check_policy(&mut tx, &session.account_id, &source, &target).await?;
 
         // Attachments move with the item; the target pays for their storage.
-        let attachment_bytes: i64 = sqlx::query_scalar(
-            "SELECT CAST(COALESCE(SUM(size), 0) AS BIGINT) FROM attachments WHERE item_id = $1",
+        let attachment_bytes: i64 = sqlx::query_scalar!(
+            r#"SELECT CAST(COALESCE(SUM(size), 0) AS BIGINT) AS "total!" FROM attachments WHERE item_id = $1"#,
+            &item.id,
         )
-        .bind(&item.id)
         .fetch_one(&mut *tx)
         .await?;
         let source_owner = super::attachments::owner_of(&mut tx, &source_vault).await?;
@@ -196,30 +198,32 @@ pub async fn move_items(
             super::attachments::ensure_quota(&state, &mut tx, &target_owner, attachment_bytes)
                 .await?;
         }
-        sqlx::query(
+        sqlx::query!(
             "UPDATE attachments SET vault_id = $1, owner_type = $2, owner_id = $3 WHERE item_id = $4",
+            &req.target_vault_id,
+            &target_owner.0,
+            &target_owner.1,
+            &item.id,
         )
-        .bind(&req.target_vault_id)
-        .bind(&target_owner.0)
-        .bind(&target_owner.1)
-        .bind(&item.id)
         .execute(&mut *tx)
         .await?;
 
         // The history, re-encrypted for the target (times and devices kept).
-        let old: Vec<(i64, i64, Option<String>)> = sqlx::query_as(
+        let old: Vec<(i64, i64, Option<String>)> = sqlx::query!(
             "SELECT revision, updated_at, updated_by FROM item_versions WHERE item_id = $1",
+            &item.id,
         )
-        .bind(&item.id)
+        .map(|row| (row.revision, row.updated_at, row.updated_by))
         .fetch_all(&mut *tx)
         .await?;
-        let current_row: (i64, Option<String>) =
-            sqlx::query_as("SELECT updated_at, updated_by FROM items WHERE id = $1")
-                .bind(&item.id)
-                .fetch_one(&mut *tx)
-                .await?;
-        sqlx::query("DELETE FROM item_versions WHERE item_id = $1")
-            .bind(&item.id)
+        let current_row: (i64, Option<String>) = sqlx::query!(
+            "SELECT updated_at, updated_by FROM items WHERE id = $1",
+            &item.id,
+        )
+        .map(|row| (row.updated_at, row.updated_by))
+        .fetch_one(&mut *tx)
+        .await?;
+        sqlx::query!("DELETE FROM item_versions WHERE item_id = $1", &item.id,)
             .execute(&mut *tx)
             .await?;
         for version in &item.versions {
@@ -230,45 +234,45 @@ pub async fn move_items(
                     .find(|(r, _, _)| *r == version.revision)
                     .map_or((now, None), |(_, at, by)| (*at, by.clone()))
             };
-            sqlx::query(
+            sqlx::query!(
                 "INSERT INTO item_versions (item_id, revision, key_epoch, encrypted_data, updated_at, updated_by) \
                  VALUES ($1, $2, $3, $4, $5, $6)",
+                &item.id,
+                version.revision,
+                req.key_epoch,
+                super::vaults::decode(&version.encrypted_data)?,
+                updated_at,
+                updated_by,
             )
-            .bind(&item.id)
-            .bind(version.revision)
-            .bind(req.key_epoch)
-            .bind(&version.encrypted_data)
-            .bind(updated_at)
-            .bind(updated_by)
             .execute(&mut *tx)
             .await?;
         }
 
         let seq = db::next_seq(&mut tx).await?;
-        sqlx::query(
+        sqlx::query!(
             "UPDATE items SET vault_id = $1, encrypted_data = $2, revision = $3, seq = $4, updated_at = $5, \
              key_epoch = $6, updated_by = $7 WHERE id = $8",
+            &req.target_vault_id,
+            super::vaults::decode(&item.encrypted_data)?,
+            item.revision,
+            seq,
+            now,
+            req.key_epoch,
+            &session.id,
+            &item.id,
         )
-        .bind(&req.target_vault_id)
-        .bind(&item.encrypted_data)
-        .bind(item.revision)
-        .bind(seq)
-        .bind(now)
-        .bind(req.key_epoch)
-        .bind(&session.id)
-        .bind(&item.id)
         .execute(&mut *tx)
         .await?;
-        sqlx::query(
+        sqlx::query!(
             "INSERT INTO item_moves (item_id, from_vault_id, to_vault_id, revision, seq, moved_at) \
              VALUES ($1, $2, $3, $4, $5, $6)",
+            &item.id,
+            &source_vault,
+            &req.target_vault_id,
+            item.revision,
+            seq,
+            now,
         )
-        .bind(&item.id)
-        .bind(&source_vault)
-        .bind(&req.target_vault_id)
-        .bind(item.revision)
-        .bind(seq)
-        .bind(now)
         .execute(&mut *tx)
         .await?;
 
@@ -311,20 +315,21 @@ pub async fn move_items(
 /// vaults) after `since`, for sync. They come first in the item list, so a
 /// device that sees both vaults removes the old copy before adding the new.
 pub async fn tombstones(
-    conn: &mut AnyConnection,
+    conn: &mut PgConnection,
     vault_ids: &[String],
     since: i64,
     cursor: i64,
 ) -> ApiResult<Vec<(String, String, i64, i64)>> {
     let mut out = Vec::new();
     for vault_id in vault_ids {
-        let rows: Vec<(String, String, i64, i64)> = sqlx::query_as(
+        let rows: Vec<(String, String, i64, i64)> = sqlx::query!(
             "SELECT item_id, from_vault_id, revision, moved_at FROM item_moves \
              WHERE from_vault_id = $1 AND seq > $2 AND seq <= $3 ORDER BY seq",
+            vault_id,
+            since,
+            cursor,
         )
-        .bind(vault_id)
-        .bind(since)
-        .bind(cursor)
+        .map(|row| (row.item_id, row.from_vault_id, row.revision, row.moved_at))
         .fetch_all(&mut *conn)
         .await?;
         out.extend(rows);

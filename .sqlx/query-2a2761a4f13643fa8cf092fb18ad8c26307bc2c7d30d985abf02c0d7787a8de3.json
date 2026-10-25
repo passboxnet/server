@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO server_secrets (name, value) VALUES ('sso_key', $1) ON CONFLICT (name) DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "2a2761a4f13643fa8cf092fb18ad8c26307bc2c7d30d985abf02c0d7787a8de3"
+}

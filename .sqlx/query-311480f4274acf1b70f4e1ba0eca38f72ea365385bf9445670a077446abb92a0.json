@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO org_invitations (id, org_id, email, role, token_hash, status, created_by, created_at, expires_at, accepted_by, accepted_at) VALUES ($1, $2, $3, $4, $5, 'pending', $6, $7, $8, NULL, NULL)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "311480f4274acf1b70f4e1ba0eca38f72ea365385bf9445670a077446abb92a0"
+}

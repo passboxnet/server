@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM service_account_grants WHERE service_account_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "afbaa2c4da492ba8b7f5eddf20ae7dd95ce17d4b842d82a5f00c8f9a88913fe5"
+}

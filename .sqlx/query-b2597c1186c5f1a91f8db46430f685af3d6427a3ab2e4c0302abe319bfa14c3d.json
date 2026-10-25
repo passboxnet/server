@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE organizations SET encrypted_meta = $1, meta_epoch = $2, revision = revision + 1, seq = $3, updated_at = $4 WHERE id = $5",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b2597c1186c5f1a91f8db46430f685af3d6427a3ab2e4c0302abe319bfa14c3d"
+}

@@ -26,12 +26,12 @@ use passbox_core::agent_grant::{Decision, GrantRequest, PrincipalKind, verify_de
 use passbox_core::identity::SignedBundle;
 use passbox_core::{encoding, id};
 use serde::{Deserialize, Serialize};
-use sqlx::AnyConnection;
+use sqlx::PgConnection;
 
 use super::auth::{Session, record_event};
 use super::service_accounts::ServiceAuth;
 use super::validate;
-use crate::db::{self, now_ms};
+use crate::db::now_ms;
 use crate::error::{ApiError, ApiResult};
 use crate::security::ClientIp;
 use crate::state::AppState;
@@ -109,19 +109,19 @@ async fn create_grant(
             "the request's time is off by more than 5 minutes; check the clock",
         ));
     }
-    let mut tx = db::begin_write(&state.db).await?;
-    sqlx::query(
+    let mut tx = state.db.as_account(principal.account_id).await?;
+    sqlx::query!(
         "UPDATE agent_grants SET status = 'expired' WHERE account_id = $1 AND status = 'pending' \
          AND expires_at <= $2",
+        principal.account_id,
+        now,
     )
-    .bind(principal.account_id)
-    .bind(now)
     .execute(&mut *tx)
     .await?;
-    let pending: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM agent_grants WHERE account_id = $1 AND status = 'pending'",
+    let pending: i64 = sqlx::query_scalar!(
+        "SELECT COUNT(*) AS \"count!\" FROM agent_grants WHERE account_id = $1 AND status = 'pending'",
+        principal.account_id,
     )
-    .bind(principal.account_id)
     .fetch_one(&mut *tx)
     .await?;
     if pending >= MAX_PENDING {
@@ -130,20 +130,20 @@ async fn create_grant(
         ));
     }
     let expires_at = now + PENDING_TTL_MS;
-    let inserted = sqlx::query(
+    let inserted = sqlx::query!(
         "INSERT INTO agent_grants (id, account_id, principal_kind, principal_id, client_name, request, \
          status, decision, decision_signature, decided_device, not_after, ip, created_at, expires_at, \
          decided_at) VALUES ($1, $2, $3, $4, $5, $6, 'pending', NULL, NULL, '', 0, $7, $8, $9, 0)",
+        &request.id,
+        principal.account_id,
+        principal.kind.as_str(),
+        principal.id,
+        &request.client_name,
+        encoded,
+        ip,
+        now,
+        expires_at,
     )
-    .bind(&request.id)
-    .bind(principal.account_id)
-    .bind(principal.kind.as_str())
-    .bind(principal.id)
-    .bind(&request.client_name)
-    .bind(encoded)
-    .bind(ip)
-    .bind(now)
-    .bind(expires_at)
     .execute(&mut *tx)
     .await;
     if inserted.is_err() {
@@ -245,18 +245,28 @@ fn status_of(row: StatusRow) -> GrantStatus {
 }
 
 async fn grant_status(
-    conn: &mut AnyConnection,
+    conn: &mut PgConnection,
     grant_id: &str,
     kind: PrincipalKind,
     principal_id: &str,
 ) -> ApiResult<GrantStatus> {
-    let row: StatusRow = sqlx::query_as(
+    let row: StatusRow = sqlx::query!(
         "SELECT id, status, decision, decision_signature, not_after, expires_at FROM agent_grants \
          WHERE id = $1 AND principal_kind = $2 AND principal_id = $3",
+        grant_id,
+        kind.as_str(),
+        principal_id,
     )
-    .bind(grant_id)
-    .bind(kind.as_str())
-    .bind(principal_id)
+    .map(|row| {
+        (
+            row.id,
+            row.status,
+            row.decision,
+            row.decision_signature,
+            row.not_after,
+            row.expires_at,
+        )
+    })
     .fetch_optional(&mut *conn)
     .await?
     .ok_or(ApiError::NotFound)?;
@@ -269,7 +279,7 @@ pub async fn get(
     session: Session,
     Path(grant_id): Path<String>,
 ) -> ApiResult<Json<GrantStatus>> {
-    let mut conn = state.db.acquire().await?;
+    let mut conn = state.db.as_account(&session.account_id).await?;
     Ok(Json(
         grant_status(
             &mut conn,
@@ -287,7 +297,7 @@ pub async fn sa_get(
     auth: ServiceAuth,
     Path(grant_id): Path<String>,
 ) -> ApiResult<Json<GrantStatus>> {
-    let mut conn = state.db.acquire().await?;
+    let mut conn = state.db.as_account(&auth.owner_id).await?;
     Ok(Json(
         grant_status(&mut conn, &grant_id, PrincipalKind::Service, &auth.id).await?,
     ))
@@ -330,6 +340,7 @@ pub async fn list(
 ) -> ApiResult<Json<Vec<GrantRecord>>> {
     let all = query.status.as_deref() == Some("all");
     let now = now_ms();
+    let mut tx = state.db.as_account(&session.account_id).await?;
     #[allow(clippy::type_complexity)]
     let rows: Vec<(
         String,
@@ -346,28 +357,30 @@ pub async fn list(
         i64,
         i64,
     )> = if all {
-        sqlx::query_as(
-            "SELECT g.id, g.principal_kind, g.principal_id, s.name, g.client_name, g.request, g.status, \
+        sqlx::query!(
+            "SELECT g.id, g.principal_kind, g.principal_id, s.name AS \"name?\", g.client_name, g.request, g.status, \
              g.not_after, g.decided_device, g.ip, g.created_at, g.expires_at, g.decided_at \
              FROM agent_grants g LEFT JOIN service_accounts s ON g.principal_kind = 'service' \
              AND s.id = g.principal_id WHERE g.account_id = $1 AND g.created_at > $2 \
              ORDER BY g.created_at DESC LIMIT 100",
-        )
-        .bind(&session.account_id)
-        .bind(now - 30 * 86_400_000)
+            &session.account_id,
+            now - 30 * 86_400_000,
+        ).map(|row| (row.id, row.principal_kind, row.principal_id, row.name, row.client_name, row.request, row.status, row.not_after, row.decided_device, row.ip, row.created_at, row.expires_at, row.decided_at))
+        .fetch_all(&mut *tx)
+        .await?
     } else {
-        sqlx::query_as(
-            "SELECT g.id, g.principal_kind, g.principal_id, s.name, g.client_name, g.request, g.status, \
+        sqlx::query!(
+            "SELECT g.id, g.principal_kind, g.principal_id, s.name AS \"name?\", g.client_name, g.request, g.status, \
              g.not_after, g.decided_device, g.ip, g.created_at, g.expires_at, g.decided_at \
              FROM agent_grants g LEFT JOIN service_accounts s ON g.principal_kind = 'service' \
              AND s.id = g.principal_id WHERE g.account_id = $1 AND g.status = 'pending' \
              AND g.expires_at > $2 ORDER BY g.created_at DESC LIMIT 100",
-        )
-        .bind(&session.account_id)
-        .bind(now)
-    }
-    .fetch_all(&state.db)
-        .await?;
+            &session.account_id,
+            now,
+        ).map(|row| (row.id, row.principal_kind, row.principal_id, row.name, row.client_name, row.request, row.status, row.not_after, row.decided_device, row.ip, row.created_at, row.expires_at, row.decided_at))
+        .fetch_all(&mut *tx)
+        .await?
+    };
     Ok(Json(
         rows.into_iter()
             .map(
@@ -436,12 +449,13 @@ pub async fn decide(
             "approve agent requests in the Passbox web or desktop app",
         ));
     }
-    let mut tx = db::begin_write(&state.db).await?;
-    let row: Option<(String, String, i64)> = sqlx::query_as(
+    let mut tx = state.db.as_account(&session.account_id).await?;
+    let row: Option<(String, String, i64)> = sqlx::query!(
         "SELECT request, status, expires_at FROM agent_grants WHERE id = $1 AND account_id = $2",
+        &grant_id,
+        &session.account_id,
     )
-    .bind(&grant_id)
-    .bind(&session.account_id)
+    .map(|row| (row.request, row.status, row.expires_at))
     .fetch_optional(&mut *tx)
     .await?;
     let (request, status, expires_at) = row.ok_or(ApiError::NotFound)?;
@@ -451,11 +465,12 @@ pub async fn decide(
             serde_json::json!({ "status": status }),
         ));
     }
-    let (bundle, signature): (String, String) = sqlx::query_as(
-        "SELECT bundle, bundle_signature FROM account_keys WHERE account_id = $1 \
-         ORDER BY key_version DESC LIMIT 1",
+    let (bundle, signature): (String, String) = sqlx::query!(
+        r#"SELECT bundle AS "bundle!", bundle_signature AS "bundle_signature!" FROM public_keys
+           WHERE account_id = $1 ORDER BY key_version DESC LIMIT 1"#,
+        &session.account_id,
     )
-    .bind(&session.account_id)
+    .map(|row| (row.bundle, row.bundle_signature))
     .fetch_optional(&mut *tx)
     .await?
     .ok_or_else(|| ApiError::bad_request("publish your account keys first"))?;
@@ -482,24 +497,34 @@ pub async fn decide(
     } else {
         "denied"
     };
-    sqlx::query(
+    sqlx::query!(
         "UPDATE agent_grants SET status = $1, decision = $2, decision_signature = $3, \
          decided_device = $4, not_after = $5, decided_at = $6 WHERE id = $7",
+        status,
+        &req.decision,
+        &req.decision_signature,
+        &session.device_name,
+        decision.not_after,
+        now_ms(),
+        &grant_id,
     )
-    .bind(status)
-    .bind(&req.decision)
-    .bind(&req.decision_signature)
-    .bind(&session.device_name)
-    .bind(decision.not_after)
-    .bind(now_ms())
-    .bind(&grant_id)
     .execute(&mut *tx)
     .await?;
-    let row: StatusRow = sqlx::query_as(
+    let row: StatusRow = sqlx::query!(
         "SELECT id, status, decision, decision_signature, not_after, expires_at FROM agent_grants \
          WHERE id = $1",
+        &grant_id,
     )
-    .bind(&grant_id)
+    .map(|row| {
+        (
+            row.id,
+            row.status,
+            row.decision,
+            row.decision_signature,
+            row.not_after,
+            row.expires_at,
+        )
+    })
     .fetch_one(&mut *tx)
     .await?;
     tx.commit().await?;
@@ -527,14 +552,16 @@ pub async fn revoke(
     session: Session,
     Path(grant_id): Path<String>,
 ) -> ApiResult<StatusCode> {
-    let result = sqlx::query(
+    let mut tx = state.db.as_account(&session.account_id).await?;
+    let result = sqlx::query!(
         "UPDATE agent_grants SET status = 'revoked' WHERE id = $1 AND account_id = $2 \
          AND status IN ('pending', 'approved')",
+        &grant_id,
+        &session.account_id,
     )
-    .bind(&grant_id)
-    .bind(&session.account_id)
-    .execute(&state.db)
+    .execute(&mut *tx)
     .await?;
+    tx.commit().await?;
     if result.rows_affected() == 0 {
         return Err(ApiError::NotFound);
     }
@@ -571,11 +598,10 @@ pub struct EventRequest {
 /// Refuses (403 `policy_violation`) when one of the vaults belongs to an
 /// organization whose policy does not allow revealing values to AI agents
 /// (`allow_agent_reveal`, off by default and without a policy).
-async fn check_reveal_policy(conn: &mut AnyConnection, vault_ids: &[String]) -> ApiResult<()> {
+async fn check_reveal_policy(conn: &mut PgConnection, vault_ids: &[String]) -> ApiResult<()> {
     for vault_id in vault_ids {
         let org: Option<Option<String>> =
-            sqlx::query_scalar("SELECT org_id FROM vaults WHERE id = $1")
-                .bind(vault_id)
+            sqlx::query_scalar!("SELECT org_id FROM vaults WHERE id = $1", vault_id,)
                 .fetch_optional(&mut *conn)
                 .await?;
         if let Some(Some(org_id)) = org {
@@ -607,15 +633,16 @@ async fn check_reveal(
     if req.grant_id.is_empty() || req.item_ids.is_empty() {
         return Err(denied("a reveal needs an approved grant"));
     }
-    let mut conn = state.db.acquire().await?;
-    let row: Option<(String, String, Option<String>, i64)> = sqlx::query_as(
+    let mut conn = state.db.as_account(principal.account_id).await?;
+    let row: Option<(String, String, Option<String>, i64)> = sqlx::query!(
         "SELECT request, status, decision, not_after FROM agent_grants \
          WHERE id = $1 AND account_id = $2 AND principal_kind = $3 AND principal_id = $4",
+        &req.grant_id,
+        principal.account_id,
+        principal.kind.as_str(),
+        principal.id,
     )
-    .bind(&req.grant_id)
-    .bind(principal.account_id)
-    .bind(principal.kind.as_str())
-    .bind(principal.id)
+    .map(|row| (row.request, row.status, row.decision, row.not_after))
     .fetch_optional(&mut *conn)
     .await?;
     let Some((request, status, decision, not_after)) = row else {
@@ -682,24 +709,26 @@ async fn record_agent_event(
     if req.tool == "reveal" && req.result == "ok" {
         check_reveal(state, &principal, &req).await?;
     }
-    sqlx::query(
+    let mut tx = state.db.as_account(principal.account_id).await?;
+    sqlx::query!(
         "INSERT INTO agent_events (id, account_id, grant_id, principal_kind, principal_id, client_name, \
          tool, item_ids, target, result, ip, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+        id::new_id().map_err(internal)?,
+        principal.account_id,
+        &req.grant_id,
+        principal.kind.as_str(),
+        principal.id,
+        &client_name,
+        &req.tool,
+        req.item_ids.join(","),
+        &target,
+        &req.result,
+        ip,
+        now_ms(),
     )
-    .bind(id::new_id().map_err(internal)?)
-    .bind(principal.account_id)
-    .bind(&req.grant_id)
-    .bind(principal.kind.as_str())
-    .bind(principal.id)
-    .bind(&client_name)
-    .bind(&req.tool)
-    .bind(req.item_ids.join(","))
-    .bind(&target)
-    .bind(&req.result)
-    .bind(ip)
-    .bind(now_ms())
-    .execute(&state.db)
+    .execute(&mut *tx)
     .await?;
+    tx.commit().await?;
     // Searches are frequent and reveal nothing; they stay in the agent log.
     if req.tool != "search" {
         record_event(
@@ -796,13 +825,13 @@ pub async fn events(
         String,
         String,
         i64,
-    )> = sqlx::query_as(
+    )> = sqlx::query!(
         "SELECT id, grant_id, principal_kind, principal_id, client_name, tool, item_ids, target, result, \
          ip, created_at FROM agent_events WHERE account_id = $1 ORDER BY created_at DESC LIMIT $2",
-    )
-    .bind(&session.account_id)
-    .bind(query.limit.unwrap_or(100).clamp(1, 500))
-    .fetch_all(&state.db)
+        &session.account_id,
+        query.limit.unwrap_or(100).clamp(1, 500),
+    ).map(|row| (row.id, row.grant_id, row.principal_kind, row.principal_id, row.client_name, row.tool, row.item_ids, row.target, row.result, row.ip, row.created_at))
+    .fetch_all(&mut *state.db.as_account(&session.account_id).await?)
     .await?;
     Ok(Json(
         rows.into_iter()

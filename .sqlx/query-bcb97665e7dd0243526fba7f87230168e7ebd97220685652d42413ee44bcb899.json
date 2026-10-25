@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT manifest, signature FROM vault_manifests WHERE vault_id = $1 ORDER BY version DESC LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "manifest",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "vault_manifests",
+            "name": "manifest"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "signature",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "vault_manifests",
+            "name": "signature"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "bcb97665e7dd0243526fba7f87230168e7ebd97220685652d42413ee44bcb899"
+}

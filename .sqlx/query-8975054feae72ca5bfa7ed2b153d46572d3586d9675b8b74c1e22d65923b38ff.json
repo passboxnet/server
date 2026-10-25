@@ -1,0 +1,65 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT account_id, grant_data, grant_signature, sealed_key FROM org_recovery_grants WHERE org_id = $1 AND key_version = $2 ORDER BY account_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "account_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "org_recovery_grants",
+            "name": "account_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "grant_data",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "org_recovery_grants",
+            "name": "grant_data"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "grant_signature",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "org_recovery_grants",
+            "name": "grant_signature"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "sealed_key",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "org_recovery_grants",
+            "name": "sealed_key"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "8975054feae72ca5bfa7ed2b153d46572d3586d9675b8b74c1e22d65923b38ff"
+}

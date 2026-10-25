@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT bundle AS \"bundle!\", bundle_signature AS \"bundle_signature!\", log_seq AS \"log_seq!\"\n           FROM public_keys WHERE account_id = $1 ORDER BY key_version DESC LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "bundle!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "public_keys",
+            "name": "bundle"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "bundle_signature!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "public_keys",
+            "name": "bundle_signature"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "log_seq!",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "public_keys",
+            "name": "log_seq"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "554e8beecea55a35ea352844f80eecd119d440e7bc934d1bb9dbecf05880d991"
+}

@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT 1::BIGINT AS \"one!\" FROM org_members JOIN account_directory accounts ON accounts.id = org_members.account_id WHERE org_members.org_id = $1 AND accounts.email = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "one!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "953cdc65d3dc21e4b2ad586192e8af68f9e2bf4b2266aafaaf369cb887926e75"
+}

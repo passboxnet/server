@@ -19,12 +19,12 @@ use passbox_core::audit::{self, AuditRecord, ChainCheck, MAX_CLIENT_EVENTS, Sign
 use passbox_core::{encoding, id};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sqlx::AnyConnection;
+use sqlx::PgConnection;
 
 use super::access;
 use super::auth::Session;
 use super::validate;
-use crate::db::now_ms;
+use crate::db::{Job, now_ms};
 use crate::error::{ApiError, ApiResult};
 use crate::security::ClientIp;
 use crate::state::AppState;
@@ -98,28 +98,33 @@ struct Append<'a> {
 }
 
 async fn append(
-    conn: &mut AnyConnection,
+    conn: &mut PgConnection,
     org_id: &str,
     actor: &Actor,
     entry: Append<'_>,
 ) -> ApiResult<u64> {
-    let actor_email: String = sqlx::query_scalar("SELECT email FROM accounts WHERE id = $1")
-        .bind(&actor.account_id)
-        .fetch_optional(&mut *conn)
-        .await?
-        .unwrap_or_default();
-    sqlx::query(
+    // The actor is the current account, or (SCIM, SSO) a member of the
+    // organization: the directory has the email in both cases.
+    let actor_email: String = sqlx::query_scalar!(
+        r#"SELECT email AS "email!" FROM account_directory WHERE id = $1"#,
+        &actor.account_id,
+    )
+    .fetch_optional(&mut *conn)
+    .await?
+    .unwrap_or_default();
+    sqlx::query!(
         "INSERT INTO org_audit_heads (org_id, seq, hash, pruned_seq, pruned_hash) \
          VALUES ($1, 0, '', 0, '') ON CONFLICT (org_id) DO NOTHING",
+        org_id,
     )
-    .bind(org_id)
     .execute(&mut *conn)
     .await?;
     // The row lock orders concurrent writers of the same organization.
-    let (seq, prev_hash): (i64, String) = sqlx::query_as(
+    let (seq, prev_hash): (i64, String) = sqlx::query!(
         "UPDATE org_audit_heads SET seq = seq + 1 WHERE org_id = $1 RETURNING seq, hash",
+        org_id,
     )
-    .bind(org_id)
+    .map(|row| (row.seq, row.hash))
     .fetch_one(&mut *conn)
     .await?;
     let mut record = AuditRecord {
@@ -142,44 +147,46 @@ async fn append(
         hash: String::new(),
     };
     record.hash = record.compute_hash();
-    sqlx::query(
+    sqlx::query!(
         "INSERT INTO org_audit_events (org_id, seq, id, created_at, actor_id, actor_email, device_name, \
          client_kind, ip, action, target_type, target_id, details, client_event, client_signature, \
          client_nonce, prev_hash, hash) \
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)",
+        &record.org_id,
+        seq,
+        &record.id,
+        record.created_at,
+        &record.actor_id,
+        &record.actor_email,
+        &record.device_name,
+        &record.client_kind,
+        &record.ip,
+        &record.action,
+        &record.target_type,
+        &record.target_id,
+        &record.details,
+        &record.client_event,
+        &record.client_signature,
+        entry.client_nonce,
+        &record.prev_hash,
+        &record.hash,
     )
-    .bind(&record.org_id)
-    .bind(seq)
-    .bind(&record.id)
-    .bind(record.created_at)
-    .bind(&record.actor_id)
-    .bind(&record.actor_email)
-    .bind(&record.device_name)
-    .bind(&record.client_kind)
-    .bind(&record.ip)
-    .bind(&record.action)
-    .bind(&record.target_type)
-    .bind(&record.target_id)
-    .bind(&record.details)
-    .bind(&record.client_event)
-    .bind(&record.client_signature)
-    .bind(entry.client_nonce)
-    .bind(&record.prev_hash)
-    .bind(&record.hash)
     .execute(&mut *conn)
     .await?;
-    sqlx::query("UPDATE org_audit_heads SET hash = $1 WHERE org_id = $2")
-        .bind(&record.hash)
-        .bind(org_id)
-        .execute(&mut *conn)
-        .await?;
+    sqlx::query!(
+        "UPDATE org_audit_heads SET hash = $1 WHERE org_id = $2",
+        &record.hash,
+        org_id,
+    )
+    .execute(&mut *conn)
+    .await?;
     Ok(record.seq)
 }
 
 /// Appends a server-side entry inside the caller's transaction, so the
 /// entry exists exactly when the change does.
 pub async fn record_in(
-    conn: &mut AnyConnection,
+    conn: &mut PgConnection,
     org_id: &str,
     actor: &Actor,
     action: &str,
@@ -214,7 +221,7 @@ pub async fn record(
     details: Value,
 ) {
     let result = async {
-        let mut tx = crate::db::begin_write(&state.db).await?;
+        let mut tx = state.db.as_account(&actor.account_id).await?;
         record_in(&mut tx, org_id, actor, action, target, details).await?;
         tx.commit().await?;
         Ok::<_, ApiError>(())
@@ -261,13 +268,16 @@ pub async fn mirror_account_event(
     let Some(action) = mirrored_action(kind) else {
         return;
     };
-    let orgs: Vec<String> = match sqlx::query_scalar(
-        "SELECT org_id FROM org_members WHERE account_id = $1 AND status IN ('confirmed', 'suspended')",
-    )
-    .bind(account_id)
-    .fetch_all(&state.db)
-    .await
-    {
+    let orgs = async {
+        let mut tx = state.db.as_account(account_id).await?;
+        sqlx::query_scalar!(
+            "SELECT org_id FROM org_members WHERE account_id = $1 AND status IN ('confirmed', 'suspended')",
+            account_id,
+        )
+        .fetch_all(&mut *tx)
+        .await
+    };
+    let orgs: Vec<String> = match orgs.await {
         Ok(orgs) => orgs,
         Err(err) => {
             tracing::warn!(error = ?err, "could not look up organizations for the audit log");
@@ -376,7 +386,7 @@ fn like_prefix(value: &str) -> String {
 /// Runs a filtered query. Ascending order when paging forwards (`after`),
 /// newest first otherwise.
 pub async fn query(
-    conn: &mut AnyConnection,
+    conn: &mut PgConnection,
     org_id: &str,
     q: &AuditQuery,
     max: i64,
@@ -475,11 +485,12 @@ pub struct AuditHead {
     pub pruned_hash: String,
 }
 
-pub async fn head(conn: &mut AnyConnection, org_id: &str) -> ApiResult<AuditHead> {
-    let row: Option<(i64, String, i64, String)> = sqlx::query_as(
+pub async fn head(conn: &mut PgConnection, org_id: &str) -> ApiResult<AuditHead> {
+    let row: Option<(i64, String, i64, String)> = sqlx::query!(
         "SELECT seq, hash, pruned_seq, pruned_hash FROM org_audit_heads WHERE org_id = $1",
+        org_id,
     )
-    .bind(org_id)
+    .map(|row| (row.seq, row.hash, row.pruned_seq, row.pruned_hash))
     .fetch_optional(&mut *conn)
     .await?;
     let (seq, hash, pruned_seq, pruned_hash) = row.unwrap_or((0, String::new(), 0, String::new()));
@@ -506,7 +517,7 @@ pub async fn list(
     Query(q): Query<AuditQuery>,
 ) -> ApiResult<Json<AuditPage>> {
     validate::id("organization id", &org_id)?;
-    let mut conn = state.db.acquire().await?;
+    let mut conn = state.db.as_account(&session.account_id).await?;
     access::require_admin(&mut conn, &org_id, &session.account_id).await?;
     let events = query(&mut conn, &org_id, &q, 500).await?;
     let head = head(&mut conn, &org_id).await?;
@@ -514,7 +525,7 @@ pub async fn list(
 }
 
 /// Checks the whole remaining chain of an organization.
-pub async fn verify_org_chain(conn: &mut AnyConnection, org_id: &str) -> ApiResult<ChainCheck> {
+pub async fn verify_org_chain(conn: &mut PgConnection, org_id: &str) -> ApiResult<ChainCheck> {
     let head = head(&mut *conn, org_id).await?;
     let rows: Vec<Row> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT {COLUMNS} FROM org_audit_events WHERE org_id = $1 ORDER BY seq"
@@ -546,7 +557,7 @@ pub async fn verify(
     Path(org_id): Path<String>,
 ) -> ApiResult<Json<ChainCheck>> {
     validate::id("organization id", &org_id)?;
-    let mut conn = state.db.acquire().await?;
+    let mut conn = state.db.as_account(&session.account_id).await?;
     access::require_admin(&mut conn, &org_id, &session.account_id).await?;
     Ok(Json(verify_org_chain(&mut conn, &org_id).await?))
 }
@@ -608,7 +619,7 @@ pub async fn export(
     if format != "json" && format != "csv" {
         return Err(ApiError::bad_request("format must be csv or json"));
     }
-    let mut conn = state.db.acquire().await?;
+    let mut conn = state.db.as_account(&session.account_id).await?;
     access::require_admin(&mut conn, &org_id, &session.account_id).await?;
     q.limit = Some(100_000);
     if q.after.is_none() {
@@ -690,7 +701,7 @@ pub async fn client_events(
     ) {
         return Err(ApiError::RateLimited(wait));
     }
-    let mut tx = crate::db::begin_write(&state.db).await?;
+    let mut tx = state.db.as_account(&session.account_id).await?;
     access::require_confirmed(&mut tx, &org_id, &session.account_id).await?;
     let rules = super::org_policy::current_rules(&mut tx, &org_id).await?;
     if !rules.is_some_and(|r| r.report_item_usage) {
@@ -730,11 +741,11 @@ pub async fn client_events(
             }
         }
         let nonce = encoding::encode(&event.nonce);
-        let seen: Option<i64> = sqlx::query_scalar(
-            "SELECT 1 FROM org_audit_events WHERE org_id = $1 AND client_nonce = $2",
+        let seen: Option<i64> = sqlx::query_scalar!(
+            "SELECT 1::BIGINT AS \"one!\" FROM org_audit_events WHERE org_id = $1 AND client_nonce = $2",
+            &org_id,
+            &nonce,
         )
-        .bind(&org_id)
-        .bind(&nonce)
         .fetch_optional(&mut *tx)
         .await?;
         if seen.is_some() {
@@ -773,36 +784,41 @@ pub async fn client_events(
 /// Deletes entries older than each organization's retention setting and
 /// records the hash the first remaining entry links to.
 pub async fn apply_retention(state: &AppState) -> ApiResult<u64> {
-    let settings: Vec<(String, i64)> = sqlx::query_as(
-        "SELECT org_id, audit_retention_days FROM org_settings WHERE audit_retention_days > 0",
+    let mut tx = state.db.system(Job::AuditRetention).await?;
+    let settings: Vec<(String, i64)> = sqlx::query!(
+        "SELECT org_id, audit_retention_days FROM org_settings WHERE audit_retention_days > 0"
     )
-    .fetch_all(&state.db)
+    .map(|row| (row.org_id, row.audit_retention_days))
+    .fetch_all(&mut *tx)
     .await?;
+    drop(tx);
     let mut deleted = 0;
     for (org_id, days) in settings {
         let cutoff = now_ms() - days.saturating_mul(24 * 60 * 60 * 1000);
-        let mut tx = crate::db::begin_write(&state.db).await?;
-        let last: Option<(i64, String)> = sqlx::query_as(
+        let mut tx = state.db.system(Job::AuditRetention).await?;
+        let last: Option<(i64, String)> = sqlx::query!(
             "SELECT seq, hash FROM org_audit_events WHERE org_id = $1 AND created_at < $2 \
              ORDER BY seq DESC LIMIT 1",
+            &org_id,
+            cutoff,
         )
-        .bind(&org_id)
-        .bind(cutoff)
+        .map(|row| (row.seq, row.hash))
         .fetch_optional(&mut *tx)
         .await?;
         if let Some((seq, hash)) = last {
-            let result =
-                sqlx::query("DELETE FROM org_audit_events WHERE org_id = $1 AND seq <= $2")
-                    .bind(&org_id)
-                    .bind(seq)
-                    .execute(&mut *tx)
-                    .await?;
-            sqlx::query(
-                "UPDATE org_audit_heads SET pruned_seq = $1, pruned_hash = $2 WHERE org_id = $3",
+            let result = sqlx::query!(
+                "DELETE FROM org_audit_events WHERE org_id = $1 AND seq <= $2",
+                &org_id,
+                seq,
             )
-            .bind(seq)
-            .bind(&hash)
-            .bind(&org_id)
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query!(
+                "UPDATE org_audit_heads SET pruned_seq = $1, pruned_hash = $2 WHERE org_id = $3",
+                seq,
+                &hash,
+                &org_id,
+            )
             .execute(&mut *tx)
             .await?;
             deleted += result.rows_affected();

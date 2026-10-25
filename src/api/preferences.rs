@@ -31,14 +31,16 @@ pub struct PreferencesUpdate {
 }
 
 async fn load(state: &AppState, account_id: &str) -> ApiResult<Preferences> {
-    let (locale, notify): (String, i64) =
-        sqlx::query_as("SELECT locale, notify_new_device FROM accounts WHERE id = $1")
-            .bind(account_id)
-            .fetch_one(&state.db)
-            .await?;
+    let mut tx = state.db.as_account(account_id).await?;
+    let row = sqlx::query!(
+        "SELECT locale, notify_new_device FROM accounts WHERE id = $1",
+        account_id
+    )
+    .fetch_one(&mut *tx)
+    .await?;
     Ok(Preferences {
-        locale: Locale::parse(&locale),
-        notify_new_device: notify != 0,
+        locale: Locale::parse(&row.locale),
+        notify_new_device: row.notify_new_device,
     })
 }
 
@@ -51,6 +53,7 @@ pub async fn put(
     session: Session,
     Json(update): Json<PreferencesUpdate>,
 ) -> ApiResult<Json<Preferences>> {
+    let mut tx = state.db.as_account(&session.account_id).await?;
     if let Some(locale) = update.locale {
         let value = if locale.is_empty() {
             ""
@@ -59,18 +62,23 @@ pub async fn put(
                 .ok_or_else(|| ApiError::bad_request("locale must be en, de or empty"))?
                 .as_str()
         };
-        sqlx::query("UPDATE accounts SET locale = $1 WHERE id = $2")
-            .bind(value)
-            .bind(&session.account_id)
-            .execute(&state.db)
-            .await?;
+        sqlx::query!(
+            "UPDATE accounts SET locale = $1 WHERE id = $2",
+            value,
+            session.account_id,
+        )
+        .execute(&mut *tx)
+        .await?;
     }
     if let Some(notify) = update.notify_new_device {
-        sqlx::query("UPDATE accounts SET notify_new_device = $1 WHERE id = $2")
-            .bind(i64::from(notify))
-            .bind(&session.account_id)
-            .execute(&state.db)
-            .await?;
+        sqlx::query!(
+            "UPDATE accounts SET notify_new_device = $1 WHERE id = $2",
+            notify,
+            session.account_id,
+        )
+        .execute(&mut *tx)
+        .await?;
     }
+    tx.commit().await?;
     Ok(Json(load(&state, &session.account_id).await?))
 }

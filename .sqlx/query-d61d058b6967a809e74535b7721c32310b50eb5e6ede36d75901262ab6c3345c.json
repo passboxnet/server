@@ -1,0 +1,102 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT status, expires_at, ephemeral_key, mac, claim_device_name, claim_ip, claimed_at FROM device_links WHERE id = $1 AND account_id = $2 AND expires_at > $3",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "status",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "device_links",
+            "name": "status"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "expires_at",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "device_links",
+            "name": "expires_at"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "ephemeral_key",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "device_links",
+            "name": "ephemeral_key"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "mac",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "device_links",
+            "name": "mac"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "claim_device_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "device_links",
+            "name": "claim_device_name"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "claim_ip",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "device_links",
+            "name": "claim_ip"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "claimed_at",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "device_links",
+            "name": "claimed_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "d61d058b6967a809e74535b7721c32310b50eb5e6ede36d75901262ab6c3345c"
+}

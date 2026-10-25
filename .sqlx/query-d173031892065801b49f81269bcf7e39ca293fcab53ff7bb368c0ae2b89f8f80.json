@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO org_members (org_id, account_id, role, status, attestation, attestation_signature, invited_by, seq, created_at, updated_at) VALUES ($1, $2, 'owner', 'confirmed', NULL, NULL, $3, $4, $5, $6)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Int8",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d173031892065801b49f81269bcf7e39ca293fcab53ff7bb368c0ae2b89f8f80"
+}

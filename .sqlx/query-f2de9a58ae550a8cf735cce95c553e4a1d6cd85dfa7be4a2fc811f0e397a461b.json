@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE emergency_grants SET grantee_id = $1, status = 'accepted', updated_at = $2 WHERE id = $3",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f2de9a58ae550a8cf735cce95c553e4a1d6cd85dfa7be4a2fc811f0e397a461b"
+}

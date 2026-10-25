@@ -11,12 +11,13 @@ use passbox_core::sharing::data::{GrantRecord, GroupRecord};
 use passbox_core::sharing::objects::{GroupBundle, GroupKeyGrant, Signed};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use sqlx::AnyConnection;
+use sqlx::PgConnection;
 
 use super::access;
 use super::auth::{Session, record_event};
 use super::signed::{self, bad};
 use super::validate;
+use super::vaults::decode;
 use crate::db::{self, now_ms};
 use crate::error::{ApiError, ApiResult};
 use crate::security::ClientIp;
@@ -45,7 +46,7 @@ fn check_bundle(
 }
 
 async fn check_member_key(
-    conn: &mut AnyConnection,
+    conn: &mut PgConnection,
     upload: &GroupKeyUpload,
     bundle: &GroupBundle,
     me: &SignedBundle,
@@ -78,24 +79,24 @@ async fn check_member_key(
 }
 
 async fn insert_member_key(
-    tx: &mut sqlx::Transaction<'_, sqlx::Any>,
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     group_id: &str,
     upload: &GroupKeyUpload,
     seq: i64,
     now: i64,
 ) -> ApiResult<()> {
-    let inserted = sqlx::query(
+    let inserted = sqlx::query!(
         "INSERT INTO group_members (group_id, key_version, account_id, sealed_key, grant_data, grant_signature, \
          seq, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT DO NOTHING",
+        group_id,
+        i64::from(upload.key_version),
+        &upload.account_id,
+        decode(&upload.sealed_key)?,
+        &upload.grant,
+        &upload.grant_signature,
+        seq,
+        now,
     )
-    .bind(group_id)
-    .bind(i64::from(upload.key_version))
-    .bind(&upload.account_id)
-    .bind(&upload.sealed_key)
-    .bind(&upload.grant)
-    .bind(&upload.grant_signature)
-    .bind(seq)
-    .bind(now)
     .execute(&mut **tx)
     .await?;
     if inserted.rows_affected() == 0 {
@@ -107,10 +108,9 @@ async fn insert_member_key(
     Ok(())
 }
 
-async fn org_epoch(conn: &mut AnyConnection, org_id: &str) -> ApiResult<i64> {
+async fn org_epoch(conn: &mut PgConnection, org_id: &str) -> ApiResult<i64> {
     Ok(
-        sqlx::query_scalar("SELECT meta_epoch FROM organizations WHERE id = $1")
-            .bind(org_id)
+        sqlx::query_scalar!("SELECT meta_epoch FROM organizations WHERE id = $1", org_id,)
             .fetch_one(&mut *conn)
             .await?,
     )
@@ -147,7 +147,7 @@ pub async fn create(
             "a new group starts at key version 1 with at least its creator",
         ));
     }
-    let mut tx = db::begin_write(&state.db).await?;
+    let mut tx = state.db.as_account(&session.account_id).await?;
     access::require_admin(&mut tx, &org_id, &session.account_id).await?;
     if i64::from(req.meta_epoch) != org_epoch(&mut tx, &org_id).await? {
         return Err(ApiError::conflict(
@@ -169,19 +169,19 @@ pub async fn create(
     }
     let now = now_ms();
     let seq = db::next_seq(&mut tx).await?;
-    let inserted = sqlx::query(
+    let inserted = sqlx::query!(
         "INSERT INTO org_groups (id, org_id, key_version, bundle, bundle_signature, encrypted_meta, meta_epoch, \
          seq, created_at, updated_at) VALUES ($1, $2, 1, $3, $4, $5, $6, $7, $8, $9) ON CONFLICT DO NOTHING",
+        &req.id,
+        &org_id,
+        &req.bundle,
+        &req.bundle_signature,
+        decode(&req.encrypted_meta)?,
+        i64::from(req.meta_epoch),
+        seq,
+        now,
+        now,
     )
-    .bind(&req.id)
-    .bind(&org_id)
-    .bind(&req.bundle)
-    .bind(&req.bundle_signature)
-    .bind(&req.encrypted_meta)
-    .bind(i64::from(req.meta_epoch))
-    .bind(seq)
-    .bind(now)
-    .bind(now)
     .execute(&mut *tx)
     .await?;
     if inserted.rows_affected() == 0 {
@@ -190,14 +190,14 @@ pub async fn create(
             serde_json::Value::Null,
         ));
     }
-    sqlx::query(
+    sqlx::query!(
         "INSERT INTO group_versions (group_id, key_version, bundle, bundle_signature, created_at) \
          VALUES ($1, 1, $2, $3, $4)",
+        &req.id,
+        &req.bundle,
+        &req.bundle_signature,
+        now,
     )
-    .bind(&req.id)
-    .bind(&req.bundle)
-    .bind(&req.bundle_signature)
-    .bind(now)
     .execute(&mut *tx)
     .await?;
     for member in &req.members {
@@ -227,25 +227,26 @@ pub async fn create(
 /// The groups of an organization, as delivered by sync. Member grants are
 /// included for groups the account belongs to.
 pub async fn group_records(
-    conn: &mut AnyConnection,
+    conn: &mut PgConnection,
     org_id: &str,
     account_id: &str,
 ) -> ApiResult<Vec<GroupRecord>> {
-    let groups: Vec<(String, i64, String, String, String, i64)> = sqlx::query_as(
+    let groups: Vec<(String, i64, String, String, Vec<u8>, i64)> = sqlx::query!(
         "SELECT id, key_version, bundle, bundle_signature, encrypted_meta, meta_epoch FROM org_groups \
          WHERE org_id = $1 ORDER BY created_at",
-    )
-    .bind(org_id)
+        org_id,
+    ).map(|row| (row.id, row.key_version, row.bundle, row.bundle_signature, row.encrypted_meta, row.meta_epoch))
     .fetch_all(&mut *conn)
     .await?;
     let mut records = Vec::with_capacity(groups.len());
     for (id, key_version, bundle, bundle_signature, encrypted_meta, meta_epoch) in groups {
-        let rows: Vec<(String, String, String)> = sqlx::query_as(
+        let rows: Vec<(String, String, String)> = sqlx::query!(
             "SELECT account_id, grant_data, grant_signature FROM group_members \
              WHERE group_id = $1 AND key_version = $2 ORDER BY account_id",
+            id.as_str(),
+            key_version,
         )
-        .bind(&id)
-        .bind(key_version)
+        .map(|row| (row.account_id, row.grant_data, row.grant_signature))
         .fetch_all(&mut *conn)
         .await?;
         let is_member = rows.iter().any(|(a, _, _)| a == account_id);
@@ -255,7 +256,7 @@ pub async fn group_records(
             key_version: u32::try_from(key_version).unwrap_or_default(),
             bundle,
             bundle_signature,
-            encrypted_meta,
+            encrypted_meta: passbox_core::encoding::encode(&encrypted_meta),
             meta_epoch: u32::try_from(meta_epoch).unwrap_or_default(),
             members: rows.iter().map(|(a, _, _)| a.clone()).collect(),
             member_grants: if is_member {
@@ -280,7 +281,7 @@ pub async fn list(
     Path(org_id): Path<String>,
 ) -> ApiResult<Json<Vec<GroupRecord>>> {
     validate::id("organization id", &org_id)?;
-    let mut conn = state.db.acquire().await?;
+    let mut conn = state.db.as_account(&session.account_id).await?;
     access::require_confirmed(&mut conn, &org_id, &session.account_id).await?;
     Ok(Json(
         group_records(&mut conn, &org_id, &session.account_id).await?,
@@ -294,13 +295,15 @@ pub struct UpdateGroupRequest {
     encrypted_meta: String,
 }
 
-async fn require_group(conn: &mut AnyConnection, org_id: &str, group_id: &str) -> ApiResult<i64> {
-    sqlx::query_scalar("SELECT key_version FROM org_groups WHERE id = $1 AND org_id = $2")
-        .bind(group_id)
-        .bind(org_id)
-        .fetch_optional(&mut *conn)
-        .await?
-        .ok_or(ApiError::NotFound)
+async fn require_group(conn: &mut PgConnection, org_id: &str, group_id: &str) -> ApiResult<i64> {
+    sqlx::query_scalar!(
+        "SELECT key_version FROM org_groups WHERE id = $1 AND org_id = $2",
+        group_id,
+        org_id,
+    )
+    .fetch_optional(&mut *conn)
+    .await?
+    .ok_or(ApiError::NotFound)
 }
 
 /// Renames a group (admins).
@@ -318,7 +321,7 @@ pub async fn update(
         &req.encrypted_meta,
         validate::MAX_SMALL_LEN,
     )?;
-    let mut tx = db::begin_write(&state.db).await?;
+    let mut tx = state.db.as_account(&session.account_id).await?;
     access::require_admin(&mut tx, &org_id, &session.account_id).await?;
     require_group(&mut tx, &org_id, &group_id).await?;
     if i64::from(req.meta_epoch) != org_epoch(&mut tx, &org_id).await? {
@@ -328,12 +331,14 @@ pub async fn update(
         ));
     }
     let seq = db::next_seq(&mut tx).await?;
-    sqlx::query("UPDATE org_groups SET encrypted_meta = $1, meta_epoch = $2, seq = $3, updated_at = $4 WHERE id = $5")
-        .bind(&req.encrypted_meta)
-        .bind(i64::from(req.meta_epoch))
-        .bind(seq)
-        .bind(now_ms())
-        .bind(&group_id)
+    sqlx::query!(
+        "UPDATE org_groups SET encrypted_meta = $1, meta_epoch = $2, seq = $3, updated_at = $4 WHERE id = $5",
+        decode(&req.encrypted_meta)?,
+        i64::from(req.meta_epoch),
+        seq,
+        now_ms(),
+        &group_id,
+    )
         .execute(&mut *tx)
         .await?;
     super::org_audit::record_in(
@@ -358,13 +363,13 @@ pub async fn delete(
 ) -> ApiResult<StatusCode> {
     validate::id("organization id", &org_id)?;
     validate::id("group id", &group_id)?;
-    let mut tx = db::begin_write(&state.db).await?;
+    let mut tx = state.db.as_account(&session.account_id).await?;
     access::require_admin(&mut tx, &org_id, &session.account_id).await?;
     require_group(&mut tx, &org_id, &group_id).await?;
-    let shared: Option<i64> = sqlx::query_scalar(
-        "SELECT 1 FROM vault_members WHERE principal_type = 'group' AND principal_id = $1 LIMIT 1",
+    let shared: Option<i64> = sqlx::query_scalar!(
+        "SELECT 1::BIGINT AS \"one!\" FROM vault_members WHERE principal_type = 'group' AND principal_id = $1 LIMIT 1",
+        &group_id,
     )
-    .bind(&group_id)
     .fetch_optional(&mut *tx)
     .await?;
     if shared.is_some() {
@@ -373,8 +378,7 @@ pub async fn delete(
             serde_json::Value::Null,
         ));
     }
-    sqlx::query("DELETE FROM org_groups WHERE id = $1")
-        .bind(&group_id)
+    sqlx::query!("DELETE FROM org_groups WHERE id = $1", &group_id,)
         .execute(&mut *tx)
         .await?;
     db::next_seq(&mut tx).await?;
@@ -403,15 +407,17 @@ pub async fn add_member(
     validate::id("organization id", &org_id)?;
     validate::id("group id", &group_id)?;
     validate::id("accountId", &req.account_id)?;
-    let mut tx = db::begin_write(&state.db).await?;
+    let mut tx = state.db.as_account(&session.account_id).await?;
     access::require_admin(&mut tx, &org_id, &session.account_id).await?;
     let key_version = require_group(&mut tx, &org_id, &group_id).await?;
     let me = signed::own_bundle(&mut tx, &session.account_id).await?;
-    let (bundle, bundle_signature): (String, String) =
-        sqlx::query_as("SELECT bundle, bundle_signature FROM org_groups WHERE id = $1")
-            .bind(&group_id)
-            .fetch_one(&mut *tx)
-            .await?;
+    let (bundle, bundle_signature): (String, String) = sqlx::query!(
+        "SELECT bundle, bundle_signature FROM org_groups WHERE id = $1",
+        &group_id,
+    )
+    .map(|row| (row.bundle, row.bundle_signature))
+    .fetch_one(&mut *tx)
+    .await?;
     let bundle = Signed::<GroupBundle>::parse(&bundle, &bundle_signature)
         .map_err(|e| ApiError::Internal(anyhow::anyhow!("{e}")))?;
     if i64::from(req.key_version) != key_version {
@@ -424,11 +430,13 @@ pub async fn add_member(
     let now = now_ms();
     let seq = db::next_seq(&mut tx).await?;
     insert_member_key(&mut tx, &group_id, &req, seq, now).await?;
-    sqlx::query("UPDATE org_groups SET seq = $1 WHERE id = $2")
-        .bind(seq)
-        .bind(&group_id)
-        .execute(&mut *tx)
-        .await?;
+    sqlx::query!(
+        "UPDATE org_groups SET seq = $1 WHERE id = $2",
+        seq,
+        &group_id,
+    )
+    .execute(&mut *tx)
+    .await?;
     super::org_audit::record_in(
         &mut tx,
         &org_id,
@@ -467,7 +475,7 @@ pub async fn rotate(
 ) -> ApiResult<Json<GroupWrite>> {
     validate::id("organization id", &org_id)?;
     validate::id("group id", &group_id)?;
-    let mut tx = db::begin_write(&state.db).await?;
+    let mut tx = state.db.as_account(&session.account_id).await?;
     access::require_admin(&mut tx, &org_id, &session.account_id).await?;
     let key_version = require_group(&mut tx, &org_id, &group_id).await?;
     if i64::from(req.key_version) != key_version + 1 {
@@ -485,11 +493,11 @@ pub async fn rotate(
         &group_id,
         req.key_version,
     )?;
-    let current: Vec<String> = sqlx::query_scalar(
+    let current: Vec<String> = sqlx::query_scalar!(
         "SELECT account_id FROM group_members WHERE group_id = $1 AND key_version = $2 ORDER BY account_id",
+        &group_id,
+        key_version,
     )
-    .bind(&group_id)
-    .bind(key_version)
     .fetch_all(&mut *tx)
     .await?;
     let mut expected: Vec<String> = current
@@ -518,51 +526,55 @@ pub async fn rotate(
     }
     let now = now_ms();
     let seq = db::next_seq(&mut tx).await?;
-    sqlx::query(
+    sqlx::query!(
         "UPDATE org_groups SET key_version = $1, bundle = $2, bundle_signature = $3, seq = $4, updated_at = $5 \
          WHERE id = $6",
+        i64::from(req.key_version),
+        &req.bundle,
+        &req.bundle_signature,
+        seq,
+        now,
+        &group_id,
     )
-    .bind(i64::from(req.key_version))
-    .bind(&req.bundle)
-    .bind(&req.bundle_signature)
-    .bind(seq)
-    .bind(now)
-    .bind(&group_id)
     .execute(&mut *tx)
     .await?;
-    sqlx::query(
+    sqlx::query!(
         "INSERT INTO group_versions (group_id, key_version, bundle, bundle_signature, created_at) \
          VALUES ($1, $2, $3, $4, $5)",
+        &group_id,
+        i64::from(req.key_version),
+        &req.bundle,
+        &req.bundle_signature,
+        now,
     )
-    .bind(&group_id)
-    .bind(i64::from(req.key_version))
-    .bind(&req.bundle)
-    .bind(&req.bundle_signature)
-    .bind(now)
     .execute(&mut *tx)
     .await?;
     for account in &req.removed {
-        sqlx::query("DELETE FROM group_members WHERE group_id = $1 AND account_id = $2")
-            .bind(&group_id)
-            .bind(account)
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query!(
+            "DELETE FROM group_members WHERE group_id = $1 AND account_id = $2",
+            &group_id,
+            account,
+        )
+        .execute(&mut *tx)
+        .await?;
     }
     for member in &req.members {
         insert_member_key(&mut tx, &group_id, member, seq, now).await?;
     }
-    let vaults: Vec<String> = sqlx::query_scalar(
+    let vaults: Vec<String> = sqlx::query_scalar!(
         "SELECT vault_id FROM vault_members WHERE principal_type = 'group' AND principal_id = $1",
+        &group_id,
     )
-    .bind(&group_id)
     .fetch_all(&mut *tx)
     .await?;
     for vault in &vaults {
-        sqlx::query("UPDATE vaults SET rotation_pending = 1, seq = $1 WHERE id = $2")
-            .bind(seq)
-            .bind(vault)
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query!(
+            "UPDATE vaults SET rotation_pending = true, seq = $1 WHERE id = $2",
+            seq,
+            vault,
+        )
+        .execute(&mut *tx)
+        .await?;
     }
     super::org_audit::record_in(
         &mut tx,

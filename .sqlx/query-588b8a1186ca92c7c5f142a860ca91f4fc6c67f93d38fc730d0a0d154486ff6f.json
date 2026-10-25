@@ -1,0 +1,35 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT current_user::text AS \"role!\", r.rolsuper OR r.rolbypassrls AS \"bypass!\",\n                      c.relowner = r.oid AND NOT c.relforcerowsecurity AS \"owner_unforced!\"\n               FROM pg_roles r, pg_class c\n               WHERE r.rolname = current_user AND c.oid = 'public.accounts'::regclass",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "role!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "bypass!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "owner_unforced!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "588b8a1186ca92c7c5f142a860ca91f4fc6c67f93d38fc730d0a0d154486ff6f"
+}

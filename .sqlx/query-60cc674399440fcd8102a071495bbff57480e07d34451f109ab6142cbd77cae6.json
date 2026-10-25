@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM vault_keys WHERE vault_id = $1 AND key_epoch = $2 AND principal_type = $3 AND principal_id = $4",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "60cc674399440fcd8102a071495bbff57480e07d34451f109ab6142cbd77cae6"
+}

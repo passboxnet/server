@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE org_groups SET seq = $1 WHERE id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c58156e21c5937fb4bf6baa1187e8acc0cb3b1fcb1f1b9b4d2ad7c2c9f9ff63a"
+}

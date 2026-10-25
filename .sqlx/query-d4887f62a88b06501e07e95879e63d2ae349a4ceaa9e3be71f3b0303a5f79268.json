@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE org_event_tokens SET revoked_at = $1 WHERE id = $2 AND org_id = $3 AND revoked_at = 0",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d4887f62a88b06501e07e95879e63d2ae349a4ceaa9e3be71f3b0303a5f79268"
+}

@@ -1,0 +1,53 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT account_id, grant_data, grant_signature FROM group_members WHERE group_id = $1 AND key_version = $2 ORDER BY account_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "account_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "group_members",
+            "name": "account_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "grant_data",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "group_members",
+            "name": "grant_data"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "grant_signature",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "group_members",
+            "name": "grant_signature"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "8d02cb2588c7553b3b26b1a63fa63e7be91474d0996e01bcca1f107ed12659a2"
+}

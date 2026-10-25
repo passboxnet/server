@@ -1,0 +1,41 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT key_version, created_at FROM org_recovery_escrows WHERE org_id = $1 AND account_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "key_version",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "org_recovery_escrows",
+            "name": "key_version"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "created_at",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "org_recovery_escrows",
+            "name": "created_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "de36e4af56249d39050f6e25a72be45d1534c64619802e268637dd8d8cbb9121"
+}

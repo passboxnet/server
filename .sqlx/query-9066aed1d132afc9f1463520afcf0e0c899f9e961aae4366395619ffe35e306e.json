@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT COUNT(*) AS \"count!\" FROM service_accounts sa WHERE sa.revoked_at = 0 AND (sa.expires_at = 0 OR sa.expires_at > $2) AND sa.account_id IN (SELECT account_id FROM org_members WHERE org_id = $1 AND status = 'confirmed' AND role <> 'guest')",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "9066aed1d132afc9f1463520afcf0e0c899f9e961aae4366395619ffe35e306e"
+}

@@ -1,0 +1,64 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT vm.vault_id, vm.principal_type, vm.principal_id, vm.role FROM vault_members vm JOIN vaults v ON v.id = vm.vault_id WHERE v.org_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "vault_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "vault_members",
+            "name": "vault_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "principal_type",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "vault_members",
+            "name": "principal_type"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "principal_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "vault_members",
+            "name": "principal_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "role",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "vault_members",
+            "name": "role"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "7fd8ad9fc563b8ac9fe73d008c16be32ac080a05c52045b77ddbbb1c3e7c9cf2"
+}

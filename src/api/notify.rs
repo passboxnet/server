@@ -33,21 +33,24 @@ async fn new_device(
     ip: &str,
     now: i64,
 ) -> anyhow::Result<()> {
-    let notify: Option<i64> =
-        sqlx::query_scalar("SELECT notify_new_device FROM accounts WHERE id = $1")
-            .bind(account_id)
-            .fetch_optional(&state.db)
-            .await?;
-    if notify.unwrap_or(0) == 0 {
+    let mut tx = state.db.as_account(account_id).await?;
+    let notify = sqlx::query_scalar!(
+        "SELECT notify_new_device FROM accounts WHERE id = $1",
+        account_id
+    )
+    .fetch_optional(&mut *tx)
+    .await?;
+    if !notify.unwrap_or(false) {
         return Ok(());
     }
     // Called before this login is recorded in the activity log.
-    let signed_in_before: Option<i64> = sqlx::query_scalar(
-        "SELECT 1 FROM account_events WHERE account_id = $1 AND kind = 'login' LIMIT 1",
+    let signed_in_before = sqlx::query_scalar!(
+        r#"SELECT 1 AS "found!" FROM account_events WHERE account_id = $1 AND kind = 'login' LIMIT 1"#,
+        account_id
     )
-    .bind(account_id)
-    .fetch_optional(&state.db)
+    .fetch_optional(&mut *tx)
     .await?;
+    drop(tx);
     if signed_in_before.is_none() {
         return Ok(());
     }

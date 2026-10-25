@@ -1,0 +1,88 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT vault_id, key_epoch, permission, sealed_key, grant_data, grant_signature FROM service_account_grants WHERE service_account_id = $1 ORDER BY vault_id, key_epoch",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "vault_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "service_account_grants",
+            "name": "vault_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "key_epoch",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "service_account_grants",
+            "name": "key_epoch"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "permission",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "service_account_grants",
+            "name": "permission"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "sealed_key",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "service_account_grants",
+            "name": "sealed_key"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "grant_data",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "service_account_grants",
+            "name": "grant_data"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "grant_signature",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "service_account_grants",
+            "name": "grant_signature"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "aedbca83537a7bbb88e651d7b29e810537a852f0f2831f2f1d88fedaa743d31f"
+}

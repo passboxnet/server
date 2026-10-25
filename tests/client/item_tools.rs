@@ -2,7 +2,6 @@
 //! bulk changes against an in-process server (icons from a fake fetcher, no
 //! network access).
 
-use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -11,8 +10,6 @@ use passbox_client::{
     UsageKind, field,
 };
 use passbox_server::api::icons::{Icon, IconFetcher, IconService};
-use passbox_server::config::Config;
-use passbox_server::state::AppState;
 
 struct FakeIcons(Arc<AtomicUsize>);
 
@@ -27,25 +24,9 @@ impl IconFetcher for FakeIcons {
 }
 
 fn start_server(fetches: Arc<AtomicUsize>) -> String {
-    let (tx, rx) = std::sync::mpsc::channel::<SocketAddr>();
-    std::thread::spawn(move || {
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        runtime.block_on(async move {
-            let db = passbox_server::db::connect("sqlite::memory:")
-                .await
-                .unwrap();
-            let mut state = AppState::load(db).await.unwrap();
-            state.icons = Arc::new(IconService::new(true, Arc::new(FakeIcons(fetches))));
-            let app = passbox_server::routes::router(&Config::default(), state);
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-            tx.send(listener.local_addr().unwrap()).unwrap();
-            axum::serve(listener, app).await.unwrap();
-        });
-    });
-    format!("http://{}", rx.recv().unwrap())
+    passbox_server::testing::spawn_server(move |state, _| {
+        state.icons = Arc::new(IconService::new(true, Arc::new(FakeIcons(fetches))));
+    })
 }
 
 const PASSWORD: &str = "correct horse battery staple";

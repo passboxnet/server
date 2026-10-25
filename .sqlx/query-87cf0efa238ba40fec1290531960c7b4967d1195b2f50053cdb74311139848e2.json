@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE recovery_sessions SET two_factor_pending = false WHERE token_hash = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "87cf0efa238ba40fec1290531960c7b4967d1195b2f50053cdb74311139848e2"
+}

@@ -1,0 +1,53 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id, verified_at, code_sent_at FROM breach_monitor_emails WHERE account_id = $1 AND email = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "breach_monitor_emails",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "verified_at",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "breach_monitor_emails",
+            "name": "verified_at"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "code_sent_at",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "breach_monitor_emails",
+            "name": "code_sent_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "ccf3c5e43d4789042ef44bdcf3bb904baacb141d7923ee6eb8d075ad436a1b10"
+}

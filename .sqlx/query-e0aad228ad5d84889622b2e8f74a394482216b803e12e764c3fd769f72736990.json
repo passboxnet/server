@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT bundle AS \"bundle!\", bundle_signature AS \"bundle_signature!\" FROM public_keys\n           WHERE account_id = $1 ORDER BY key_version DESC LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "bundle!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "public_keys",
+            "name": "bundle"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "bundle_signature!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "public_keys",
+            "name": "bundle_signature"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      true,
+      true
+    ]
+  },
+  "hash": "e0aad228ad5d84889622b2e8f74a394482216b803e12e764c3fd769f72736990"
+}

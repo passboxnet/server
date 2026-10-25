@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT org_sso.org_id FROM org_sso JOIN org_members ON org_members.org_id = org_sso.org_id WHERE org_members.account_id = $1 AND org_sso.enabled = true AND org_sso.required = true AND org_members.role = 'member'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "org_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "org_sso",
+            "name": "org_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "d232e1cb505155578fc250396b770dbd4aeb7b7f4f7f10d20035365f18b11583"
+}

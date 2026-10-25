@@ -1,0 +1,31 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT passbox.org_recovery_open_request($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "org_recovery_open_request",
+        "type_info": "Void",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "7d47fdeb1265e80da9c3721db45eb05cbfd195c90b3ecd43f40f792e5ce87c8f"
+}

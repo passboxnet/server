@@ -1,0 +1,78 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE mail_outbox SET locked_until = $1 WHERE id = $2 AND status = 'pending'\n                   AND locked_until <= $3\n                   RETURNING recipient, template, locale, params, attempts",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "recipient",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "mail_outbox",
+            "name": "recipient"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "template",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "mail_outbox",
+            "name": "template"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "locale",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "mail_outbox",
+            "name": "locale"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "params",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "mail_outbox",
+            "name": "params"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "attempts",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "mail_outbox",
+            "name": "attempts"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "cc442319904df16e38ec1dc9cd44c785d008204d03dca8a8acc236492daeb440"
+}

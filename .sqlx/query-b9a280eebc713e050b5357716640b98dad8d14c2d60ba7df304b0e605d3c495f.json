@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM breach_monitor_results WHERE email_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b9a280eebc713e050b5357716640b98dad8d14c2d60ba7df304b0e605d3c495f"
+}

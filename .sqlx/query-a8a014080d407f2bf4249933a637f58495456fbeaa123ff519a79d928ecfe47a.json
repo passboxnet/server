@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT account_id, org_id, key_epoch FROM vaults WHERE id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "account_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "vaults",
+            "name": "account_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "org_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "vaults",
+            "name": "org_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "key_epoch",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "vaults",
+            "name": "key_epoch"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "a8a014080d407f2bf4249933a637f58495456fbeaa123ff519a79d928ecfe47a"
+}

@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE org_webhooks SET failures = failures + 1, next_attempt_at = $1, locked_until = 0, last_status = $2, last_error = $3 WHERE id = $4",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "67479914daed5c6cf65da77b34874a59afc73f5f301f9355e1c1af980c8d4f9b"
+}

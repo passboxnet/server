@@ -1,0 +1,76 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT revision, key_epoch, encrypted_data, updated_at, updated_by FROM item_versions WHERE item_id = $1 ORDER BY revision DESC",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "revision",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "item_versions",
+            "name": "revision"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "key_epoch",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "item_versions",
+            "name": "key_epoch"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "encrypted_data",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "item_versions",
+            "name": "encrypted_data"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "updated_at",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "item_versions",
+            "name": "updated_at"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "updated_by",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "item_versions",
+            "name": "updated_by"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "61d84ef90c40e25266e8eb635d8e4941ddee0bbec848a500fc80d37c48e37931"
+}

@@ -1,0 +1,124 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT org_members.account_id, org_members.role, org_members.status,\n                  accounts.email AS \"email!\", public_keys.bundle AS \"bundle?\",\n                  public_keys.bundle_signature AS \"bundle_signature?\", org_members.attestation,\n                  org_members.attestation_signature, org_members.seq FROM org_members\n             JOIN account_directory accounts ON accounts.id = org_members.account_id\n             LEFT JOIN public_keys ON public_keys.account_id = org_members.account_id\n             WHERE org_members.org_id = $1 ORDER BY org_members.created_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "account_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "org_members",
+            "name": "account_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "role",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "org_members",
+            "name": "role"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "status",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "org_members",
+            "name": "status"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "email!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "account_directory",
+            "name": "email"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "bundle?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "public_keys",
+            "name": "bundle"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "bundle_signature?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "public_keys",
+            "name": "bundle_signature"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "attestation",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "org_members",
+            "name": "attestation"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "attestation_signature",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "org_members",
+            "name": "attestation_signature"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "seq",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "org_members",
+            "name": "seq"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "920927084536f8b1794c17a652d7cacaa288462cfcb8ac1a90835dfa9992a80d"
+}

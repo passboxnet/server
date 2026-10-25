@@ -432,7 +432,7 @@ async fn new_device_mails(server: &TestServer, member: &Client) {
         before + 1
     );
     let params: String = sqlx::query_scalar(
-        "SELECT params FROM mail_outbox WHERE recipient = $1 AND template = 'new_device' \
+        "SELECT params::text FROM mail_outbox WHERE recipient = $1 AND template = 'new_device' \
          ORDER BY created_at DESC LIMIT 1",
     )
     .bind(&member.email)
@@ -526,7 +526,7 @@ async fn test_mail_and_outbox(server: &TestServer, owner: &Client, admin: &str) 
     assert_eq!(settings["mail"]["pending"], 0);
     assert!(settings["mail"]["lastSentAt"].as_i64().unwrap() > 0);
     let leftover: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM mail_outbox WHERE status = 'sent' AND params <> '{}'",
+        "SELECT COUNT(*) FROM mail_outbox WHERE status = 'sent' AND params <> '{}'::jsonb",
     )
     .fetch_one(server.db())
     .await

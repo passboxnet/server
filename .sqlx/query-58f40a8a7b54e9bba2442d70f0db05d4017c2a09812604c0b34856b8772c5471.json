@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM service_account_grants WHERE service_account_id = $1 AND vault_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "58f40a8a7b54e9bba2442d70f0db05d4017c2a09812604c0b34856b8772c5471"
+}

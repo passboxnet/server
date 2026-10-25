@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE breach_monitor_emails SET verified_at = $1, code_hash = '', code_expires_at = 0 WHERE id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a1d0cbc72751f8e843c0bbcd3e57891571faebb5367b27550ea098eaba267374"
+}

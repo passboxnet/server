@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT passbox.admin_event_hash($1)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "admin_event_hash",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "4b58fe0510807f5189f6fdfd5745c8c990797f1f445cf315f5837c65202801d4"
+}

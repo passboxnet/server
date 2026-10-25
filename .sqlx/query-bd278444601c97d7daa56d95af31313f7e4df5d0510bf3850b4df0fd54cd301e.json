@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE instance_invites SET used_at = $1 WHERE id = $2 AND used_at = 0",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "bd278444601c97d7daa56d95af31313f7e4df5d0510bf3850b4df0fd54cd301e"
+}

@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM device_links WHERE claim_token_hash = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b8fe0ddbaae67f59d24e367f1f510a423d258eb14f1d9eb933daf8f0edbc2086"
+}

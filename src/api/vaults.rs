@@ -9,10 +9,15 @@ use serde_json::json;
 
 use super::auth::{NewVaultRequest, Session};
 use super::validate;
-use crate::db::{self, now_ms};
+use crate::db::{self, Conn, now_ms};
 use crate::error::{ApiError, ApiResult};
 use crate::security::ClientIp;
 use crate::state::AppState;
+
+/// Decodes Base64url the handler already validated (for `BYTEA` columns).
+pub(crate) fn decode(text: &str) -> ApiResult<Vec<u8>> {
+    passbox_core::encoding::decode(text).map_err(|_| ApiError::bad_request("invalid Base64url"))
+}
 
 pub fn validate_new_vault(vault: &NewVaultRequest) -> ApiResult<()> {
     validate::id("vault id", &vault.id)?;
@@ -29,25 +34,25 @@ pub fn validate_new_vault(vault: &NewVaultRequest) -> ApiResult<()> {
     Ok(())
 }
 
+/// Inserts a personal vault (validated with [`validate_new_vault`]).
 pub async fn insert_vault(
-    tx: &mut sqlx::Transaction<'_, sqlx::Any>,
+    conn: &mut Conn,
     account_id: &str,
     vault: &NewVaultRequest,
     now: i64,
 ) -> ApiResult<i64> {
-    let seq = db::next_seq(tx).await?;
-    let inserted = sqlx::query(
+    let seq = db::next_seq(conn).await?;
+    let inserted = sqlx::query!(
         "INSERT INTO vaults (id, account_id, encrypted_key, encrypted_meta, revision, seq, created_at, updated_at) \
-         VALUES ($1, $2, $3, $4, 1, $5, $6, $7) ON CONFLICT DO NOTHING",
+         VALUES ($1, $2, $3, $4, 1, $5, $6, $6) ON CONFLICT DO NOTHING",
+        vault.id,
+        account_id,
+        decode(&vault.encrypted_key)?,
+        decode(&vault.encrypted_meta)?,
+        seq,
+        now,
     )
-    .bind(&vault.id)
-    .bind(account_id)
-    .bind(&vault.encrypted_key)
-    .bind(&vault.encrypted_meta)
-    .bind(seq)
-    .bind(now)
-    .bind(now)
-    .execute(&mut **tx)
+    .execute(conn)
     .await?;
     if inserted.rows_affected() == 0 {
         return Err(ApiError::conflict(
@@ -71,7 +76,7 @@ pub async fn create(
     Json(req): Json<NewVaultRequest>,
 ) -> ApiResult<(StatusCode, Json<WriteResponse>)> {
     validate_new_vault(&req)?;
-    let mut tx = crate::db::begin_write(&state.db).await?;
+    let mut tx = state.db.as_account(&session.account_id).await?;
     // Policy D2: organizations can turn personal vaults off.
     super::org_policy::ensure_personal_vaults_allowed(&mut tx, &session.account_id).await?;
     let seq = insert_vault(&mut tx, &session.account_id, &req, now_ms()).await?;
@@ -108,7 +113,7 @@ pub async fn update(
         validate::MAX_SMALL_LEN,
     )?;
 
-    let mut tx = crate::db::begin_write(&state.db).await?;
+    let mut tx = state.db.as_account(&session.account_id).await?;
     let mut shared_org = None;
     match super::access::vault_access(&mut tx, &vault_id, &session.account_id).await? {
         None => return Err(ApiError::NotFound),
@@ -126,10 +131,12 @@ pub async fn update(
             }
         }
     }
-    let current: i64 = sqlx::query_scalar("SELECT revision FROM vaults WHERE id = $1")
-        .bind(&vault_id)
-        .fetch_one(&mut *tx)
-        .await?;
+    let current = sqlx::query_scalar!(
+        "SELECT revision FROM vaults WHERE id = $1 FOR UPDATE",
+        vault_id
+    )
+    .fetch_one(&mut *tx)
+    .await?;
     if req.revision != current + 1 {
         return Err(ApiError::conflict(
             "vault was changed by another device",
@@ -137,14 +144,16 @@ pub async fn update(
         ));
     }
     let seq = db::next_seq(&mut tx).await?;
-    sqlx::query("UPDATE vaults SET encrypted_meta = $1, revision = $2, seq = $3, updated_at = $4 WHERE id = $5")
-        .bind(&req.encrypted_meta)
-        .bind(req.revision)
-        .bind(seq)
-        .bind(now_ms())
-        .bind(&vault_id)
-        .execute(&mut *tx)
-        .await?;
+    sqlx::query!(
+        "UPDATE vaults SET encrypted_meta = $1, revision = $2, seq = $3, updated_at = $4 WHERE id = $5",
+        decode(&req.encrypted_meta)?,
+        req.revision,
+        seq,
+        now_ms(),
+        vault_id,
+    )
+    .execute(&mut *tx)
+    .await?;
     if let Some(org_id) = &shared_org {
         super::org_audit::record_in(
             &mut tx,

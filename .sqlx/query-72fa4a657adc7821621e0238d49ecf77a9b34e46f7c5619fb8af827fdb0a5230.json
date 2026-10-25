@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT org_id FROM org_members WHERE account_id = $1 AND status = 'confirmed' AND role <> 'guest' ORDER BY org_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "org_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "org_members",
+            "name": "org_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "72fa4a657adc7821621e0238d49ecf77a9b34e46f7c5619fb8af827fdb0a5230"
+}

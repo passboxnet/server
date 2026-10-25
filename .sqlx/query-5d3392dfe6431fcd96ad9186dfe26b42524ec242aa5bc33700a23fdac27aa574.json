@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT 1 AS \"found!\" FROM device_tokens d JOIN accounts a ON a.id = d.account_id\n           WHERE d.token_hash = $1 AND a.email = $2 AND d.expires_at > $3",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "found!",
+        "type_info": "Int4",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "5d3392dfe6431fcd96ad9186dfe26b42524ec242aa5bc33700a23fdac27aa574"
+}

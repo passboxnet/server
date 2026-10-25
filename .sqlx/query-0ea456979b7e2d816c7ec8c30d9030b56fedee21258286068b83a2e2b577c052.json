@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE org_groups SET key_version = $1, bundle = $2, bundle_signature = $3, seq = $4, updated_at = $5 WHERE id = $6",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text",
+        "Text",
+        "Int8",
+        "Int8",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0ea456979b7e2d816c7ec8c30d9030b56fedee21258286068b83a2e2b577c052"
+}

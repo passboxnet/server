@@ -2,7 +2,6 @@
 //! proxy and email breach monitoring against an in-process server whose
 //! Have I Been Pwned upstream is fake (no network access).
 
-use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -11,8 +10,6 @@ use passbox_client::{
     field,
 };
 use passbox_server::api::breach::{BreachService, BreachUpstream, HibpBreach, UpstreamError};
-use passbox_server::config::Config;
-use passbox_server::state::AppState;
 
 struct FakeHibp(Arc<AtomicUsize>);
 
@@ -43,47 +40,31 @@ impl BreachUpstream for FakeHibp {
 /// Starts a server; returns its URL and a function that reads the last
 /// confirmation code mailed to an address.
 fn start_server(ranges: Arc<AtomicUsize>) -> (String, impl Fn(&str) -> String) {
-    let (tx, rx) = std::sync::mpsc::channel::<SocketAddr>();
     let (ask, questions) = std::sync::mpsc::channel::<(String, std::sync::mpsc::Sender<String>)>();
-    std::thread::spawn(move || {
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        runtime.block_on(async move {
-            let db = passbox_server::db::connect("sqlite::memory:")
+    let url = passbox_server::testing::spawn_server(move |state, database| {
+        state.breach = Arc::new(BreachService::new(true, true, Arc::new(FakeHibp(ranges))));
+        // Reads the mailed codes past row level security, as the owner.
+        let owner = database.owner.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((email, answer)) = questions.try_recv() else {
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                    continue;
+                };
+                let (params,): (serde_json::Value,) = sqlx::query_as(
+                    "SELECT params FROM mail_outbox WHERE recipient = $1 \
+                     AND template = 'breach_monitor_code' ORDER BY created_at DESC LIMIT 1",
+                )
+                .bind(&email)
+                .fetch_one(&owner)
                 .await
                 .unwrap();
-            let mut state = AppState::load(db).await.unwrap();
-            state.breach = Arc::new(BreachService::new(true, true, Arc::new(FakeHibp(ranges))));
-            let app = passbox_server::routes::router(&Config::default(), state.clone());
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-            tx.send(listener.local_addr().unwrap()).unwrap();
-            let db = state.db.clone();
-            tokio::spawn(async move {
-                loop {
-                    let Ok((email, answer)) = questions.try_recv() else {
-                        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-                        continue;
-                    };
-                    let (params,): (String,) = sqlx::query_as(
-                        "SELECT params FROM mail_outbox WHERE recipient = $1 \
-                         AND template = 'breach_monitor_code' ORDER BY created_at DESC LIMIT 1",
-                    )
-                    .bind(&email)
-                    .fetch_one(&db)
-                    .await
+                answer
+                    .send(params["code"].as_str().unwrap().to_owned())
                     .unwrap();
-                    let params: serde_json::Value = serde_json::from_str(&params).unwrap();
-                    answer
-                        .send(params["code"].as_str().unwrap().to_owned())
-                        .unwrap();
-                }
-            });
-            axum::serve(listener, app).await.unwrap();
+            }
         });
     });
-    let url = format!("http://{}", rx.recv().unwrap());
     let code = move |email: &str| {
         let (answer, receive) = std::sync::mpsc::channel();
         ask.send((email.to_owned(), answer)).unwrap();

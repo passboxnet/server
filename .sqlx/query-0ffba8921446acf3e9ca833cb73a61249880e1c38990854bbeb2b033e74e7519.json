@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE org_invitations SET status = 'revoked' WHERE id = $1 AND org_id = $2 AND status = 'pending'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0ffba8921446acf3e9ca833cb73a61249880e1c38990854bbeb2b033e74e7519"
+}

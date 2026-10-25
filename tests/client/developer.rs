@@ -3,7 +3,6 @@
 //! `PASSBOX_TEST_DATABASE_URL` is set.
 
 use std::collections::BTreeMap;
-use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -13,41 +12,15 @@ use passbox_client::{
     Client, Error, FieldType, ItemCategory, ItemData, MemoryStore, ServiceAccountClient, field,
 };
 use passbox_core::service_account::Permission;
-use passbox_server::config::Config;
-use passbox_server::state::AppState;
 
 const PASSWORD: &str = "correct horse battery staple";
 
-fn start_server(database_url: String) -> String {
-    let (tx, rx) = std::sync::mpsc::channel::<SocketAddr>();
-    std::thread::spawn(move || {
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        runtime.block_on(async move {
-            let db = passbox_server::db::connect(&database_url).await.unwrap();
-            let mut state = AppState::load(db).await.unwrap();
-            state.auth_rate_limit = 1000;
-            let app = passbox_server::routes::router(&Config::default(), state);
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-            tx.send(listener.local_addr().unwrap()).unwrap();
-            axum::serve(listener, app).await.unwrap();
-        });
-    });
-    format!("http://{}", rx.recv().unwrap())
+fn start_server() -> String {
+    passbox_server::testing::spawn_server(|state, _| state.auth_rate_limit = 1000)
 }
 
 fn email() -> String {
     format!("{}@example.com", passbox_core::id::new_id().unwrap())
-}
-
-fn database_urls() -> Vec<String> {
-    let mut urls = vec!["sqlite::memory:".to_owned()];
-    if let Ok(url) = std::env::var("PASSBOX_TEST_DATABASE_URL") {
-        urls.push(url);
-    }
-    urls
 }
 
 fn owner(server: &str) -> (Client, String) {
@@ -74,9 +47,7 @@ fn owner(server: &str) -> (Client, String) {
 
 #[test]
 fn service_accounts() {
-    for url in database_urls() {
-        service_accounts_on(&start_server(url));
-    }
+    service_accounts_on(&start_server());
 }
 
 fn service_accounts_on(server: &str) {
@@ -165,9 +136,7 @@ fn approve_in_background(owner: Arc<Client>, approve: bool, rounds: usize) {
 
 #[test]
 fn agent_broker() {
-    for url in database_urls() {
-        agent_broker_on(&start_server(url));
-    }
+    agent_broker_on(&start_server());
 }
 
 fn agent_broker_on(server: &str) {
@@ -362,7 +331,7 @@ fn agent_broker_on(server: &str) {
 
 #[test]
 fn signed_in_account_as_agent_backend() {
-    let server = start_server("sqlite::memory:".into());
+    let server = start_server();
     let (owner, _vault) = owner(&server);
     let owner = Arc::new(owner);
     // The broker on the account itself (pbx mcp without a token); the

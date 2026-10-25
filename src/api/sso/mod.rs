@@ -23,14 +23,14 @@ use axum::http::StatusCode;
 use passbox_core::aead::SymmetricKey;
 use passbox_core::{encoding, random};
 use serde::{Deserialize, Serialize};
-use sqlx::AnyConnection;
+use sqlx::PgConnection;
 
 pub use self::oidc::allow_http_loopback;
 use self::oidc::{Discovery, FetchError, TokenAuth};
 use super::access;
 use super::auth::{Session, record_event};
 use super::validate;
-use crate::db::{self, now_ms};
+use crate::db::now_ms;
 use crate::error::{ApiError, ApiResult};
 use crate::security::ClientIp;
 use crate::state::AppState;
@@ -62,20 +62,19 @@ fn fetch_error(error: FetchError) -> ApiError {
 /// sits in `server_secrets` like the two-factor key: this protects against
 /// leaks of single tables or exports, not a full database copy.
 async fn sso_key(db: &crate::db::Db) -> ApiResult<SymmetricKey> {
-    let candidate =
-        encoding::encode(&random::bytes::<32>().map_err(|e| ApiError::Internal(e.into()))?);
-    sqlx::query(
+    let candidate = random::bytes::<32>().map_err(|e| ApiError::Internal(e.into()))?;
+    let mut tx = db.system(crate::db::Job::Secrets).await?;
+    sqlx::query!(
         "INSERT INTO server_secrets (name, value) VALUES ('sso_key', $1) ON CONFLICT (name) DO NOTHING",
+        candidate.as_slice(),
     )
-    .bind(&candidate)
-    .execute(db)
+    .execute(&mut *tx)
     .await?;
-    let stored: String =
-        sqlx::query_scalar("SELECT value FROM server_secrets WHERE name = 'sso_key'")
-            .fetch_one(db)
-            .await?;
-    let bytes: [u8; 32] = encoding::decode(&stored)
-        .ok()
+    let stored = sqlx::query_scalar!("SELECT value FROM server_secrets WHERE name = 'sso_key'")
+        .fetch_one(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    let bytes: [u8; 32] = Some(stored)
         .and_then(|b| b.try_into().ok())
         .ok_or_else(|| ApiError::Internal(anyhow::anyhow!("corrupt sso_key")))?;
     Ok(SymmetricKey::from_bytes(bytes))
@@ -182,55 +181,51 @@ impl StoredConfig {
 }
 
 pub(crate) async fn load_config(
-    conn: &mut AnyConnection,
+    conn: &mut PgConnection,
     org_id: &str,
 ) -> ApiResult<Option<StoredConfig>> {
-    use sqlx::Row;
-    let row = sqlx::query(
+    let row = sqlx::query!(
         "SELECT org_id, enabled, required, allow_device_unlock, provider, display_name, issuer, client_id, \
          encrypted_client_secret, token_auth_method, scopes, email_claim, require_verified_email, name_claim, \
          groups_claim, allowed_domains, reauth_hours, discovery, jwks, jwks_fetched_at, updated_at \
          FROM org_sso WHERE org_id = $1",
+        org_id,
     )
-    .bind(org_id)
     .fetch_optional(&mut *conn)
     .await?;
     let Some(row) = row else {
         return Ok(None);
     };
-    let text = |name: &str| row.try_get::<String, _>(name);
-    let number = |name: &str| row.try_get::<i64, _>(name);
-    let discovery: String = text("discovery")?;
-    let allowed_domains: String = text("allowed_domains")?;
     Ok(Some(StoredConfig {
-        org_id: text("org_id")?,
+        org_id: row.org_id,
         settings: SsoSettings {
-            enabled: number("enabled")? != 0,
-            required: number("required")? != 0,
-            allow_device_unlock: number("allow_device_unlock")? != 0,
-            provider: text("provider")?,
-            display_name: text("display_name")?,
-            issuer: text("issuer")?,
-            client_id: text("client_id")?,
+            enabled: row.enabled,
+            required: row.required,
+            allow_device_unlock: row.allow_device_unlock,
+            provider: row.provider,
+            display_name: row.display_name,
+            issuer: row.issuer,
+            client_id: row.client_id,
             client_secret: None,
-            token_auth_method: text("token_auth_method")?,
-            scopes: text("scopes")?,
-            email_claim: text("email_claim")?,
-            require_verified_email: number("require_verified_email")? != 0,
-            name_claim: text("name_claim")?,
-            groups_claim: text("groups_claim")?,
-            allowed_domains: allowed_domains
+            token_auth_method: row.token_auth_method,
+            scopes: row.scopes,
+            email_claim: row.email_claim,
+            require_verified_email: row.require_verified_email,
+            name_claim: row.name_claim,
+            groups_claim: row.groups_claim,
+            allowed_domains: row
+                .allowed_domains
                 .split(',')
                 .filter(|d| !d.is_empty())
                 .map(str::to_owned)
                 .collect(),
-            reauth_hours: u32::try_from(number("reauth_hours")?).unwrap_or(12),
+            reauth_hours: u32::try_from(row.reauth_hours).unwrap_or(12),
         },
-        encrypted_client_secret: text("encrypted_client_secret")?,
-        discovery: serde_json::from_str(&discovery).ok(),
-        jwks: text("jwks")?,
-        jwks_fetched_at: number("jwks_fetched_at")?,
-        updated_at: number("updated_at")?,
+        encrypted_client_secret: row.encrypted_client_secret,
+        discovery: serde_json::from_str(&row.discovery).ok(),
+        jwks: row.jwks,
+        jwks_fetched_at: row.jwks_fetched_at,
+        updated_at: row.updated_at,
     }))
 }
 
@@ -409,7 +404,7 @@ pub async fn get(
     Path(org_id): Path<String>,
 ) -> ApiResult<Json<Option<SsoConfigResponse>>> {
     validate::id("organization id", &org_id)?;
-    let mut conn = state.db.acquire().await?;
+    let mut conn = state.db.as_account(&session.account_id).await?;
     access::require_admin(&mut conn, &org_id, &session.account_id).await?;
     let config = load_config(&mut conn, &org_id).await?;
     drop(conn);
@@ -429,12 +424,12 @@ pub async fn put(
     validate::id("organization id", &org_id)?;
     validate_settings(&mut settings)?;
     let previous = {
-        let mut conn = state.db.acquire().await?;
+        let mut conn = state.db.as_account(&session.account_id).await?;
         access::require_admin(&mut conn, &org_id, &session.account_id).await?;
-        let kind: String = sqlx::query_scalar("SELECT kind FROM organizations WHERE id = $1")
-            .bind(&org_id)
-            .fetch_one(&mut *conn)
-            .await?;
+        let kind: String =
+            sqlx::query_scalar!("SELECT kind FROM organizations WHERE id = $1", &org_id,)
+                .fetch_one(&mut *conn)
+                .await?;
         if kind != "team" {
             return Err(sso_error(
                 "sso_team_only",
@@ -484,30 +479,32 @@ pub async fn put(
     }
 
     let now = now_ms();
-    let mut tx = db::begin_write(&state.db).await?;
+    let mut tx = state.db.as_account(&session.account_id).await?;
     access::require_admin(&mut tx, &org_id, &session.account_id).await?;
-    sqlx::query("DELETE FROM sso_domains WHERE org_id = $1")
-        .bind(&org_id)
+    sqlx::query!("DELETE FROM sso_domains WHERE org_id = $1", &org_id,)
         .execute(&mut *tx)
         .await?;
     if settings.enabled {
         for domain in &settings.allowed_domains {
-            let owner: Option<String> =
-                sqlx::query_scalar("SELECT org_id FROM sso_domains WHERE domain = $1")
-                    .bind(domain)
-                    .fetch_optional(&mut *tx)
+            // Domains of other organizations are not readable: the
+            // function answers whether this one is taken.
+            let taken =
+                sqlx::query_scalar!(r#"SELECT passbox.sso_domain_taken($1) AS "taken!""#, domain,)
+                    .fetch_one(&mut *tx)
                     .await?;
-            if owner.is_some() {
+            if taken {
                 return Err(ApiError::conflict(
                     format!("{domain} already signs in through another organization"),
                     serde_json::json!({ "code": "sso_domain_taken", "domain": domain }),
                 ));
             }
-            sqlx::query("INSERT INTO sso_domains (domain, org_id) VALUES ($1, $2)")
-                .bind(domain)
-                .bind(&org_id)
-                .execute(&mut *tx)
-                .await?;
+            sqlx::query!(
+                "INSERT INTO sso_domains (domain, org_id) VALUES ($1, $2)",
+                domain,
+                &org_id,
+            )
+            .execute(&mut *tx)
+            .await?;
         }
     }
     // Links to provider accounts belong to one issuer.
@@ -515,8 +512,7 @@ pub async fn put(
         .as_ref()
         .is_some_and(|p| p.settings.issuer != settings.issuer)
     {
-        sqlx::query("DELETE FROM sso_identities WHERE org_id = $1")
-            .bind(&org_id)
+        sqlx::query!("DELETE FROM sso_identities WHERE org_id = $1", &org_id,)
             .execute(&mut *tx)
             .await?;
     }
@@ -537,40 +533,39 @@ pub async fn put(
             })
             .unwrap_or_default()
     };
-    sqlx::query("DELETE FROM org_sso WHERE org_id = $1")
-        .bind(&org_id)
+    sqlx::query!("DELETE FROM org_sso WHERE org_id = $1", &org_id,)
         .execute(&mut *tx)
         .await?;
-    sqlx::query(
+    sqlx::query!(
         "INSERT INTO org_sso (org_id, enabled, required, allow_device_unlock, provider, display_name, issuer, \
          client_id, encrypted_client_secret, token_auth_method, scopes, email_claim, require_verified_email, \
          name_claim, groups_claim, allowed_domains, reauth_hours, discovery, jwks, jwks_fetched_at, updated_by, \
          created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, \
          $17, $18, $19, $20, $21, $22, $23)",
+        &org_id,
+        settings.enabled,
+        settings.required,
+        settings.allow_device_unlock,
+        &settings.provider,
+        &settings.display_name,
+        &settings.issuer,
+        &settings.client_id,
+        &encrypted_client_secret,
+        &settings.token_auth_method,
+        &settings.scopes,
+        &settings.email_claim,
+        settings.require_verified_email,
+        &settings.name_claim,
+        &settings.groups_claim,
+        settings.allowed_domains.join(","),
+        i64::from(settings.reauth_hours),
+        &discovery_json,
+        &jwks_json,
+        jwks_fetched_at,
+        &session.account_id,
+        now,
+        now,
     )
-    .bind(&org_id)
-    .bind(i64::from(settings.enabled))
-    .bind(i64::from(settings.required))
-    .bind(i64::from(settings.allow_device_unlock))
-    .bind(&settings.provider)
-    .bind(&settings.display_name)
-    .bind(&settings.issuer)
-    .bind(&settings.client_id)
-    .bind(&encrypted_client_secret)
-    .bind(&settings.token_auth_method)
-    .bind(&settings.scopes)
-    .bind(&settings.email_claim)
-    .bind(i64::from(settings.require_verified_email))
-    .bind(&settings.name_claim)
-    .bind(&settings.groups_claim)
-    .bind(settings.allowed_domains.join(","))
-    .bind(i64::from(settings.reauth_hours))
-    .bind(&discovery_json)
-    .bind(&jwks_json)
-    .bind(jwks_fetched_at)
-    .bind(&session.account_id)
-    .bind(now)
-    .bind(now)
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
@@ -583,7 +578,7 @@ pub async fn put(
         &ip,
     )
     .await?;
-    let mut conn = state.db.acquire().await?;
+    let mut conn = state.db.as_account(&session.account_id).await?;
     let stored = load_config(&mut conn, &org_id)
         .await?
         .ok_or(ApiError::NotFound)?;
@@ -600,7 +595,7 @@ pub async fn delete(
     Path(org_id): Path<String>,
 ) -> ApiResult<StatusCode> {
     validate::id("organization id", &org_id)?;
-    let mut tx = db::begin_write(&state.db).await?;
+    let mut tx = state.db.as_account(&session.account_id).await?;
     access::require_admin(&mut tx, &org_id, &session.account_id).await?;
     for statement in [
         "DELETE FROM sso_domains WHERE org_id = $1",
@@ -668,7 +663,7 @@ pub async fn check(
 ) -> ApiResult<Json<CheckResponse>> {
     validate::id("organization id", &org_id)?;
     let issuer = {
-        let mut conn = state.db.acquire().await?;
+        let mut conn = state.db.as_account(&session.account_id).await?;
         access::require_admin(&mut conn, &org_id, &session.account_id).await?;
         match req.issuer {
             Some(issuer) => issuer.trim().to_owned(),

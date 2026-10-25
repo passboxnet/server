@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE items SET vault_id = $1, encrypted_data = $2, revision = $3, seq = $4, updated_at = $5, key_epoch = $6, updated_by = $7 WHERE id = $8",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Bytea",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "603693963a0aa945ca7e5991e0b2d65755dea22058f361e412bcb885641d9301"
+}

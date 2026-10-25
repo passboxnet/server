@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT revision, meta_epoch FROM organizations WHERE id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "revision",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "organizations",
+            "name": "revision"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "meta_epoch",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "organizations",
+            "name": "meta_epoch"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "c36e7069ac00bfd22bfc886849cdd7d97e2de09f3854ba8dcfaabdaa6be1f238"
+}

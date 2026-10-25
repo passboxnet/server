@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT vaults.id FROM vaults JOIN vault_members ON vault_members.vault_id = vaults.id WHERE vaults.org_id = $1 AND vault_members.principal_type = 'account' AND vault_members.principal_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "vaults",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "dd813740b58486b9b9b70d294232df4c62e0e0f03d98fa9a720867928468d27f"
+}

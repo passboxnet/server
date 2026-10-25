@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE mail_outbox SET status = $1, attempts = $2, next_attempt_at = $3, locked_until = 0, last_error = $4 WHERE id = $5",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8",
+        "Int8",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c5b1b526ffc48660c340c5a11c6d3c5a5b2d5dc2c49f2707ca0c1c9cf05b4a7e"
+}

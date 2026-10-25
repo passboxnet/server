@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT reauth_hours FROM org_sso WHERE org_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "reauth_hours",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "org_sso",
+            "name": "reauth_hours"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "cacc91a6419156b8f6cfc2a974f1db6b1d4d696394380c75ca6f1fd23a755c27"
+}

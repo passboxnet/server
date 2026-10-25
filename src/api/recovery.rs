@@ -34,7 +34,7 @@ use super::auth::{
     fake_account_id, hash_token, limit_ip, record_event, record_failure,
 };
 use super::validate;
-use crate::db::{self, now_ms};
+use crate::db::{Conn, Public, now_ms};
 use crate::error::{ApiError, ApiResult};
 use crate::mail::Template;
 use crate::security::ClientIp;
@@ -124,17 +124,20 @@ pub async fn status(
     State(state): State<AppState>,
     session: Session,
 ) -> ApiResult<Json<RecoveryStatus>> {
-    let created: Option<i64> =
-        sqlx::query_scalar("SELECT created_at FROM account_recovery WHERE account_id = $1")
-            .bind(&session.account_id)
-            .fetch_optional(&state.db)
-            .await?;
-    let escrows: Vec<(String, i64, i64)> = sqlx::query_as(
+    let mut tx = state.db.as_account(&session.account_id).await?;
+    let created: Option<i64> = sqlx::query_scalar!(
+        "SELECT created_at FROM account_recovery WHERE account_id = $1",
+        &session.account_id,
+    )
+    .fetch_optional(&mut *tx)
+    .await?;
+    let escrows: Vec<(String, i64, i64)> = sqlx::query!(
         "SELECT org_id, key_version, created_at FROM org_recovery_escrows WHERE account_id = $1 \
          ORDER BY created_at",
+        &session.account_id,
     )
-    .bind(&session.account_id)
-    .fetch_all(&state.db)
+    .map(|row| (row.org_id, row.key_version, row.created_at))
+    .fetch_all(&mut *tx)
     .await?;
     Ok(Json(RecoveryStatus {
         recovery_code: created.map(|created_at| RecoveryCodeStatus { created_at }),
@@ -204,7 +207,7 @@ pub async fn code_finish(
         &req.wrapped_account_key,
         validate::MAX_SMALL_LEN,
     )?;
-    let mut tx = db::begin_write(&state.db).await?;
+    let mut tx = state.db.as_account(&session.account_id).await?;
     store_recovery_code(
         &mut tx,
         &session.account_id,
@@ -240,10 +243,14 @@ pub async fn code_delete(
     session: Session,
 ) -> ApiResult<StatusCode> {
     require_recent_login(&session)?;
-    let deleted = sqlx::query("DELETE FROM account_recovery WHERE account_id = $1")
-        .bind(&session.account_id)
-        .execute(&state.db)
-        .await?;
+    let mut tx = state.db.as_account(&session.account_id).await?;
+    let deleted = sqlx::query!(
+        "DELETE FROM account_recovery WHERE account_id = $1",
+        &session.account_id,
+    )
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
     if deleted.rows_affected() == 0 {
         return Err(ApiError::NotFound);
     }
@@ -259,32 +266,33 @@ pub async fn code_delete(
     Ok(StatusCode::NO_CONTENT)
 }
 
-fn registration_record(upload: &str) -> ApiResult<String> {
+fn registration_record(upload: &str) -> ApiResult<Vec<u8>> {
     let upload = validate::base64("registrationUpload", upload, validate::MAX_SMALL_LEN)?;
-    let record = opaque::registration_record(&upload)
-        .map_err(|_| ApiError::bad_request("invalid registrationUpload"))?;
-    Ok(encoding::encode(&record))
+    opaque::registration_record(&upload)
+        .map_err(|_| ApiError::bad_request("invalid registrationUpload"))
 }
 
 async fn store_recovery_code(
-    tx: &mut sqlx::Transaction<'_, sqlx::Any>,
+    tx: &mut Conn,
     account_id: &str,
-    record: &str,
+    record: &[u8],
     wrapped: &str,
 ) -> ApiResult<()> {
-    sqlx::query("DELETE FROM account_recovery WHERE account_id = $1")
-        .bind(account_id)
-        .execute(&mut **tx)
-        .await?;
-    sqlx::query(
+    sqlx::query!(
+        "DELETE FROM account_recovery WHERE account_id = $1",
+        account_id,
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query!(
         "INSERT INTO account_recovery (account_id, opaque_record, wrapped_account_key, created_at) \
          VALUES ($1, $2, $3, $4)",
+        account_id,
+        record,
+        super::vaults::decode(wrapped)?,
+        now_ms(),
     )
-    .bind(account_id)
-    .bind(record)
-    .bind(wrapped)
-    .bind(now_ms())
-    .execute(&mut **tx)
+    .execute(&mut *tx)
     .await?;
     Ok(())
 }
@@ -329,18 +337,16 @@ pub async fn login_start(
         &req.credential_request,
         validate::MAX_SMALL_LEN,
     )?;
-    let row: Option<(String, String)> = sqlx::query_as(
+    let mut tx = state.db.public(Public::Auth).await?;
+    let row: Option<(String, Vec<u8>)> = sqlx::query!(
         "SELECT a.id, r.opaque_record FROM accounts a JOIN account_recovery r ON r.account_id = a.id \
          WHERE a.email = $1",
-    )
-    .bind(&email)
-    .fetch_optional(&state.db)
+        &email,
+    ).map(|row| (row.id, row.opaque_record))
+    .fetch_optional(&mut *tx)
     .await?;
     let (account_id, record, credential) = match row {
-        Some((id, record)) => {
-            let record = encoding::decode(&record).map_err(internal)?;
-            (Some(id.clone()), Some(record), credential_id(&id))
-        }
+        Some((id, record)) => (Some(id.clone()), Some(record), credential_id(&id)),
         // No account or no recovery code: a fake identity, so the response
         // looks like a real one.
         None => (None, None, credential_id(&fake_account_id(&state, &email))),
@@ -351,22 +357,22 @@ pub async fn login_start(
         .map_err(|_| ApiError::bad_request("invalid credentialRequest"))?;
     let login_id = id::new_id().map_err(internal)?;
     let now = now_ms();
-    sqlx::query("DELETE FROM recovery_attempts WHERE expires_at < $1")
-        .bind(now)
-        .execute(&state.db)
+    sqlx::query!("DELETE FROM recovery_attempts WHERE expires_at < $1", now)
+        .execute(&mut *tx)
         .await?;
-    sqlx::query(
+    sqlx::query!(
         "INSERT INTO recovery_attempts (id, account_id, state, email, ip, expires_at) \
          VALUES ($1, $2, $3, $4, $5, $6)",
+        &login_id,
+        account_id,
+        login_state.as_slice(),
+        &email,
+        &ip,
+        now + ATTEMPT_TTL_MS,
     )
-    .bind(&login_id)
-    .bind(account_id)
-    .bind(encoding::encode(&login_state))
-    .bind(&email)
-    .bind(&ip)
-    .bind(now + ATTEMPT_TTL_MS)
-    .execute(&state.db)
+    .execute(&mut *tx)
     .await?;
+    tx.commit().await?;
     Ok(Json(LoginStartResponse {
         login_id,
         credential_response: encoding::encode(&response),
@@ -408,13 +414,23 @@ pub struct RecoveryGrant {
     account_keys: Option<AccountKeysUpload>,
 }
 
+/// The account's key pairs. Called once the recovery is proven, in the
+/// account's own context.
 async fn account_keys(state: &AppState, account_id: &str) -> ApiResult<Option<AccountKeysUpload>> {
-    let row: Option<(i64, String, String, String)> = sqlx::query_as(
+    let row: Option<(i64, String, String, Vec<u8>)> = sqlx::query!(
         "SELECT key_version, bundle, bundle_signature, encrypted_private FROM account_keys \
          WHERE account_id = $1 ORDER BY key_version DESC LIMIT 1",
+        account_id,
     )
-    .bind(account_id)
-    .fetch_optional(&state.db)
+    .map(|row| {
+        (
+            row.key_version,
+            row.bundle,
+            row.bundle_signature,
+            row.encrypted_private,
+        )
+    })
+    .fetch_optional(&mut *state.db.as_account(account_id).await?)
     .await?;
     row.map(
         |(key_version, bundle, bundle_signature, encrypted_private)| {
@@ -422,7 +438,7 @@ async fn account_keys(state: &AppState, account_id: &str) -> ApiResult<Option<Ac
                 key_version: u32::try_from(key_version).map_err(internal)?,
                 bundle,
                 bundle_signature,
-                encrypted_private,
+                encrypted_private: encoding::encode(&encrypted_private),
             })
         },
     )
@@ -443,44 +459,53 @@ async fn create_session(state: &AppState, new: NewRecoverySession<'_>) -> ApiRes
     let token = random_token()?;
     let now = now_ms();
     let expires_at = now + SESSION_TTL_MS;
-    sqlx::query("DELETE FROM recovery_sessions WHERE expires_at < $1")
-        .bind(now)
-        .execute(&state.db)
+    let mut tx = state.db.public(Public::Auth).await?;
+    sqlx::query!("DELETE FROM recovery_sessions WHERE expires_at < $1", now)
+        .execute(&mut *tx)
         .await?;
-    sqlx::query(
+    sqlx::query!(
         "INSERT INTO recovery_sessions (token_hash, account_id, method, source_id, two_factor_pending, \
          device_name, client_kind, ip, created_at, expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+        hash_token(&token),
+        new.account_id,
+        new.method,
+        new.source_id,
+        new.two_factor_pending,
+        new.device_name,
+        new.client_kind,
+        new.ip,
+        now,
+        expires_at,
     )
-    .bind(hash_token(&token))
-    .bind(new.account_id)
-    .bind(new.method)
-    .bind(new.source_id)
-    .bind(i64::from(new.two_factor_pending))
-    .bind(new.device_name)
-    .bind(new.client_kind)
-    .bind(new.ip)
-    .bind(now)
-    .bind(expires_at)
-    .execute(&state.db)
+    .execute(&mut *tx)
     .await?;
+    tx.commit().await?;
     Ok((token, expires_at))
 }
 
+/// The address of an account (for mails and grants), through the mail
+/// recipient function: approvers and members are other accounts.
 async fn account_email(state: &AppState, account_id: &str) -> ApiResult<String> {
-    Ok(
-        sqlx::query_scalar("SELECT email FROM accounts WHERE id = $1")
-            .bind(account_id)
-            .fetch_one(&state.db)
-            .await?,
+    sqlx::query_scalar!(
+        r#"SELECT email AS "email!" FROM passbox.mail_recipient($1) WHERE email IS NOT NULL"#,
+        account_id,
     )
+    .fetch_optional(&mut *state.db.public(Public::Auth).await?)
+    .await?
+    .ok_or_else(|| internal(anyhow::anyhow!("account not found")))
 }
 
+/// The account key wrapped with the recovery code, once the recovery is
+/// proven (the account's own context).
 async fn wrapped_key(state: &AppState, account_id: &str) -> ApiResult<String> {
-    sqlx::query_scalar("SELECT wrapped_account_key FROM account_recovery WHERE account_id = $1")
-        .bind(account_id)
-        .fetch_optional(&state.db)
-        .await?
-        .ok_or_else(expired)
+    sqlx::query_scalar!(
+        "SELECT wrapped_account_key FROM account_recovery WHERE account_id = $1",
+        account_id,
+    )
+    .fetch_optional(&mut *state.db.as_account(account_id).await?)
+    .await?
+    .map(|key| encoding::encode(&key))
+    .ok_or_else(expired)
 }
 
 /// Second round of the recovery-code login. Wrong codes are usually
@@ -499,16 +524,17 @@ pub async fn login_finish(
     )?;
     let device_name = clean_device_name(&req.device_name);
     let client_kind = client_kind(&req.client_kind);
-    let attempt: Option<(Option<String>, String, String, i64)> = sqlx::query_as(
+    let mut tx = state.db.public(Public::Auth).await?;
+    let attempt: Option<(Option<String>, Vec<u8>, String, i64)> = sqlx::query!(
         "DELETE FROM recovery_attempts WHERE id = $1 RETURNING account_id, state, email, expires_at",
-    )
-    .bind(&req.login_id)
-    .fetch_optional(&state.db)
+        &req.login_id,
+    ).map(|row| (row.account_id, row.state, row.email, row.expires_at))
+    .fetch_optional(&mut *tx)
     .await?;
+    tx.commit().await?;
     let Some((account_id, login_state, email, expires_at)) = attempt else {
         return Err(ApiError::InvalidCredentials);
     };
-    let login_state = encoding::decode(&login_state).map_err(internal)?;
     let verified = opaque::finish_login(&login_state, &finalization).is_ok();
     let account_id = match account_id {
         Some(id) if verified && expires_at >= now_ms() => id,
@@ -528,7 +554,8 @@ pub async fn login_finish(
             return Err(ApiError::InvalidCredentials);
         }
     };
-    crate::instance::ensure_active(&state, &account_id).await?;
+    crate::instance::ensure_active(&mut *state.db.as_account(&account_id).await?, &account_id)
+        .await?;
     let methods = super::two_factor::recovery_methods(&state, &account_id).await?;
     if methods.as_ref().is_some_and(Vec::is_empty) {
         return Err(ApiError::forbidden(
@@ -601,10 +628,14 @@ pub async fn two_factor(
         &req.code,
     )
     .await?;
-    sqlx::query("UPDATE recovery_sessions SET two_factor_pending = 0 WHERE token_hash = $1")
-        .bind(&session.token_hash)
-        .execute(&state.db)
-        .await?;
+    let mut tx = state.db.public(Public::Auth).await?;
+    sqlx::query!(
+        "UPDATE recovery_sessions SET two_factor_pending = false WHERE token_hash = $1",
+        &session.token_hash,
+    )
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
     Ok(Json(RecoveryGrant {
         recovery_token: req.recovery_token,
         email: account_email(&state, &session.account_id).await?,
@@ -630,20 +661,28 @@ async fn find_session(state: &AppState, token: &str) -> ApiResult<RecoverySessio
         return Err(expired());
     }
     let token_hash = hash_token(token);
-    let row: Option<(String, String, i64, i64)> = sqlx::query_as(
+    let row: Option<(String, String, bool, i64)> = sqlx::query!(
         "SELECT account_id, method, two_factor_pending, expires_at FROM recovery_sessions \
          WHERE token_hash = $1 AND expires_at > $2",
+        &token_hash,
+        now_ms(),
     )
-    .bind(&token_hash)
-    .bind(now_ms())
-    .fetch_optional(&state.db)
+    .map(|row| {
+        (
+            row.account_id,
+            row.method,
+            row.two_factor_pending,
+            row.expires_at,
+        )
+    })
+    .fetch_optional(&mut *state.db.public(Public::Auth).await?)
     .await?;
-    let (account_id, method, pending, expires_at) = row.ok_or_else(expired)?;
+    let (account_id, method, two_factor_pending, expires_at) = row.ok_or_else(expired)?;
     Ok(RecoverySession {
         token_hash,
         account_id,
         method,
-        two_factor_pending: pending != 0,
+        two_factor_pending,
         expires_at,
     })
 }
@@ -755,35 +794,47 @@ pub async fn complete_finish(
         return Err(expired());
     }
 
-    let mut tx = db::begin_write(&state.db).await?;
+    let mut tx = state.db.public(Public::Auth).await?;
     // Single use: the session is deleted with the change.
-    let row: Option<(String, String, String, i64, String, String)> = sqlx::query_as(
+    let row: Option<(String, String, String, bool, String, String)> = sqlx::query!(
         "DELETE FROM recovery_sessions WHERE token_hash = $1 AND expires_at > $2 \
          RETURNING account_id, method, source_id, two_factor_pending, device_name, client_kind",
+        hash_token(&req.recovery_token),
+        now_ms(),
     )
-    .bind(hash_token(&req.recovery_token))
-    .bind(now_ms())
+    .map(|row| {
+        (
+            row.account_id,
+            row.method,
+            row.source_id,
+            row.two_factor_pending,
+            row.device_name,
+            row.client_kind,
+        )
+    })
     .fetch_optional(&mut *tx)
     .await?;
     let (account_id, method, source_id, pending, device_name, client_kind) =
         row.ok_or_else(expired)?;
-    if pending != 0 {
+    if pending {
         return Err(ApiError::forbidden(
             "two_factor_required",
             "enter the second factor first",
         ));
     }
-    sqlx::query(
+    // The recovery is proven: the rest runs as the account.
+    crate::db::switch_to_account(&mut tx, &account_id).await?;
+    sqlx::query!(
         "UPDATE accounts SET opaque_record = $1, kdf_salt = $2, kdf_memory_kib = $3, kdf_iterations = $4, \
          kdf_parallelism = $5, encrypted_account_key = $6 WHERE id = $7",
+        &record,
+        super::vaults::decode(&req.kdf_salt)?,
+        i64::from(req.kdf_params.memory_kib),
+        i64::from(req.kdf_params.iterations),
+        i64::from(req.kdf_params.parallelism),
+        super::vaults::decode(&req.encrypted_account_key)?,
+        &account_id,
     )
-    .bind(&record)
-    .bind(&req.kdf_salt)
-    .bind(i64::from(req.kdf_params.memory_kib))
-    .bind(i64::from(req.kdf_params.iterations))
-    .bind(i64::from(req.kdf_params.parallelism))
-    .bind(&req.encrypted_account_key)
-    .bind(&account_id)
     .execute(&mut *tx)
     .await?;
     // Every device has to sign in again with the new credentials; a used
@@ -806,12 +857,12 @@ pub async fn complete_finish(
     let mut approver = String::new();
     let mut org_id = String::new();
     if method == "org" {
-        let row: Option<(String, String)> = sqlx::query_as(
+        let row: Option<(String, String)> = sqlx::query!(
             "UPDATE org_recovery_requests SET status = 'completed' WHERE id = $1 AND account_id = $2 \
              RETURNING org_id, decided_by",
-        )
-        .bind(&source_id)
-        .bind(&account_id)
+            &source_id,
+            &account_id,
+        ).map(|row| (row.org_id, row.decided_by))
         .fetch_optional(&mut *tx)
         .await?;
         if let Some((org, by)) = row {
@@ -850,7 +901,7 @@ pub async fn complete_finish(
             json!({}),
         )
         .await;
-        let admins = super::org_recovery::recovery_admins(&state, &org_id).await?;
+        let admins = super::org_recovery::recovery_admins_from(&state, &org_id).await?;
         for admin in admins {
             record_event(&state, &admin, "org_member_recovered", "", "", &ip).await?;
             notify(&state, &admin, Template::RecoveryUsed, params.clone()).await;
@@ -942,42 +993,32 @@ pub async fn org_request(
     let now = now_ms();
     let expires_at = now + REQUEST_TTL_MS;
 
-    let escrow: Option<(String, String)> = sqlx::query_as(
-        "SELECT e.org_id, a.id FROM org_recovery_escrows e JOIN accounts a ON a.id = e.account_id \
-         JOIN org_members m ON m.org_id = e.org_id AND m.account_id = e.account_id \
-         JOIN org_recovery_keys k ON k.org_id = e.org_id AND k.key_version = e.key_version \
-         WHERE a.email = $1 AND a.disabled_at = 0 AND m.status = 'confirmed' \
-         AND (e.org_id = $2 OR $3 = '') ORDER BY e.created_at LIMIT 1",
+    // Signed out: functions find the escrow and open the request, nothing
+    // else of the organization is readable here.
+    let mut tx = state.db.public(Public::Auth).await?;
+    let escrow: Option<(String, String)> = sqlx::query!(
+        r#"SELECT org_id AS "org_id!", account_id AS "account_id!"
+           FROM passbox.org_recovery_target($1, $2)"#,
+        &email,
+        req.org_id.clone().unwrap_or_default(),
     )
-    .bind(&email)
-    .bind(req.org_id.clone().unwrap_or_default())
-    .bind(req.org_id.clone().unwrap_or_default())
-    .fetch_optional(&state.db)
+    .map(|row| (row.org_id, row.account_id))
+    .fetch_optional(&mut *tx)
     .await?;
     if let Some((org_id, account_id)) = escrow {
-        let mut tx = db::begin_write(&state.db).await?;
         // A new request replaces an open one of the same account.
-        sqlx::query(
-            "UPDATE org_recovery_requests SET status = 'cancelled' WHERE account_id = $1 \
-             AND status IN ('pending', 'approved')",
+        sqlx::query!(
+            "SELECT passbox.org_recovery_open_request($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+            &request_id,
+            &org_id,
+            &account_id,
+            hash_token(&token),
+            &req.ephemeral_key,
+            &device_name,
+            &ip,
+            now,
+            expires_at,
         )
-        .bind(&account_id)
-        .execute(&mut *tx)
-        .await?;
-        sqlx::query(
-            "INSERT INTO org_recovery_requests (id, org_id, account_id, token_hash, ephemeral_key, status, \
-             approval, approval_signature, sealed_key, request_code, decided_by, decided_at, device_name, ip, \
-             created_at, expires_at) VALUES ($1, $2, $3, $4, $5, 'pending', '', '', '', '', '', 0, $6, $7, $8, $9)",
-        )
-        .bind(&request_id)
-        .bind(&org_id)
-        .bind(&account_id)
-        .bind(hash_token(&token))
-        .bind(&req.ephemeral_key)
-        .bind(&device_name)
-        .bind(&ip)
-        .bind(now)
-        .bind(expires_at)
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
@@ -1007,7 +1048,7 @@ pub async fn org_request(
         let params =
             json!({ "device": device_name, "ip": ip, "time": now, "member": email, "link": link });
         notify(&state, &account_id, Template::Recovery, params.clone()).await;
-        for admin in super::org_recovery::recovery_admins(&state, &org_id).await? {
+        for admin in super::org_recovery::recovery_admins_from(&state, &org_id).await? {
             notify(&state, &admin, Template::RecoveryRequested, params.clone()).await;
         }
     } else {
@@ -1068,12 +1109,15 @@ pub async fn org_status(
     limit_ip(&state, &ip)?;
     validate::id("requestId", &req.request_id)?;
     let row: Option<(String, String, String, String, String, String, String, String, i64, String)> =
-        sqlx::query_as(
-            "SELECT account_id, token_hash, status, approval, approval_signature, sealed_key, decided_by, \
-             device_name, expires_at, org_id FROM org_recovery_requests WHERE id = $1",
-        )
-        .bind(&req.request_id)
-        .fetch_optional(&state.db)
+        sqlx::query!(
+            r#"SELECT account_id AS "account_id!", token_hash AS "token_hash!", status AS "status!",
+                      approval AS "approval!", approval_signature AS "approval_signature!",
+                      sealed_key AS "sealed_key!", decided_by AS "decided_by!",
+                      device_name AS "device_name!", expires_at AS "expires_at!", org_id AS "org_id!"
+               FROM passbox.org_recovery_request($1)"#,
+            &req.request_id,
+        ).map(|row| (row.account_id, row.token_hash, row.status, row.approval, row.approval_signature, row.sealed_key, row.decided_by, row.device_name, row.expires_at, row.org_id))
+        .fetch_optional(&mut *state.db.public(Public::Auth).await?)
         .await?;
     let Some((
         account_id,
@@ -1110,18 +1154,20 @@ pub async fn org_status(
             recovery: None,
         }));
     }
-    let mut conn = state.db.acquire().await?;
+    // The device holds the request token of an approved request: it acts
+    // for the account from here on.
+    let mut conn = state.db.as_account(&account_id).await?;
     let approver = super::signed::bundle(&mut conn, &decided_by)
         .await?
         .ok_or_else(|| internal(anyhow::anyhow!("approver without keys")))?;
-    drop(conn);
-    sqlx::query(
+    sqlx::query!(
         "DELETE FROM recovery_sessions WHERE account_id = $1 AND method = 'org' AND source_id = $2",
+        &account_id,
+        &req.request_id,
     )
-    .bind(&account_id)
-    .bind(&req.request_id)
-    .execute(&state.db)
+    .execute(&mut *conn)
     .await?;
+    conn.commit().await?;
     let client_kind = client_kind(&req.client_kind);
     let (token, token_expires) = create_session(
         &state,
@@ -1169,13 +1215,14 @@ pub async fn org_cancel(
 ) -> ApiResult<StatusCode> {
     limit_ip(&state, &ip)?;
     validate::id("requestId", &req.request_id)?;
-    sqlx::query(
-        "UPDATE org_recovery_requests SET status = 'cancelled' WHERE id = $1 AND token_hash = $2 \
-         AND status IN ('pending', 'approved')",
+    let mut tx = state.db.public(Public::Auth).await?;
+    sqlx::query!(
+        "SELECT passbox.org_recovery_cancel($1, $2)",
+        &req.request_id,
+        hash_token(&req.request_token),
     )
-    .bind(&req.request_id)
-    .bind(hash_token(&req.request_token))
-    .execute(&state.db)
+    .execute(&mut *tx)
     .await?;
+    tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }

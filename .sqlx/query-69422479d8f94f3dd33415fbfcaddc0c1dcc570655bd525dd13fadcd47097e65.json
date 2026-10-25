@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT key_version FROM org_groups WHERE id = $1 AND org_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "key_version",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "org_groups",
+            "name": "key_version"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "69422479d8f94f3dd33415fbfcaddc0c1dcc570655bd525dd13fadcd47097e65"
+}

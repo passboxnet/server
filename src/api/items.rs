@@ -5,6 +5,7 @@
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
+use passbox_core::encoding;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -12,7 +13,7 @@ use super::access;
 use super::auth::Session;
 use super::validate;
 use super::vaults::WriteResponse;
-use crate::db::{self, now_ms};
+use crate::db::{self, Conn, now_ms};
 use crate::error::{ApiError, ApiResult};
 use crate::security::ClientIp;
 use crate::state::AppState;
@@ -30,20 +31,22 @@ pub struct PutItemRequest {
 
 /// Returns the vault and revision of an item, if the caller may see it.
 async fn current_item(
-    tx: &mut sqlx::Transaction<'_, sqlx::Any>,
+    conn: &mut Conn,
     account_id: &str,
     item_id: &str,
 ) -> ApiResult<Option<(String, i64)>> {
-    let row: Option<(String, i64)> =
-        sqlx::query_as("SELECT vault_id, revision FROM items WHERE id = $1")
-            .bind(item_id)
-            .fetch_optional(&mut **tx)
-            .await?;
-    match row {
+    // The row lock serializes concurrent writers of the same item.
+    let row = sqlx::query!(
+        "SELECT vault_id, revision FROM items WHERE id = $1 FOR UPDATE",
+        item_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
+    match row.map(|row| (row.vault_id, row.revision)) {
         Some((vault_id, revision)) => {
             // Item IDs are random; treat foreign items like missing ones but
             // never overwrite them.
-            if access::vault_access(tx, &vault_id, account_id)
+            if access::vault_access(conn, &vault_id, account_id)
                 .await?
                 .is_none()
             {
@@ -57,7 +60,7 @@ async fn current_item(
 
 /// Requires write access to the vault and the vault's current key epoch.
 pub(crate) async fn require_write(
-    tx: &mut sqlx::Transaction<'_, sqlx::Any>,
+    tx: &mut Conn,
     account_id: &str,
     vault_id: &str,
     key_epoch: i64,
@@ -90,27 +93,23 @@ pub const MAX_ITEM_VERSIONS: i64 = 20;
 /// Copies the stored version of an item into `item_versions` before it is
 /// replaced, and drops versions beyond the newest [`MAX_ITEM_VERSIONS`].
 /// Tombstones (no data) are not kept.
-pub(crate) async fn record_version(
-    tx: &mut sqlx::Transaction<'_, sqlx::Any>,
-    item_id: &str,
-) -> ApiResult<()> {
-    sqlx::query(
+pub(crate) async fn record_version(conn: &mut Conn, item_id: &str) -> ApiResult<()> {
+    sqlx::query!(
         "INSERT INTO item_versions (item_id, revision, key_epoch, encrypted_data, updated_at, updated_by) \
          SELECT id, revision, key_epoch, encrypted_data, updated_at, updated_by FROM items \
-         WHERE id = $1 AND encrypted_data IS NOT NULL AND deleted = 0 \
+         WHERE id = $1 AND encrypted_data IS NOT NULL AND NOT deleted \
          ON CONFLICT (item_id, revision) DO NOTHING",
+        item_id
     )
-    .bind(item_id)
-    .execute(&mut **tx)
+    .execute(&mut *conn)
     .await?;
-    sqlx::query(
+    sqlx::query!(
         "DELETE FROM item_versions WHERE item_id = $1 AND revision NOT IN \
-         (SELECT revision FROM item_versions WHERE item_id = $2 ORDER BY revision DESC LIMIT $3)",
+         (SELECT revision FROM item_versions WHERE item_id = $1 ORDER BY revision DESC LIMIT $2)",
+        item_id,
+        MAX_ITEM_VERSIONS,
     )
-    .bind(item_id)
-    .bind(item_id)
-    .bind(MAX_ITEM_VERSIONS)
-    .execute(&mut **tx)
+    .execute(&mut *conn)
     .await?;
     Ok(())
 }
@@ -135,7 +134,8 @@ pub async fn put(
     validate::revision(req.revision)?;
     validate::base64("encryptedData", &req.encrypted_data, validate::MAX_ITEM_LEN)?;
 
-    let mut tx = crate::db::begin_write(&state.db).await?;
+    let encrypted_data = super::vaults::decode(&req.encrypted_data)?;
+    let mut tx = state.db.as_account(&session.account_id).await?;
     let vault_access =
         require_write(&mut tx, &session.account_id, &req.vault_id, req.key_epoch).await?;
     let audit_org = shared_org(&vault_access).map(str::to_owned);
@@ -154,18 +154,17 @@ pub async fn put(
                     .await?;
             }
             let seq = db::next_seq(&mut tx).await?;
-            sqlx::query(
+            sqlx::query!(
                 "INSERT INTO items (id, vault_id, encrypted_data, revision, deleted, seq, created_at, updated_at, \
-                 key_epoch, updated_by) VALUES ($1, $2, $3, 1, 0, $4, $5, $6, $7, $8)",
+                 key_epoch, updated_by) VALUES ($1, $2, $3, 1, false, $4, $5, $5, $6, $7)",
+                item_id,
+                req.vault_id,
+                encrypted_data,
+                seq,
+                now,
+                req.key_epoch,
+                session.id,
             )
-            .bind(&item_id)
-            .bind(&req.vault_id)
-            .bind(&req.encrypted_data)
-            .bind(seq)
-            .bind(now)
-            .bind(now)
-            .bind(req.key_epoch)
-            .bind(&session.id)
             .execute(&mut *tx)
             .await?;
             if let Some(org_id) = &audit_org {
@@ -193,17 +192,17 @@ pub async fn put(
             }
             record_version(&mut tx, &item_id).await?;
             let seq = db::next_seq(&mut tx).await?;
-            sqlx::query(
-                "UPDATE items SET encrypted_data = $1, revision = $2, deleted = 0, seq = $3, updated_at = $4, \
+            sqlx::query!(
+                "UPDATE items SET encrypted_data = $1, revision = $2, deleted = false, seq = $3, updated_at = $4, \
                  key_epoch = $5, updated_by = $6 WHERE id = $7",
+                encrypted_data,
+                req.revision,
+                seq,
+                now,
+                req.key_epoch,
+                session.id,
+                item_id,
             )
-            .bind(&req.encrypted_data)
-            .bind(req.revision)
-            .bind(seq)
-            .bind(now)
-            .bind(req.key_epoch)
-            .bind(&session.id)
-            .bind(&item_id)
             .execute(&mut *tx)
             .await?;
             if let Some(org_id) = &audit_org {
@@ -243,7 +242,7 @@ pub async fn delete(
     validate::id("item id", &item_id)?;
     validate::revision(query.revision)?;
 
-    let mut tx = crate::db::begin_write(&state.db).await?;
+    let mut tx = state.db.as_account(&session.account_id).await?;
     let (vault_id, current) = current_item(&mut tx, &session.account_id, &item_id)
         .await?
         .ok_or(ApiError::NotFound)?;
@@ -252,20 +251,19 @@ pub async fn delete(
         return Err(revision_conflict(current));
     }
     // A permanent deletion takes the version history with it.
-    sqlx::query("DELETE FROM item_versions WHERE item_id = $1")
-        .bind(&item_id)
+    sqlx::query!("DELETE FROM item_versions WHERE item_id = $1", item_id)
         .execute(&mut *tx)
         .await?;
     let seq = db::next_seq(&mut tx).await?;
-    sqlx::query(
-        "UPDATE items SET encrypted_data = NULL, revision = $1, deleted = 1, seq = $2, updated_at = $3, \
+    sqlx::query!(
+        "UPDATE items SET encrypted_data = NULL, revision = $1, deleted = true, seq = $2, updated_at = $3, \
          updated_by = $4 WHERE id = $5",
+        query.revision,
+        seq,
+        now_ms(),
+        session.id,
+        item_id,
     )
-    .bind(query.revision)
-    .bind(seq)
-    .bind(now_ms())
-    .bind(&session.id)
-    .bind(&item_id)
     .execute(&mut *tx)
     .await?;
     if let Some(org_id) = shared_org(&vault_access) {
@@ -280,7 +278,7 @@ pub async fn delete(
         .await?;
     }
     tx.commit().await?;
-    super::attachments::delete_for_item(&state, &item_id).await?;
+    super::attachments::delete_for_item(&state, &session.account_id, &item_id).await?;
     Ok(Json(WriteResponse {
         revision: query.revision,
         seq,
@@ -312,12 +310,13 @@ pub async fn versions(
     Path(item_id): Path<String>,
 ) -> ApiResult<Json<VersionsResponse>> {
     validate::id("item id", &item_id)?;
-    let mut conn = state.db.acquire().await?;
-    let vault_id: Option<String> =
-        sqlx::query_scalar("SELECT vault_id FROM items WHERE id = $1 AND deleted = 0")
-            .bind(&item_id)
-            .fetch_optional(&mut *conn)
-            .await?;
+    let mut conn = state.db.as_account(&session.account_id).await?;
+    let vault_id = sqlx::query_scalar!(
+        "SELECT vault_id FROM items WHERE id = $1 AND NOT deleted",
+        item_id
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
     let vault_id = vault_id.ok_or(ApiError::NotFound)?;
     if access::vault_access(&mut conn, &vault_id, &session.account_id)
         .await?
@@ -325,25 +324,23 @@ pub async fn versions(
     {
         return Err(ApiError::NotFound);
     }
-    let rows: Vec<(i64, i64, String, i64, Option<String>)> = sqlx::query_as(
+    let rows = sqlx::query!(
         "SELECT revision, key_epoch, encrypted_data, updated_at, updated_by FROM item_versions \
          WHERE item_id = $1 ORDER BY revision DESC",
+        item_id
     )
-    .bind(&item_id)
     .fetch_all(&mut *conn)
     .await?;
     Ok(Json(VersionsResponse {
         versions: rows
             .into_iter()
-            .map(
-                |(revision, key_epoch, encrypted_data, updated_at, updated_by)| ItemVersion {
-                    revision,
-                    key_epoch,
-                    encrypted_data,
-                    updated_at,
-                    updated_by,
-                },
-            )
+            .map(|row| ItemVersion {
+                revision: row.revision,
+                key_epoch: row.key_epoch,
+                encrypted_data: encoding::encode(&row.encrypted_data),
+                updated_at: row.updated_at,
+                updated_by: row.updated_by,
+            })
             .collect(),
     }))
 }

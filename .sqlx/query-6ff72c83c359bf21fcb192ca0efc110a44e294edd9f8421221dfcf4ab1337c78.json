@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT value FROM server_secrets WHERE name = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "value",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "server_secrets",
+            "name": "value"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "6ff72c83c359bf21fcb192ca0efc110a44e294edd9f8421221dfcf4ab1337c78"
+}

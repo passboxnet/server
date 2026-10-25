@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE sso_identities SET last_login_at = $1 WHERE org_id = $2 AND subject = $3",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "af27f50fe8543e42daa947a3cfb999ef1676ea1b02d15f58eb228f9e2edfe769"
+}

@@ -30,14 +30,14 @@ use passbox_core::encoding;
 use passbox_core::sharing::objects::OrgRole;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sqlx::AnyConnection;
+use sqlx::PgConnection;
 
 use self::filter::{Attribute, Filter, Value as FilterValue};
 use super::access;
 use super::auth::{Session, record_event};
 use super::sso::login::{end_access, hash, new_id};
 use super::validate;
-use crate::db::{self, now_ms};
+use crate::db::{OrgCredential, Public, now_ms};
 use crate::error::{ApiError, ApiResult};
 use crate::mail::{Mailer, Template};
 use crate::security::ClientIp;
@@ -209,12 +209,17 @@ impl FromRequestParts<AppState> for ScimAuth {
             .ok_or_else(unauthorized)?;
         let token_hash = hash(token);
         let now = now_ms();
-        let row: Option<(String, String, String, i64)> = sqlx::query_as(
-            "SELECT id, org_id, created_by, last_used_at FROM scim_tokens WHERE token_hash = $1 AND expires_at > $2",
+        // The function resolves this token only; the request then runs in
+        // the organization's SCIM context.
+        let row: Option<(String, String, String, i64)> = sqlx::query!(
+            r#"SELECT id AS "id!", org_id AS "org_id!", created_by AS "created_by!",
+                      last_used_at AS "last_used_at!"
+               FROM passbox.scim_token($1, $2)"#,
+            &token_hash,
+            now,
         )
-        .bind(&token_hash)
-        .bind(now)
-        .fetch_optional(&state.db)
+        .map(|row| (row.id, row.org_id, row.created_by, row.last_used_at))
+        .fetch_optional(&mut *state.db.public(Public::Meta).await?)
         .await?;
         let (id, org_id, created_by, last_used_at) = row.ok_or_else(unauthorized)?;
         if let Some(wait) = state.limiter.hit(
@@ -225,11 +230,15 @@ impl FromRequestParts<AppState> for ScimAuth {
             return Err(ApiError::RateLimited(wait).into());
         }
         if now - last_used_at > 60_000 {
-            sqlx::query("UPDATE scim_tokens SET last_used_at = $1 WHERE id = $2")
-                .bind(now)
-                .bind(&id)
-                .execute(&state.db)
-                .await?;
+            let mut tx = state.db.as_org(OrgCredential::Scim, &org_id).await?;
+            sqlx::query!(
+                "UPDATE scim_tokens SET last_used_at = $1 WHERE id = $2",
+                now,
+                &id,
+            )
+            .execute(&mut *tx)
+            .await?;
+            tx.commit().await?;
         }
         Ok(Self { org_id, created_by })
     }
@@ -351,7 +360,7 @@ type UserTuple = (
     String,
     String,
     String,
-    i64,
+    bool,
     Option<String>,
     String,
     i64,
@@ -384,7 +393,7 @@ fn user_from(row: UserTuple) -> UserRow {
             display_name,
             given_name,
             family_name,
-            active: active != 0,
+            active,
         },
         account_id,
         suspended_from,
@@ -397,7 +406,7 @@ fn user_from(row: UserTuple) -> UserRow {
 const USER_COLUMNS: &str = "id, external_id, user_name, email, display_name, given_name, family_name, active, \
                             account_id, suspended_from, version, created_at, updated_at";
 
-async fn load_users(conn: &mut AnyConnection, org_id: &str) -> ScimResult<Vec<UserRow>> {
+async fn load_users(conn: &mut PgConnection, org_id: &str) -> ScimResult<Vec<UserRow>> {
     let rows: Vec<UserTuple> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT {USER_COLUMNS} FROM scim_users WHERE org_id = $1 ORDER BY created_at, id"
     )))
@@ -407,7 +416,7 @@ async fn load_users(conn: &mut AnyConnection, org_id: &str) -> ScimResult<Vec<Us
     Ok(rows.into_iter().map(user_from).collect())
 }
 
-async fn load_user(conn: &mut AnyConnection, org_id: &str, id: &str) -> ScimResult<UserRow> {
+async fn load_user(conn: &mut PgConnection, org_id: &str, id: &str) -> ScimResult<UserRow> {
     let row: Option<UserTuple> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT {USER_COLUMNS} FROM scim_users WHERE org_id = $1 AND id = $2"
     )))
@@ -418,13 +427,14 @@ async fn load_user(conn: &mut AnyConnection, org_id: &str, id: &str) -> ScimResu
     row.map(user_from).ok_or_else(ScimError::not_found)
 }
 
-async fn user_groups(conn: &mut AnyConnection, user_id: &str) -> ScimResult<Vec<(String, String)>> {
-    Ok(sqlx::query_as(
+async fn user_groups(conn: &mut PgConnection, user_id: &str) -> ScimResult<Vec<(String, String)>> {
+    Ok(sqlx::query!(
         "SELECT scim_groups.id, scim_groups.display_name FROM scim_group_members \
          JOIN scim_groups ON scim_groups.id = scim_group_members.group_id \
          WHERE scim_group_members.user_id = $1 ORDER BY scim_groups.display_name",
+        user_id,
     )
-    .bind(user_id)
+    .map(|row| (row.id, row.display_name))
     .fetch_all(&mut *conn)
     .await?)
 }
@@ -645,7 +655,7 @@ pub async fn list_users(
     Query(query): Query<ListQuery>,
 ) -> ScimResult<Response> {
     let filter = parsed_filter(&query)?;
-    let mut conn = state.db.acquire().await?;
+    let mut conn = state.db.as_org(OrgCredential::Scim, &auth.org_id).await?;
     let users: Vec<UserRow> = load_users(&mut conn, &auth.org_id)
         .await?
         .into_iter()
@@ -670,7 +680,7 @@ pub async fn get_user(
     auth: ScimAuth,
     Path(id): Path<String>,
 ) -> ScimResult<Response> {
-    let mut conn = state.db.acquire().await?;
+    let mut conn = state.db.as_org(OrgCredential::Scim, &auth.org_id).await?;
     let user = load_user(&mut conn, &auth.org_id, &id).await?;
     let groups = user_groups(&mut conn, &id).await?;
     Ok(scim_json(
@@ -682,7 +692,7 @@ pub async fn get_user(
 /// Brings the organization in line with a provisioned user's state.
 async fn apply_user(
     state: &AppState,
-    tx: &mut sqlx::Transaction<'_, sqlx::Any>,
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     auth: &ScimAuth,
     user: &mut UserRow,
     previous_email: Option<&str>,
@@ -696,10 +706,13 @@ async fn apply_user(
     if let Some(old) = previous_email.filter(|old| *old != user.attrs.email) {
         revoke_invitations(tx, org_id, old).await?;
     }
-    let account: Option<String> = sqlx::query_scalar("SELECT id FROM accounts WHERE email = $1")
-        .bind(&user.attrs.email)
-        .fetch_optional(&mut **tx)
-        .await?;
+    // The person may not be a member yet: the function finds the account.
+    let account: Option<String> = sqlx::query_scalar!(
+        r#"SELECT id AS "id!" FROM passbox.account_by_email($1)"#,
+        &user.attrs.email,
+    )
+    .fetch_optional(&mut **tx)
+    .await?;
     let membership = match &account {
         Some(account_id) => access::membership(tx, org_id, account_id).await?,
         None => None,
@@ -740,31 +753,35 @@ async fn apply_user(
 }
 
 async fn set_member_status(
-    conn: &mut AnyConnection,
+    conn: &mut PgConnection,
     org_id: &str,
     account_id: &str,
     status: &str,
 ) -> ScimResult<()> {
-    let seq: i64 = sqlx::query_scalar(
-        "UPDATE counters SET value = value + 1 WHERE name = 'change_seq' RETURNING value",
+    let seq: i64 = sqlx::query_scalar!(
+        "UPDATE counters SET value = value + 1 WHERE name = 'change_seq' RETURNING value"
     )
     .fetch_one(&mut *conn)
     .await?;
-    sqlx::query("UPDATE org_members SET status = $1, seq = $2, updated_at = $3 WHERE org_id = $4 AND account_id = $5")
-        .bind(status)
-        .bind(seq)
-        .bind(now_ms())
-        .bind(org_id)
-        .bind(account_id)
+    sqlx::query!(
+        "UPDATE org_members SET status = $1, seq = $2, updated_at = $3 WHERE org_id = $4 AND account_id = $5",
+        status,
+        seq,
+        now_ms(),
+        org_id,
+        account_id,
+    )
         .execute(&mut *conn)
         .await?;
     Ok(())
 }
 
-async fn revoke_invitations(conn: &mut AnyConnection, org_id: &str, email: &str) -> ScimResult<()> {
-    sqlx::query("UPDATE org_invitations SET status = 'revoked' WHERE org_id = $1 AND email = $2 AND status = 'pending'")
-        .bind(org_id)
-        .bind(email)
+async fn revoke_invitations(conn: &mut PgConnection, org_id: &str, email: &str) -> ScimResult<()> {
+    sqlx::query!(
+        "UPDATE org_invitations SET status = 'revoked' WHERE org_id = $1 AND email = $2 AND status = 'pending'",
+        org_id,
+        email,
+    )
         .execute(&mut *conn)
         .await?;
     Ok(())
@@ -773,18 +790,18 @@ async fn revoke_invitations(conn: &mut AnyConnection, org_id: &str, email: &str)
 /// Creates (and mails) an invitation unless one is pending.
 async fn ensure_invitation(
     state: &AppState,
-    conn: &mut sqlx::Transaction<'_, sqlx::Any>,
+    conn: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     auth: &ScimAuth,
     email: &str,
     locale: crate::mail::Locale,
     now: i64,
 ) -> ScimResult<()> {
-    let pending: Option<i64> = sqlx::query_scalar(
-        "SELECT 1 FROM org_invitations WHERE org_id = $1 AND email = $2 AND status = 'pending' AND expires_at > $3",
+    let pending: Option<i64> = sqlx::query_scalar!(
+        "SELECT 1::BIGINT AS \"one!\" FROM org_invitations WHERE org_id = $1 AND email = $2 AND status = 'pending' AND expires_at > $3",
+        &auth.org_id,
+        email,
+        now,
     )
-    .bind(&auth.org_id)
-    .bind(email)
-    .bind(now)
     .fetch_optional(&mut **conn)
     .await?;
     if pending.is_some() {
@@ -795,24 +812,26 @@ async fn ensure_invitation(
         &passbox_core::random::bytes::<32>().map_err(|e| ApiError::Internal(e.into()))?,
     );
     let expires_at = now + INVITATION_TTL_MS;
-    sqlx::query(
+    sqlx::query!(
         "INSERT INTO org_invitations (id, org_id, email, role, token_hash, status, created_by, created_at, \
          expires_at, accepted_by, accepted_at) VALUES ($1, $2, $3, 'member', $4, 'pending', $5, $6, $7, NULL, NULL)",
+        &invitation_id,
+        &auth.org_id,
+        email,
+        hash(&token),
+        &auth.created_by,
+        now,
+        expires_at,
     )
-    .bind(&invitation_id)
-    .bind(&auth.org_id)
-    .bind(email)
-    .bind(hash(&token))
-    .bind(&auth.created_by)
-    .bind(now)
-    .bind(expires_at)
     .execute(&mut **conn)
     .await?;
-    let inviter: String = sqlx::query_scalar("SELECT email FROM accounts WHERE id = $1")
-        .bind(&auth.created_by)
-        .fetch_optional(&mut **conn)
-        .await?
-        .unwrap_or_default();
+    let inviter: String = sqlx::query_scalar!(
+        r#"SELECT email AS "email!" FROM account_directory WHERE id = $1"#,
+        &auth.created_by,
+    )
+    .fetch_optional(&mut **conn)
+    .await?
+    .unwrap_or_default();
     let link = state
         .mailer
         .public_url()
@@ -831,19 +850,20 @@ async fn ensure_invitation(
 }
 
 async fn save_user(
-    conn: &mut AnyConnection,
+    conn: &mut PgConnection,
     org_id: &str,
     user: &UserRow,
     insert: bool,
 ) -> ScimResult<()> {
     let a = &user.attrs;
     let key = a.user_name.to_lowercase();
-    let taken: Option<String> =
-        sqlx::query_scalar("SELECT id FROM scim_users WHERE org_id = $1 AND user_name_key = $2")
-            .bind(org_id)
-            .bind(&key)
-            .fetch_optional(&mut *conn)
-            .await?;
+    let taken: Option<String> = sqlx::query_scalar!(
+        "SELECT id FROM scim_users WHERE org_id = $1 AND user_name_key = $2",
+        org_id,
+        &key,
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
     if taken.is_some_and(|id| id != user.id) {
         return Err(ScimError::new(
             StatusCode::CONFLICT,
@@ -863,7 +883,7 @@ async fn save_user(
         .bind(&a.display_name)
         .bind(&a.given_name)
         .bind(&a.family_name)
-        .bind(i64::from(a.active))
+        .bind(a.active)
         .bind(&user.account_id)
         .bind(&user.suspended_from)
         .bind(user.version)
@@ -874,25 +894,25 @@ async fn save_user(
         .execute(&mut *conn)
         .await?;
     } else {
-        sqlx::query(
+        sqlx::query!(
             "UPDATE scim_users SET external_id = $1, user_name = $2, user_name_key = $3, email = $4, display_name = $5, \
              given_name = $6, family_name = $7, active = $8, account_id = $9, suspended_from = $10, version = $11, \
              updated_at = $12 WHERE id = $13 AND org_id = $14",
+            &a.external_id,
+            &a.user_name,
+            &key,
+            &a.email,
+            &a.display_name,
+            &a.given_name,
+            &a.family_name,
+            a.active,
+            user.account_id.as_deref(),
+            &user.suspended_from,
+            user.version,
+            user.updated_at,
+            &user.id,
+            org_id,
         )
-        .bind(&a.external_id)
-        .bind(&a.user_name)
-        .bind(&key)
-        .bind(&a.email)
-        .bind(&a.display_name)
-        .bind(&a.given_name)
-        .bind(&a.family_name)
-        .bind(i64::from(a.active))
-        .bind(&user.account_id)
-        .bind(&user.suspended_from)
-        .bind(user.version)
-        .bind(user.updated_at)
-        .bind(&user.id)
-        .bind(org_id)
         .execute(&mut *conn)
         .await?;
     }
@@ -924,12 +944,11 @@ async fn write_user(
     mut user: UserRow,
     previous: Option<&UserRow>,
 ) -> ScimResult<UserRow> {
-    // Read before the transaction: SQLite in memory has one connection.
-    let locale = crate::instance::load_settings(&state.db)
+    let mut tx = state.db.as_org(OrgCredential::Scim, &auth.org_id).await?;
+    let locale = crate::instance::load_settings(&mut tx)
         .await
         .map_err(ApiError::Internal)?
         .default_locale;
-    let mut tx = db::begin_write(&state.db).await?;
     let mut mails = false;
     let ended = apply_user(
         state,
@@ -981,11 +1000,11 @@ async fn update_user(
     id: &str,
     attrs: UserAttrs,
 ) -> ScimResult<Response> {
-    let mut conn = state.db.acquire().await?;
+    let mut conn = state.db.as_org(OrgCredential::Scim, &auth.org_id).await?;
     let previous = load_user(&mut conn, &auth.org_id, id).await?;
     drop(conn);
     if previous.attrs == attrs {
-        let mut conn = state.db.acquire().await?;
+        let mut conn = state.db.as_org(OrgCredential::Scim, &auth.org_id).await?;
         let groups = user_groups(&mut conn, id).await?;
         return Ok(scim_json(
             StatusCode::OK,
@@ -997,7 +1016,7 @@ async fn update_user(
     user.version += 1;
     user.updated_at = now_ms();
     let user = write_user(state, auth, user, Some(&previous)).await?;
-    let mut conn = state.db.acquire().await?;
+    let mut conn = state.db.as_org(OrgCredential::Scim, &auth.org_id).await?;
     let groups = user_groups(&mut conn, id).await?;
     Ok(scim_json(
         StatusCode::OK,
@@ -1070,7 +1089,7 @@ pub async fn patch_user(
     body: Bytes,
 ) -> ScimResult<Response> {
     let ops = operations(&parse_body(&body)?)?;
-    let mut conn = state.db.acquire().await?;
+    let mut conn = state.db.as_org(OrgCredential::Scim, &auth.org_id).await?;
     let mut attrs = load_user(&mut conn, &auth.org_id, &id).await?.attrs;
     drop(conn);
     for (op, path, value) in ops {
@@ -1098,23 +1117,25 @@ pub async fn delete_user(
     auth: ScimAuth,
     Path(id): Path<String>,
 ) -> ScimResult<StatusCode> {
-    let mut conn = state.db.acquire().await?;
+    let mut conn = state.db.as_org(OrgCredential::Scim, &auth.org_id).await?;
     let previous = load_user(&mut conn, &auth.org_id, &id).await?;
     drop(conn);
     let mut user = previous.clone();
     user.attrs.active = false;
-    let locale = crate::instance::load_settings(&state.db)
+    let mut tx = state.db.as_org(OrgCredential::Scim, &auth.org_id).await?;
+    let locale = crate::instance::load_settings(&mut tx)
         .await
         .map_err(ApiError::Internal)?
         .default_locale;
-    let mut tx = db::begin_write(&state.db).await?;
     let mut mails = false;
     let ended = apply_user(&state, &mut tx, &auth, &mut user, None, locale, &mut mails).await?;
-    sqlx::query("DELETE FROM scim_users WHERE id = $1 AND org_id = $2")
-        .bind(&id)
-        .bind(&auth.org_id)
-        .execute(&mut *tx)
-        .await?;
+    sqlx::query!(
+        "DELETE FROM scim_users WHERE id = $1 AND org_id = $2",
+        &id,
+        &auth.org_id,
+    )
+    .execute(&mut *tx)
+    .await?;
     tx.commit().await?;
     deprovision_events(&state, &ended).await;
     Ok(StatusCode::NO_CONTENT)
@@ -1134,31 +1155,42 @@ struct GroupRow {
 }
 
 async fn group_members(
-    conn: &mut AnyConnection,
+    conn: &mut PgConnection,
     group_id: &str,
 ) -> ScimResult<Vec<(String, String)>> {
-    Ok(sqlx::query_as(
+    Ok(sqlx::query!(
         "SELECT scim_users.id, scim_users.user_name FROM scim_group_members \
          JOIN scim_users ON scim_users.id = scim_group_members.user_id \
          WHERE scim_group_members.group_id = $1 ORDER BY scim_users.user_name",
+        group_id,
     )
-    .bind(group_id)
+    .map(|row| (row.id, row.user_name))
     .fetch_all(&mut *conn)
     .await?)
 }
 
 async fn load_groups(
-    conn: &mut AnyConnection,
+    conn: &mut PgConnection,
     org_id: &str,
     id: Option<&str>,
 ) -> ScimResult<Vec<GroupRow>> {
-    let rows: Vec<(String, String, String, i64, i64, i64)> = sqlx::query_as(
+    let rows: Vec<(String, String, String, i64, i64, i64)> = sqlx::query!(
         "SELECT id, external_id, display_name, version, created_at, updated_at FROM scim_groups \
          WHERE org_id = $1 AND ($2 = '' OR id = $3) ORDER BY created_at, id",
+        org_id,
+        id.unwrap_or(""),
+        id.unwrap_or(""),
     )
-    .bind(org_id)
-    .bind(id.unwrap_or(""))
-    .bind(id.unwrap_or(""))
+    .map(|row| {
+        (
+            row.id,
+            row.external_id,
+            row.display_name,
+            row.version,
+            row.created_at,
+            row.updated_at,
+        )
+    })
     .fetch_all(&mut *conn)
     .await?;
     let mut groups = Vec::with_capacity(rows.len());
@@ -1233,55 +1265,60 @@ async fn save_group(
     members: &[String],
     insert: bool,
 ) -> ScimResult<()> {
-    let mut tx = db::begin_write(&state.db).await?;
+    let mut tx = state.db.as_org(OrgCredential::Scim, &auth.org_id).await?;
     if insert {
-        sqlx::query(
+        sqlx::query!(
             "INSERT INTO scim_groups (id, org_id, external_id, display_name, version, created_at, updated_at) \
              VALUES ($1, $2, $3, $4, $5, $6, $7)",
+            &group.id,
+            &auth.org_id,
+            &group.external_id,
+            &group.display_name,
+            group.version,
+            group.created_at,
+            group.updated_at,
         )
-        .bind(&group.id)
-        .bind(&auth.org_id)
-        .bind(&group.external_id)
-        .bind(&group.display_name)
-        .bind(group.version)
-        .bind(group.created_at)
-        .bind(group.updated_at)
         .execute(&mut *tx)
         .await?;
     } else {
-        sqlx::query(
+        sqlx::query!(
             "UPDATE scim_groups SET external_id = $1, display_name = $2, version = $3, updated_at = $4 \
              WHERE id = $5 AND org_id = $6",
+            &group.external_id,
+            &group.display_name,
+            group.version,
+            group.updated_at,
+            &group.id,
+            &auth.org_id,
         )
-        .bind(&group.external_id)
-        .bind(&group.display_name)
-        .bind(group.version)
-        .bind(group.updated_at)
-        .bind(&group.id)
-        .bind(&auth.org_id)
         .execute(&mut *tx)
         .await?;
-        sqlx::query("DELETE FROM scim_group_members WHERE group_id = $1")
-            .bind(&group.id)
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query!(
+            "DELETE FROM scim_group_members WHERE group_id = $1",
+            &group.id,
+        )
+        .execute(&mut *tx)
+        .await?;
     }
     for member in members {
-        let known: Option<i64> =
-            sqlx::query_scalar("SELECT 1 FROM scim_users WHERE id = $1 AND org_id = $2")
-                .bind(member)
-                .bind(&auth.org_id)
-                .fetch_optional(&mut *tx)
-                .await?;
+        let known: Option<i64> = sqlx::query_scalar!(
+            "SELECT 1::BIGINT AS \"one!\" FROM scim_users WHERE id = $1 AND org_id = $2",
+            member,
+            &auth.org_id,
+        )
+        .fetch_optional(&mut *tx)
+        .await?;
         if known.is_none() {
             return Err(ScimError::bad(
                 "invalidValue",
                 format!("unknown member {member}"),
             ));
         }
-        sqlx::query("INSERT INTO scim_group_members (group_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING")
-            .bind(&group.id)
-            .bind(member)
+        sqlx::query!(
+            "INSERT INTO scim_group_members (group_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+            &group.id,
+            member,
+        )
             .execute(&mut *tx)
             .await?;
     }
@@ -1329,7 +1366,7 @@ pub async fn list_groups(
     Query(query): Query<ListQuery>,
 ) -> ScimResult<Response> {
     let filter = parsed_filter(&query)?;
-    let mut conn = state.db.acquire().await?;
+    let mut conn = state.db.as_org(OrgCredential::Scim, &auth.org_id).await?;
     let groups: Vec<GroupRow> = load_groups(&mut conn, &auth.org_id, None)
         .await?
         .into_iter()
@@ -1349,7 +1386,7 @@ pub async fn list_groups(
 }
 
 async fn load_group(state: &AppState, org_id: &str, id: &str) -> ScimResult<GroupRow> {
-    let mut conn = state.db.acquire().await?;
+    let mut conn = state.db.as_org(OrgCredential::Scim, org_id).await?;
     load_groups(&mut conn, org_id, Some(id))
         .await?
         .into_iter()
@@ -1494,11 +1531,15 @@ pub async fn delete_group(
     auth: ScimAuth,
     Path(id): Path<String>,
 ) -> ScimResult<StatusCode> {
-    let deleted = sqlx::query("DELETE FROM scim_groups WHERE id = $1 AND org_id = $2")
-        .bind(&id)
-        .bind(&auth.org_id)
-        .execute(&state.db)
-        .await?;
+    let mut tx = state.db.as_org(OrgCredential::Scim, &auth.org_id).await?;
+    let deleted = sqlx::query!(
+        "DELETE FROM scim_groups WHERE id = $1 AND org_id = $2",
+        &id,
+        &auth.org_id,
+    )
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
     if deleted.rows_affected() == 0 {
         return Err(ScimError::not_found());
     }
@@ -1560,13 +1601,13 @@ pub async fn overview(
     Path(org_id): Path<String>,
 ) -> ApiResult<Json<ScimOverview>> {
     validate::id("organization id", &org_id)?;
-    let mut conn = state.db.acquire().await?;
+    let mut conn = state.db.as_account(&session.account_id).await?;
     access::require_admin(&mut conn, &org_id, &session.account_id).await?;
-    let tokens: Vec<(String, String, String, i64, i64, i64)> = sqlx::query_as(
+    let tokens: Vec<(String, String, String, i64, i64, i64)> = sqlx::query!(
         "SELECT id, name, created_by, created_at, expires_at, last_used_at FROM scim_tokens WHERE org_id = $1 \
          ORDER BY created_at DESC",
-    )
-    .bind(&org_id)
+        &org_id,
+    ).map(|row| (row.id, row.name, row.created_by, row.created_at, row.expires_at, row.last_used_at))
     .fetch_all(&mut *conn)
     .await?;
     let now = now_ms();
@@ -1575,21 +1616,22 @@ pub async fn overview(
         .map_err(|_| ApiError::Internal(anyhow::anyhow!("loading SCIM users")))?;
     let mut provisioned = Vec::with_capacity(users.len());
     for user in users {
-        let member: Option<(String, String)> = sqlx::query_as(
+        let member: Option<(String, String)> = sqlx::query!(
             "SELECT org_members.account_id, org_members.status FROM org_members \
-             JOIN accounts ON accounts.id = org_members.account_id \
+             JOIN account_directory accounts ON accounts.id = org_members.account_id \
              WHERE org_members.org_id = $1 AND accounts.email = $2",
+            &org_id,
+            &user.attrs.email,
         )
-        .bind(&org_id)
-        .bind(&user.attrs.email)
+        .map(|row| (row.account_id, row.status))
         .fetch_optional(&mut *conn)
         .await?;
-        let invited: Option<i64> = sqlx::query_scalar(
-            "SELECT 1 FROM org_invitations WHERE org_id = $1 AND email = $2 AND status = 'pending' AND expires_at > $3",
+        let invited: Option<i64> = sqlx::query_scalar!(
+            "SELECT 1::BIGINT AS \"one!\" FROM org_invitations WHERE org_id = $1 AND email = $2 AND status = 'pending' AND expires_at > $3",
+            &org_id,
+            &user.attrs.email,
+            now,
         )
-        .bind(&org_id)
-        .bind(&user.attrs.email)
-        .bind(now)
         .fetch_optional(&mut *conn)
         .await?;
         let status = match (&member, user.attrs.active) {
@@ -1701,22 +1743,24 @@ pub async fn create_token(
             "expiresInDays must be between 1 and 730",
         ));
     }
-    let mut tx = db::begin_write(&state.db).await?;
+    let mut tx = state.db.as_account(&session.account_id).await?;
     access::require_admin(&mut tx, &org_id, &session.account_id).await?;
-    let kind: String = sqlx::query_scalar("SELECT kind FROM organizations WHERE id = $1")
-        .bind(&org_id)
-        .fetch_one(&mut *tx)
-        .await?;
+    let kind: String =
+        sqlx::query_scalar!("SELECT kind FROM organizations WHERE id = $1", &org_id,)
+            .fetch_one(&mut *tx)
+            .await?;
     if kind != "team" {
         return Err(ApiError::forbidden(
             "scim_team_only",
             "provisioning is available for team organizations",
         ));
     }
-    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM scim_tokens WHERE org_id = $1")
-        .bind(&org_id)
-        .fetch_one(&mut *tx)
-        .await?;
+    let count: i64 = sqlx::query_scalar!(
+        "SELECT COUNT(*) AS \"count!\" FROM scim_tokens WHERE org_id = $1",
+        &org_id,
+    )
+    .fetch_one(&mut *tx)
+    .await?;
     if count >= MAX_TOKENS {
         return Err(ApiError::bad_request("revoke a token first (at most 10)"));
     }
@@ -1729,17 +1773,17 @@ pub async fn create_token(
     );
     let now = now_ms();
     let expires_at = now + days * 24 * 60 * 60 * 1000;
-    sqlx::query(
+    sqlx::query!(
         "INSERT INTO scim_tokens (id, org_id, name, token_hash, created_by, created_at, expires_at, last_used_at) \
          VALUES ($1, $2, $3, $4, $5, $6, $7, 0)",
+        &id,
+        &org_id,
+        &name,
+        hash(&token),
+        &session.account_id,
+        now,
+        expires_at,
     )
-    .bind(&id)
-    .bind(&org_id)
-    .bind(&name)
-    .bind(hash(&token))
-    .bind(&session.account_id)
-    .bind(now)
-    .bind(expires_at)
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
@@ -1772,13 +1816,15 @@ pub async fn revoke_token(
 ) -> ApiResult<StatusCode> {
     validate::id("organization id", &org_id)?;
     validate::id("token id", &id)?;
-    let mut tx = db::begin_write(&state.db).await?;
+    let mut tx = state.db.as_account(&session.account_id).await?;
     access::require_admin(&mut tx, &org_id, &session.account_id).await?;
-    let deleted = sqlx::query("DELETE FROM scim_tokens WHERE id = $1 AND org_id = $2")
-        .bind(&id)
-        .bind(&org_id)
-        .execute(&mut *tx)
-        .await?;
+    let deleted = sqlx::query!(
+        "DELETE FROM scim_tokens WHERE id = $1 AND org_id = $2",
+        &id,
+        &org_id,
+    )
+    .execute(&mut *tx)
+    .await?;
     if deleted.rows_affected() == 0 {
         return Err(ApiError::NotFound);
     }
