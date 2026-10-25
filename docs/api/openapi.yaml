@@ -3495,7 +3495,8 @@ components:
         title: { type: string }
         domain: { type: string, description: The breached site, lower case. }
         breachDate: { type: string, description: "`YYYY-MM-DD` (often approximate)." }
-        addedDate: { type: string, description: "When it was published (ISO 8601). Passwords set before it count as affected." }
+        addedDate:
+          { type: string, description: "When it was published (ISO 8601). Passwords set before it count as affected." }
         modifiedDate: { type: string }
         pwnCount: { type: integer }
         dataClasses: { type: array, items: { type: string }, description: "`Passwords`, `Email addresses`, …" }
