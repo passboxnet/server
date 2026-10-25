@@ -331,7 +331,7 @@ fn agent_reveal_on(server: &str) {
     // core refuses the tick and the server refuses the reveal.
     approve(owner.clone(), true, 1);
     let result = broker.reveal(&prod, "debug prod", wait).unwrap();
-    assert!(!matches!(result, Ok(_)), "{result:?}");
+    assert!(result.is_err(), "{result:?}");
     let err = broker
         .backend()
         .agent_call(
@@ -382,5 +382,5 @@ fn agent_reveal_on(server: &str) {
     let result = broker
         .reveal(&staging, "work", Duration::from_millis(300))
         .unwrap();
-    assert!(!matches!(result, Ok(_)), "{result:?}");
+    assert!(result.is_err(), "{result:?}");
 }
