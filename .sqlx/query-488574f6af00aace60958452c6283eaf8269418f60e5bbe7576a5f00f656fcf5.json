@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO site_icons (domain, image, content_type, sha256, source_url, etag, last_modified, fetched_at, last_requested_at, retry_after, failures, claimed_until) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 0, 0) ON CONFLICT (domain) DO UPDATE SET image = EXCLUDED.image, content_type = EXCLUDED.content_type, sha256 = EXCLUDED.sha256, source_url = EXCLUDED.source_url, etag = EXCLUDED.etag, last_modified = EXCLUDED.last_modified, fetched_at = EXCLUDED.fetched_at, last_requested_at = GREATEST(site_icons.last_requested_at, EXCLUDED.last_requested_at), retry_after = EXCLUDED.retry_after, failures = 0, claimed_until = 0 WHERE EXCLUDED.image IS NOT NULL OR site_icons.image IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Bytea",
+        "Text",
+        "Bytea",
+        "Text",
+        "Text",
+        "Text",
+        "Int8",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "488574f6af00aace60958452c6283eaf8269418f60e5bbe7576a5f00f656fcf5"
+}

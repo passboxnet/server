@@ -124,6 +124,27 @@ fn history_icons_breaches_usage_health_and_bulk() {
     assert_eq!(client.icon("not a domain").unwrap(), None);
     assert_eq!(fetches.load(Ordering::SeqCst), 2);
 
+    // Bundled icons answer without asking the server, also for www.
+    let pack = site_icon_pack(&[("bundled.example", b"RIFF\0\0\0\0WEBPbundled")]);
+    let installed = passbox_client::site_icons::set_bundled_site_icons(Some(
+        passbox_client::site_icons::SiteIconPack::parse(pack).unwrap(),
+    ));
+    assert_eq!(installed, 1);
+    let bundled = client.icon("www.bundled.example").unwrap().unwrap();
+    assert!(bundled.ends_with(b"WEBPbundled"));
+    assert_eq!(client.icon("bundled.example").unwrap(), Some(bundled));
+    assert!(store.get("cache_icon_bundled_example").unwrap().is_none());
+    assert_eq!(
+        client
+            .icon("github.com")
+            .unwrap()
+            .as_deref()
+            .map(|i| &i[..4]),
+        Some(&b"\x89PNG"[..])
+    );
+    assert_eq!(fetches.load(Ordering::SeqCst), 2);
+    passbox_client::site_icons::set_bundled_site_icons(None);
+
     // Breach checks with k-anonymity, deduplicated and cached.
     let calls = Arc::new(AtomicUsize::new(0));
     client.set_breach_range(Box::new(FakePwned(calls.clone())));
@@ -210,4 +231,25 @@ fn history_icons_breaches_usage_health_and_bulk() {
     // Signing out removes the usage data.
     client.sign_out().unwrap();
     assert!(store.get("cache_usage").unwrap().is_none());
+}
+
+/// A bundled icon pack in the generator's format (see `site_icons`).
+fn site_icon_pack(icons: &[(&str, &[u8])]) -> Vec<u8> {
+    let index: usize = icons.iter().map(|(d, _)| 1 + d.len() + 8).sum();
+    let mut out = b"PBIC\x01\x40\0\0".to_vec();
+    out.extend_from_slice(&u32::try_from(icons.len()).unwrap().to_le_bytes());
+    out.extend_from_slice(&u32::try_from(16 + index).unwrap().to_le_bytes());
+    let mut offset = 0u32;
+    for (domain, image) in icons {
+        out.push(u8::try_from(domain.len()).unwrap());
+        out.extend_from_slice(domain.as_bytes());
+        out.extend_from_slice(&offset.to_le_bytes());
+        let length = u32::try_from(image.len()).unwrap();
+        out.extend_from_slice(&length.to_le_bytes());
+        offset += length;
+    }
+    for (_, image) in icons {
+        out.extend_from_slice(image);
+    }
+    out
 }

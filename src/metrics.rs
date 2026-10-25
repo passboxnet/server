@@ -65,6 +65,8 @@ struct Series {
 #[derive(Default)]
 pub struct Metrics {
     requests: Mutex<BTreeMap<(&'static str, &'static str), Series>>,
+    /// Website icon lookups by tier and background refreshes.
+    pub icons: crate::api::icons::IconMetrics,
 }
 
 /// The route class of a request path.
@@ -120,6 +122,7 @@ impl Metrics {
             env!("CARGO_PKG_VERSION")
         );
         self.render_requests(&mut out);
+        self.icons.render(&mut out);
         out.push_str(
             "# HELP passbox_db_pool_connections Open database connections per pool and state.\n\
              # TYPE passbox_db_pool_connections gauge\n",

@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE site_icons SET failures = failures + 1, claimed_until = $2 WHERE domain = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "006fa984bc986251a8df886c578e4d07c2c39bcedc2ef4fa6ec2f4f102e6e116"
+}

@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE site_icons SET image = NULL, content_type = NULL, sha256 = NULL, source_url = NULL, etag = NULL, last_modified = NULL, fetched_at = $2, retry_after = $3, failures = 0, claimed_until = 0 WHERE domain = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f9c06de797f098f9774ba82301a2681a24a8c61a0de91e13ab30cda061df9b81"
+}

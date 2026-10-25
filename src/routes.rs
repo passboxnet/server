@@ -39,7 +39,30 @@ pub fn router(config: &Config, state: AppState) -> Router {
             metrics,
             crate::metrics::track,
         ))
-        .layer(TraceLayer::new_for_http())
+        .layer(
+            TraceLayer::new_for_http().make_span_with(|request: &axum::extract::Request| {
+                tracing::debug_span!(
+                    "request",
+                    method = %request.method(),
+                    uri = %loggable_uri(request.uri()),
+                    version = ?request.version(),
+                )
+            }),
+        )
+}
+
+/// The request URI as it may appear in logs. Website icon requests show
+/// the route instead of the domain: request logs can be tied to sessions
+/// and IP addresses, and the domains are the sites someone keeps logins for.
+pub fn loggable_uri(uri: &axum::http::Uri) -> std::borrow::Cow<'_, str> {
+    let path = uri.path();
+    if path.starts_with("/api/v1/icons/") {
+        return std::borrow::Cow::Borrowed("/api/v1/icons/{domain}");
+    }
+    match uri.path_and_query() {
+        Some(path_and_query) => std::borrow::Cow::Borrowed(path_and_query.as_str()),
+        None => std::borrow::Cow::Borrowed(path),
+    }
 }
 
 /// Lets clients on other origins (the desktop app, a web client served
@@ -220,5 +243,18 @@ mod tests {
     async fn unknown_route_is_not_found_without_web_dir() {
         let (status, _) = get_json(app().await, "/does-not-exist").await;
         assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn icon_domains_stay_out_of_request_logs() {
+        let uri = |s: &str| s.parse::<axum::http::Uri>().unwrap();
+        assert_eq!(
+            loggable_uri(&uri("/api/v1/icons/netflix.com")),
+            "/api/v1/icons/{domain}"
+        );
+        assert_eq!(
+            loggable_uri(&uri("/api/v1/items/abc?x=1")),
+            "/api/v1/items/abc?x=1"
+        );
     }
 }

@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM site_icons WHERE last_requested_at < $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "077b24b2f960fe8b41f909a2ea086509a83bbed79100dbbf689898f0e1f045ca"
+}
