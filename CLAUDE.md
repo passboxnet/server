@@ -4,5 +4,5 @@
 - This is one monorepo on purpose. Keep package boundaries clean (no imports between apps); splitting happens later.
 - All cryptography belongs in `crates/core`. Web and extension use it via `@passbox/core-wasm`.
 - License is MIT. Self-hosting must always include every feature.
-- SQL must run on SQLite and PostgreSQL (see docs/adr/0004-database.md).
+- PostgreSQL only (see docs/adr/0007-postgresql-only.md). Every table with tenant data has RLS; see docs/architecture/database-security.md.
 - Checks: `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, `pnpm lint`, `pnpm build:wasm && pnpm typecheck && pnpm test && pnpm build`, `pnpm e2e`.

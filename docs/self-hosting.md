@@ -17,7 +17,12 @@ Every option can be set as a command-line flag or an environment variable.
 | Variable | Default | Description |
 | --- | --- | --- |
 | `PASSBOX_BIND` | `0.0.0.0:8080` | Address and port to listen on |
-| `PASSBOX_DATABASE_URL` | `sqlite://passbox.db?mode=rwc` | `sqlite://<path>?mode=rwc` or `postgres://user:password@host/database` |
+| `PASSBOX_DATABASE_URL` | required | PostgreSQL URL of the `passbox_app` role, for example `postgres://passbox_app:secret@db/passbox?sslmode=verify-full`. See [Database](#database) |
+| `PASSBOX_MIGRATION_DATABASE_URL` | `PASSBOX_DATABASE_URL` | URL of the `passbox_migrator` role, which owns the schema and runs migrations |
+| `PASSBOX_WORKER_DATABASE_URL` | `PASSBOX_DATABASE_URL` | URL of the `passbox_worker` role for background jobs (mail, webhooks, attachment cleanup, breach monitoring) |
+| `PASSBOX_DATABASE_MAX_CONNECTIONS` | `10` | Connections per pool (the worker pool uses at most 4) |
+| `PASSBOX_AUTO_MIGRATE` | `true` | Apply pending migrations at start. Set `false` when you run `passbox-server migrate` before rolling out new servers |
+| `PASSBOX_METRICS_BIND` | unset | Address for Prometheus metrics, for example `127.0.0.1:9090` (`GET /metrics`). Keep it on a private network |
 | `PASSBOX_WEB_DIR` | unset | Directory with the built web client; the Docker image sets it |
 | `PASSBOX_TRUST_PROXY` | `false` | Take the client IP from `X-Forwarded-For`. Enable only behind a reverse proxy that sets it; client IPs are used for rate limiting and shown in the activity log and device list |
 | `PASSBOX_AUTH_RATE_LIMIT` | `60` | Sign-in and registration requests per client IP and minute. Raise it only for test servers that many clients share |
@@ -40,7 +45,34 @@ Every option can be set as a command-line flag or an environment variable.
 | `PASSBOX_LOG_FORMAT` | `pretty` | `pretty` or `json` |
 | `RUST_LOG` | `info` | Log level, for example `debug` or `passbox_server=debug` |
 
-Migrations run automatically at startup.
+## Database
+
+Passbox needs PostgreSQL 15 or newer ([ADR 0007](adr/0007-postgresql-only.md)). It separates tenants with row level security in the database as well as in the application; how that works and what it protects: [database-security.md](architecture/database-security.md).
+
+**Roles.** Create the database, then run [`crates/server/sql/roles.sql`](../crates/server/sql/roles.sql) once as a superuser, connected to it. It creates three roles and is safe to run again:
+
+| Role | Variable | Purpose |
+| --- | --- | --- |
+| `passbox_migrator` | `PASSBOX_MIGRATION_DATABASE_URL` | Owns the schema, runs migrations. Has `BYPASSRLS` |
+| `passbox_app` | `PASSBOX_DATABASE_URL` | Serves requests; subject to row level security |
+| `passbox_worker` | `PASSBOX_WORKER_DATABASE_URL` | Background jobs; subject to row level security, access to their tables only |
+
+```sh
+createdb passbox
+psql -d passbox -v ON_ERROR_STOP=1 -f crates/server/sql/roles.sql
+psql -d passbox -c "ALTER ROLE passbox_migrator PASSWORD '…'" \
+  -c "ALTER ROLE passbox_app PASSWORD '…'" -c "ALTER ROLE passbox_worker PASSWORD '…'"
+```
+
+The script sets no passwords; set them as above or use certificate authentication in `pg_hba.conf`. Run it before the first migration: the migrations grant table privileges only to roles that exist. A single role for everything (only `PASSBOX_DATABASE_URL`) still works, but then that role owns the tables, row level security does not apply to it, and the server warns at every start. The same warning appears for a superuser.
+
+**TLS.** Add `sslmode=verify-full` (and `sslrootcert=/path/to/ca.pem` for a private CA) to every URL when the database is on another host.
+
+**Migrations.** By default the server applies pending migrations at start with the migrator URL. For rolling updates with several servers, set `PASSBOX_AUTO_MIGRATE=false` and run `passbox-server migrate` once (with the same environment as the server; it connects with `PASSBOX_MIGRATION_DATABASE_URL`) before starting the new version. New servers report not ready on `/ready` until the database has their migrations.
+
+**Health checks.** `GET /health` answers `200` while the process runs (liveness). `GET /ready` answers `200` with the applied migration version when the database is reachable and has the migrations this binary expects, and `503` otherwise (readiness).
+
+**Metrics.** With `PASSBOX_METRICS_BIND` set, a separate listener serves `GET /metrics` in the Prometheus text format: requests by route and status class with latency histograms, connection pool usage, `passbox_db_ready`, and the depth of the mail and webhook queues. It contains no account data, but keep the address private (bind it to `127.0.0.1` or an internal interface).
 
 ## Administration
 
@@ -121,8 +153,7 @@ Apps show the icons (favicons) of the websites in a vault. So that the user's de
 
 Back up the database. Everything in it except the server secrets is encrypted by the clients, but treat backups as sensitive anyway.
 
-- **SQLite:** use `sqlite3 passbox.db ".backup backup.db"` while the server runs (the database uses WAL mode, so copying the file alone is not enough).
-- **PostgreSQL:** use `pg_dump` as usual.
+Use `pg_dump` (or your provider's snapshots) as the migrator or a superuser: the application roles see only the rows of the request they serve, so a dump with them is incomplete. Restore into a database where `roles.sql` ran first.
 
 Losing the `server_secrets` table invalidates all logins: users cannot sign in anymore, although their data stays intact. Keep it in your backups.
 

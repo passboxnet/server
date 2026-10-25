@@ -49,7 +49,8 @@ pnpm test                # TypeScript tests
 Run the server and the web client in two terminals:
 
 ```sh
-cargo run -p passbox-server   # http://localhost:8080, data in ./passbox.db
+PASSBOX_DATABASE_URL=postgres://postgres:postgres@localhost:5432/passbox \
+  cargo run -p passbox-server # http://localhost:8080 (PostgreSQL, see CONTRIBUTING.md)
 pnpm dev:web                  # http://localhost:5173, proxies /api to the server
 ```
 
@@ -58,13 +59,13 @@ Open http://localhost:5173, create an account and keep the Emergency Kit.
 ## Tests
 
 ```sh
-cargo test --workspace                     # Rust unit and API tests (SQLite)
-PASSBOX_TEST_DATABASE_URL=postgres://user:pass@localhost/passbox_test \
-  cargo test -p passbox-server --test api  # the same API tests on PostgreSQL
+PASSBOX_TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5432/postgres \
+  cargo test --workspace                   # Rust unit and API tests (PostgreSQL superuser URL)
 pnpm test                                  # TypeScript unit tests
 PASSBOX_TEST_SERVER_URL=http://127.0.0.1:8080 \
   pnpm --filter @passbox/client test       # client against a running server
-pnpm --filter @passbox/web build && pnpm e2e   # browser tests, start their own server
+PASSBOX_E2E_DATABASE_URL=postgres://postgres:postgres@localhost:5432/postgres \
+  pnpm e2e                                 # browser tests (after pnpm --filter @passbox/web build)
 ```
 
 Other entry points:
