@@ -116,8 +116,9 @@ impl TestDatabase {
 }
 
 /// Drops test databases left behind by test processes that ended without
-/// dropping theirs (servers in background threads), once they are a few
-/// hours old.
+/// dropping theirs (servers in background threads). Only databases older
+/// than half an hour, and without `FORCE`: one still in use by a running
+/// test has connections, so dropping it fails and it stays.
 async fn drop_stale(conn: &mut PgConnection, now: i64) {
     let names: Vec<String> = sqlx::query_scalar(
         "SELECT datname::text FROM pg_database WHERE datname LIKE 'passbox\\_test\\_%'",
@@ -130,10 +131,10 @@ async fn drop_stale(conn: &mut PgConnection, now: i64) {
             .strip_prefix("passbox_test_")
             .and_then(|rest| rest.split('_').next())
             .and_then(|secs| secs.parse::<i64>().ok());
-        if created.is_some_and(|created| now - created > 6 * 60 * 60) {
+        if created.is_some_and(|created| now - created > 30 * 60) {
             let _ = conn
                 .execute(sqlx::AssertSqlSafe(format!(
-                    "DROP DATABASE IF EXISTS {name} WITH (FORCE)"
+                    "DROP DATABASE IF EXISTS {name}"
                 )))
                 .await;
         }
