@@ -8,6 +8,7 @@ use passbox_core::opaque::ServerKeys;
 use passbox_core::random;
 
 use crate::api::attachments::AttachmentLimits;
+use crate::api::breach::BreachService;
 use crate::api::icons::IconService;
 use crate::blobs::{BlobStore, DiskBlobStore};
 use crate::db::Db;
@@ -43,6 +44,9 @@ pub struct AppState {
     pub blobs: Arc<dyn BlobStore>,
     /// Attachment size limit and quotas.
     pub attachment_limits: AttachmentLimits,
+    /// Have I Been Pwned proxy and email monitoring (`PASSBOX_BREACH_PROXY`,
+    /// `PASSBOX_HIBP_API_KEY`).
+    pub breach: Arc<BreachService>,
 }
 
 impl AppState {
@@ -90,6 +94,7 @@ impl AppState {
             // `serve` replaces it with `PASSBOX_BLOB_DIR`.
             blobs: Arc::new(DiskBlobStore::temporary()),
             attachment_limits: AttachmentLimits::default(),
+            breach: Arc::new(BreachService::http()),
             db,
             opaque: Arc::new(opaque),
             prelogin_key: Arc::new(prelogin_key),

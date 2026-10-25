@@ -67,6 +67,12 @@ pub enum Template {
     RecoveryCodeCreated,
     /// A test mail sent from the administration. Parameters: `requestedBy`.
     Test,
+    /// Confirms an address for email breach monitoring (to that address).
+    /// Parameters: `email`, `code`, `minutes`.
+    BreachMonitorCode,
+    /// A monitored address appeared in new breaches (to the account).
+    /// Parameters: `monitored`, `breaches` (titles), `count`, `link`.
+    BreachMonitorAlert,
 }
 
 impl Template {
@@ -88,6 +94,8 @@ impl Template {
             Self::RecoveryUsed => "recovery_used",
             Self::RecoveryCodeCreated => "recovery_code_created",
             Self::Test => "test",
+            Self::BreachMonitorCode => "breach_monitor_code",
+            Self::BreachMonitorAlert => "breach_monitor_alert",
         }
     }
 
@@ -713,6 +721,72 @@ pub fn render(template: Template, locale: Locale, params: &Value, ctx: &Context<
                 format!("New recovery code for {instance}")
             }
         }
+        Template::BreachMonitorCode => {
+            let code = param(params, "code");
+            let minutes = param(params, "minutes");
+            blocks.push(Block::Paragraph(if de {
+                format!(
+                    "jemand hat in {instance} die Leak-Überwachung für {email} eingeschaltet. Mit diesem Code bestätigen Sie, dass die Adresse Ihnen gehört:"
+                )
+            } else {
+                format!(
+                    "Someone turned on breach monitoring for {email} in {instance}. Enter this code to confirm that the address is yours:"
+                )
+            }));
+            blocks.push(Block::Details(vec![("Code".to_owned(), code)]));
+            blocks.push(Block::Paragraph(if de {
+                format!(
+                    "Der Code ist {minutes} Minuten gültig. {instance} prüft danach regelmäßig bei Have I Been Pwned, ob die Adresse in neuen Datenlecks auftaucht. Wenn Sie das nicht waren, ignorieren Sie diese E-Mail."
+                )
+            } else {
+                format!(
+                    "The code is valid for {minutes} minutes. {instance} will then regularly ask Have I Been Pwned whether the address appears in new data breaches. If this wasn't you, ignore this email."
+                )
+            }));
+            if de {
+                format!(
+                    "Bestätigungscode für die Leak-Überwachung: {}",
+                    param(params, "code")
+                )
+            } else {
+                format!(
+                    "Breach monitoring confirmation code: {}",
+                    param(params, "code")
+                )
+            }
+        }
+        Template::BreachMonitorAlert => {
+            let monitored = param(params, "monitored");
+            let breaches = param(params, "breaches");
+            blocks.push(Block::Paragraph(if de {
+                format!(
+                    "Ihre Adresse {monitored} wurde in einem neuen Datenleck gefunden: {breaches}."
+                )
+            } else {
+                format!("Your address {monitored} was found in a new data breach: {breaches}.")
+            }));
+            blocks.push(Block::Paragraph(if de {
+                "Ändern Sie das Passwort bei den betroffenen Diensten und überall, wo Sie es ebenfalls verwendet haben. Der Sicherheits-Check in Passbox zeigt, welche Einträge betroffen sind."
+                    .to_owned()
+            } else {
+                "Change the password for the affected services and anywhere else you used it. The security check in Passbox shows which items are affected."
+                    .to_owned()
+            }));
+            push_link(
+                &mut blocks,
+                params,
+                if de {
+                    "Sicherheits-Check öffnen"
+                } else {
+                    "Open the security check"
+                },
+            );
+            if de {
+                format!("Neues Datenleck für {monitored}")
+            } else {
+                format!("New data breach for {monitored}")
+            }
+        }
         Template::Test => {
             let requested_by = param(params, "requestedBy");
             blocks.push(Block::Paragraph(if de {
@@ -859,7 +933,9 @@ mod tests {
         public_url: Some("https://vault.example.com"),
     };
 
-    const ALL: [Template; 16] = [
+    const ALL: [Template; 18] = [
+        Template::BreachMonitorCode,
+        Template::BreachMonitorAlert,
         Template::Invitation,
         Template::NewDevice,
         Template::MasterPasswordChanged,

@@ -20,6 +20,8 @@ use tower::ServiceExt;
 
 #[path = "api/admin.rs"]
 mod admin;
+#[path = "api/breach.rs"]
+mod breach;
 #[path = "api/comfort.rs"]
 mod comfort;
 #[path = "api/org_admin.rs"]
@@ -264,6 +266,7 @@ async fn run_all(database_url: &str) {
     known_devices_survive_email_lockout(&server).await;
     item_history(&server).await;
     website_icons(&server).await;
+    breach::breach_proxy_and_monitoring(&server).await;
     security_headers_are_set(&server).await;
     two_factor_totp_and_recovery_codes(&server).await;
     two_factor_remember_device(&server).await;

@@ -42,6 +42,31 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
             std::sync::Arc::new(api::icons::HttpIconFetcher::new()),
         ));
     }
+    {
+        let upstream = std::sync::Arc::new(api::breach::HttpUpstream::new(
+            &config.pwned_passwords_url,
+            &config.hibp_api_url,
+            config
+                .hibp_api_key
+                .clone()
+                .filter(|key| !key.trim().is_empty()),
+        ));
+        let mut breach = api::breach::BreachService::new(
+            config.breach_proxy == config::Switch::On,
+            config
+                .hibp_api_key
+                .as_ref()
+                .is_some_and(|key| !key.trim().is_empty()),
+            upstream,
+        );
+        breach.check_interval =
+            std::time::Duration::from_secs(config.hibp_check_hours.max(1) * 60 * 60);
+        breach.requests_per_minute = config.hibp_rpm.max(1);
+        if breach.monitoring {
+            info!("email breach monitoring is on (Have I Been Pwned)");
+        }
+        state.breach = std::sync::Arc::new(breach);
+    }
     state.mailer = mail::Mailer::new(
         state.db.clone(),
         &mail::MailConfig {
@@ -61,6 +86,7 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
     api::sso::oidc::init_from_env();
     api::org_events::spawn_worker(state.clone());
     api::attachments::spawn_sweeper(state.clone());
+    api::breach::spawn_worker(state.clone());
     let app = routes::router(&config, state);
     let listener = TcpListener::bind(config.bind)
         .await
