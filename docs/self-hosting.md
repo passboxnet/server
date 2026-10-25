@@ -38,15 +38,15 @@ Optional settings (mail, admins, Have I Been Pwned) are at the end of `.env.exam
 
 ### Database roles
 
-On its first start, `initdb/10-passbox-roles.sh` creates the database `passbox` and three roles:
+On its first start, before the `migrate` service runs, `initdb/10-passbox-roles.sh` creates the database `passbox`, runs [`crates/server/sql/roles.sql`](../crates/server/sql/roles.sql) in it (mounted into the container from the checkout, so run Compose from a full checkout) and sets the passwords from `.env`:
 
 | Role | Used for | Rights |
 | --- | --- | --- |
-| `passbox_migrator` | `PASSBOX_MIGRATION_DATABASE_URL`, the `migrate` service | Owns the schema and runs migrations |
+| `passbox_migrator` | `PASSBOX_MIGRATION_DATABASE_URL`, the `migrate` service | Owns the database and the schema, runs migrations. Has `BYPASSRLS` (the migrations force row level security on the tables it owns) |
 | `passbox_app` | `PASSBOX_DATABASE_URL`, the API | Reads and writes app tables; no `BYPASSRLS`, so row-level security applies |
 | `passbox_worker` | `PASSBOX_WORKER_DATABASE_URL`, background jobs | Narrow grants for mail, webhooks and other jobs |
 
-The migrations grant the table rights. The script only runs on an empty data volume; to change a password later, run `docker compose exec postgres psql -U postgres -c "ALTER ROLE passbox_app PASSWORD '…'"` and update `.env`.
+The migrations grant the table rights. The script only runs on an empty data volume. To restore the roles' attributes and grants later (safe to repeat), run `docker compose exec postgres psql -U postgres -d passbox -v ON_ERROR_STOP=1 -f /passbox/roles.sql`. To change a password later, run `docker compose exec postgres psql -U postgres -c "ALTER ROLE passbox_app PASSWORD '…'"` and update `.env`.
 
 ### Health checks
 
@@ -102,7 +102,7 @@ into `BACKUP_DIR` (default `deploy/compose/backups`) and deletes files older tha
 
 4. Start again: `docker compose up -d` (runs `migrate` first, so a backup from an older version is upgraded).
 
-Test a restore on another machine from time to time: copy `deploy/compose`, `.env` and a backup there, `docker compose up -d postgres`, then run steps 3 and 4.
+Test a restore on another machine from time to time: check out the same version there, copy `.env` and a backup into `deploy/compose`, `docker compose up -d postgres`, then run steps 3 and 4.
 
 ## Configuration
 
