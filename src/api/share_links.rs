@@ -22,7 +22,7 @@ use sha2::{Digest, Sha256};
 use super::access;
 use super::auth::Session;
 use super::validate;
-use crate::db::{self, now_ms};
+use crate::db::{Public, now_ms};
 use crate::error::{ApiError, ApiResult};
 use crate::security::ClientIp;
 use crate::state::AppState;
@@ -74,9 +74,10 @@ pub struct ListResponse {
     links: Vec<LinkInfo>,
 }
 
-async fn purge_expired(conn: &mut sqlx::AnyConnection) -> ApiResult<()> {
-    sqlx::query("DELETE FROM share_links WHERE expires_at <= $1")
-        .bind(now_ms())
+/// Deletes expired links of every account (a function: accounts cannot
+/// see each other's links).
+async fn purge_expired(conn: &mut sqlx::PgConnection) -> ApiResult<()> {
+    sqlx::query!("SELECT passbox.purge_expired_share_links($1)", now_ms())
         .execute(&mut *conn)
         .await?;
     Ok(())
@@ -115,7 +116,7 @@ pub async fn create(
         )));
     }
 
-    let mut tx = db::begin_write(&state.db).await?;
+    let mut tx = state.db.as_account(&session.account_id).await?;
     let mut org_id = None;
     if let Some(vault_id) = &req.vault_id {
         validate::id("vaultId", vault_id)?;
@@ -134,31 +135,33 @@ pub async fn create(
         }
     }
     purge_expired(&mut tx).await?;
-    let active: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM share_links WHERE account_id = $1")
-        .bind(&session.account_id)
-        .fetch_one(&mut *tx)
-        .await?;
+    let active: i64 = sqlx::query_scalar!(
+        "SELECT COUNT(*) AS \"count!\" FROM share_links WHERE account_id = $1",
+        &session.account_id,
+    )
+    .fetch_one(&mut *tx)
+    .await?;
     if active >= MAX_ACTIVE_LINKS {
         return Err(ApiError::bad_request(format!(
             "you have {MAX_ACTIVE_LINKS} active links; delete some first"
         )));
     }
-    sqlx::query(
+    sqlx::query!(
         "INSERT INTO share_links (id, account_id, org_id, vault_id, encrypted_label, blob, auth_hash, salt, \
          expires_at, max_views, views, failed_attempts, created_at, last_viewed_at) \
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 0, 0, $11, 0)",
+        &req.id,
+        &session.account_id,
+        org_id.as_deref(),
+        req.vault_id.as_deref(),
+        super::vaults::decode(&req.encrypted_label)?,
+        super::vaults::decode(&req.blob)?,
+        &req.auth_hash,
+        req.salt.as_deref(),
+        req.expires_at,
+        req.max_views,
+        now,
     )
-    .bind(&req.id)
-    .bind(&session.account_id)
-    .bind(&org_id)
-    .bind(&req.vault_id)
-    .bind(&req.encrypted_label)
-    .bind(&req.blob)
-    .bind(&req.auth_hash)
-    .bind(&req.salt)
-    .bind(req.expires_at)
-    .bind(req.max_views)
-    .bind(now)
     .execute(&mut *tx)
     .await
     .map_err(|e| match e {
@@ -221,7 +224,7 @@ fn check_policy(
 
 type LinkRow = (
     String,
-    String,
+    Vec<u8>,
     Option<String>,
     i64,
     i64,
@@ -236,13 +239,13 @@ pub async fn list(
     State(state): State<AppState>,
     session: Session,
 ) -> ApiResult<Json<ListResponse>> {
-    let mut conn = state.db.acquire().await?;
-    let rows: Vec<LinkRow> = sqlx::query_as(
+    let mut conn = state.db.as_account(&session.account_id).await?;
+    let rows: Vec<LinkRow> = sqlx::query!(
         "SELECT id, encrypted_label, vault_id, expires_at, max_views, views, salt, created_at, last_viewed_at \
          FROM share_links WHERE account_id = $1 AND expires_at > $2 ORDER BY created_at DESC",
-    )
-    .bind(&session.account_id)
-    .bind(now_ms())
+        &session.account_id,
+        now_ms(),
+    ).map(|row| (row.id, row.encrypted_label, row.vault_id, row.expires_at, row.max_views, row.views, row.salt, row.created_at, row.last_viewed_at))
     .fetch_all(&mut *conn)
     .await?;
     Ok(Json(ListResponse {
@@ -262,7 +265,7 @@ pub async fn list(
                 )| {
                     LinkInfo {
                         id,
-                        encrypted_label,
+                        encrypted_label: passbox_core::encoding::encode(&encrypted_label),
                         vault_id,
                         expires_at,
                         max_views,
@@ -284,11 +287,15 @@ pub async fn delete(
     Path(id): Path<String>,
 ) -> ApiResult<StatusCode> {
     validate::id("id", &id)?;
-    let result = sqlx::query("DELETE FROM share_links WHERE id = $1 AND account_id = $2")
-        .bind(&id)
-        .bind(&session.account_id)
-        .execute(&state.db)
-        .await?;
+    let mut tx = state.db.as_account(&session.account_id).await?;
+    let result = sqlx::query!(
+        "DELETE FROM share_links WHERE id = $1 AND account_id = $2",
+        &id,
+        &session.account_id,
+    )
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
     if result.rows_affected() == 0 {
         return Err(ApiError::NotFound);
     }
@@ -316,8 +323,6 @@ fn rate_limited(state: &AppState, ip: &str, what: &str) -> ApiResult<()> {
     Ok(())
 }
 
-type PublicRow = (Option<String>, i64, i64, i64);
-
 /// `GET /api/v1/public/share-links/{id}`: what the viewer page needs before
 /// opening (no session).
 pub async fn public_info(
@@ -327,14 +332,19 @@ pub async fn public_info(
 ) -> ApiResult<Json<PublicInfo>> {
     rate_limited(&state, &ip, "info")?;
     validate::id("id", &id)?;
-    let row: Option<PublicRow> = sqlx::query_as(
-        "SELECT salt, expires_at, max_views, views FROM share_links WHERE id = $1 AND expires_at > $2",
+    // The viewer's context reads no table: the functions answer for one
+    // link ID only.
+    let mut tx = state.db.public(Public::ShareLink).await?;
+    let row = sqlx::query!(
+        r#"SELECT salt, expires_at AS "expires_at!", max_views AS "max_views!", views AS "views!"
+           FROM passbox.share_link_info($1, $2)"#,
+        &id,
+        now_ms(),
     )
-    .bind(&id)
-    .bind(now_ms())
-    .fetch_optional(&state.db)
-    .await?;
-    let (salt, expires_at, max_views, views) = row.ok_or(ApiError::NotFound)?;
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(ApiError::NotFound)?;
+    let (salt, expires_at, max_views, views) = (row.salt, row.expires_at, row.max_views, row.views);
     Ok(Json(PublicInfo {
         salt,
         expires_at,
@@ -361,8 +371,6 @@ fn same(a: &str, b: &str) -> bool {
     Sha256::digest(a.as_bytes()) == Sha256::digest(b.as_bytes())
 }
 
-type OpenRow = (String, String, i64, i64, i64, i64);
-
 /// `POST /api/v1/public/share-links/{id}/open`: the encrypted snapshot, for
 /// a caller with the access token. Counts a view; the last allowed view
 /// deletes the link.
@@ -377,31 +385,35 @@ pub async fn open(
     validate::base64("auth", &req.auth, 64)?;
     let presented = passbox_core::share_link::auth_hash(&req.auth)
         .map_err(|_| ApiError::bad_request("invalid auth"))?;
-    let mut tx = db::begin_write(&state.db).await?;
+    let mut tx = state.db.public(Public::ShareLink).await?;
     let now = now_ms();
-    let row: Option<OpenRow> = sqlx::query_as(
-        "SELECT blob, auth_hash, expires_at, max_views, views, failed_attempts FROM share_links \
-         WHERE id = $1 AND expires_at > $2",
+    // Locks the link until this transaction ends.
+    let row = sqlx::query!(
+        r#"SELECT blob AS "blob!", auth_hash AS "auth_hash!", expires_at AS "expires_at!",
+                  max_views AS "max_views!", views AS "views!", failed_attempts AS "failed_attempts!"
+           FROM passbox.share_link_for_open($1, $2)"#,
+        &id,
+        now,
     )
-    .bind(&id)
-    .bind(now)
     .fetch_optional(&mut *tx)
-    .await?;
-    let (blob, auth_hash, expires_at, max_views, views, failed) = row.ok_or(ApiError::NotFound)?;
+    .await?
+    .ok_or(ApiError::NotFound)?;
+    let (blob, auth_hash, expires_at, max_views, views, failed) = (
+        row.blob,
+        row.auth_hash,
+        row.expires_at,
+        row.max_views,
+        row.views,
+        row.failed_attempts,
+    );
     if !same(&presented, &auth_hash) {
-        if failed + 1 >= MAX_FAILED_ATTEMPTS {
-            sqlx::query("DELETE FROM share_links WHERE id = $1")
-                .bind(&id)
-                .execute(&mut *tx)
-                .await?;
-        } else {
-            sqlx::query(
-                "UPDATE share_links SET failed_attempts = failed_attempts + 1 WHERE id = $1",
-            )
-            .bind(&id)
-            .execute(&mut *tx)
-            .await?;
-        }
+        sqlx::query!(
+            "SELECT passbox.share_link_failed($1, $2)",
+            &id,
+            failed + 1 >= MAX_FAILED_ATTEMPTS,
+        )
+        .execute(&mut *tx)
+        .await?;
         tx.commit().await?;
         return Err(ApiError::forbidden(
             "wrong_passphrase",
@@ -409,22 +421,19 @@ pub async fn open(
         ));
     }
     let views = views + 1;
-    if max_views > 0 && views >= max_views {
-        sqlx::query("DELETE FROM share_links WHERE id = $1")
-            .bind(&id)
-            .execute(&mut *tx)
-            .await?;
-    } else {
-        sqlx::query("UPDATE share_links SET views = $1, last_viewed_at = $2 WHERE id = $3")
-            .bind(views)
-            .bind(now)
-            .bind(&id)
-            .execute(&mut *tx)
-            .await?;
-    }
+    sqlx::query!(
+        "SELECT passbox.share_link_viewed($1, $2, $3, $4, $5)",
+        &id,
+        &presented,
+        views,
+        max_views > 0 && views >= max_views,
+        now,
+    )
+    .execute(&mut *tx)
+    .await?;
     tx.commit().await?;
     Ok(Json(OpenResponse {
-        blob,
+        blob: passbox_core::encoding::encode(&blob),
         expires_at,
         views_left: (max_views > 0).then(|| (max_views - views).max(0)),
     }))

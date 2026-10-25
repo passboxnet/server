@@ -15,12 +15,13 @@ use passbox_core::sharing::objects::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use sqlx::AnyConnection;
+use sqlx::PgConnection;
 
 use super::access::{self, require_vault_manager};
 use super::auth::{Session, record_event};
 use super::signed::{self, bad};
 use super::validate;
+use super::vaults::decode;
 use crate::db::{self, now_ms};
 use crate::error::{ApiError, ApiResult};
 use crate::security::ClientIp;
@@ -34,7 +35,7 @@ const MAX_BATCH_ITEMS: usize = 100;
 /// group's current bundle hash, if it belongs to `org_id` (and, for
 /// accounts, is a confirmed member).
 pub async fn principal_key_hash(
-    conn: &mut AnyConnection,
+    conn: &mut PgConnection,
     org_id: &str,
     principal_type: PrincipalType,
     principal_id: &str,
@@ -48,11 +49,12 @@ pub async fn principal_key_hash(
             Ok(signed::bundle(conn, principal_id).await?.map(|b| b.hash()))
         }
         PrincipalType::Group => {
-            let row: Option<(String, String)> = sqlx::query_as(
+            let row: Option<(String, String)> = sqlx::query!(
                 "SELECT bundle, bundle_signature FROM org_groups WHERE id = $1 AND org_id = $2",
+                principal_id,
+                org_id,
             )
-            .bind(principal_id)
-            .bind(org_id)
+            .map(|row| (row.bundle, row.bundle_signature))
             .fetch_optional(&mut *conn)
             .await?;
             Ok(row
@@ -138,7 +140,7 @@ fn check_manifest(
 /// Checks that every manifest entry names a current principal of the
 /// organization with its current key.
 async fn check_entries(
-    conn: &mut AnyConnection,
+    conn: &mut PgConnection,
     org_id: &str,
     manifest: &VaultManifest,
 ) -> ApiResult<()> {
@@ -156,23 +158,23 @@ async fn check_entries(
 }
 
 async fn insert_manifest(
-    tx: &mut sqlx::Transaction<'_, sqlx::Any>,
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     vault_id: &str,
     manifest: &Signed<VaultManifest>,
     seq: i64,
     now: i64,
 ) -> ApiResult<()> {
-    let inserted = sqlx::query(
+    let inserted = sqlx::query!(
         "INSERT INTO vault_manifests (vault_id, version, manifest, signature, signer_id, seq, created_at) \
          VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT DO NOTHING",
+        vault_id,
+        i64::try_from(manifest.value.version).map_err(|_| bad("invalid version"))?,
+        manifest.encoded(),
+        manifest.encoded_signature(),
+        &manifest.value.signer_id,
+        seq,
+        now,
     )
-    .bind(vault_id)
-    .bind(i64::try_from(manifest.value.version).map_err(|_| bad("invalid version"))?)
-    .bind(manifest.encoded())
-    .bind(manifest.encoded_signature())
-    .bind(&manifest.value.signer_id)
-    .bind(seq)
-    .bind(now)
     .execute(&mut **tx)
     .await?;
     if inserted.rows_affected() == 0 {
@@ -185,44 +187,44 @@ async fn insert_manifest(
 }
 
 async fn upsert_key(
-    tx: &mut sqlx::Transaction<'_, sqlx::Any>,
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     vault_id: &str,
     key: &VaultKeyUpload,
     seq: i64,
     now: i64,
 ) -> ApiResult<()> {
-    sqlx::query(
+    sqlx::query!(
         "DELETE FROM vault_keys WHERE vault_id = $1 AND key_epoch = $2 AND principal_type = $3 \
          AND principal_id = $4",
+        vault_id,
+        i64::from(key.key_epoch),
+        &key.principal_type,
+        &key.principal_id,
     )
-    .bind(vault_id)
-    .bind(i64::from(key.key_epoch))
-    .bind(&key.principal_type)
-    .bind(&key.principal_id)
     .execute(&mut **tx)
     .await?;
-    sqlx::query(
+    sqlx::query!(
         "INSERT INTO vault_keys (vault_id, key_epoch, principal_type, principal_id, sealed_key, \
          wrapped_key, grant_data, grant_signature, seq, created_at) \
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+        vault_id,
+        i64::from(key.key_epoch),
+        &key.principal_type,
+        &key.principal_id,
+        decode(&key.sealed_key)?,
+        key.wrapped_key.as_deref().map(decode).transpose()?,
+        &key.grant,
+        &key.grant_signature,
+        seq,
+        now,
     )
-    .bind(vault_id)
-    .bind(i64::from(key.key_epoch))
-    .bind(&key.principal_type)
-    .bind(&key.principal_id)
-    .bind(&key.sealed_key)
-    .bind(key.wrapped_key.as_deref())
-    .bind(&key.grant)
-    .bind(&key.grant_signature)
-    .bind(seq)
-    .bind(now)
     .execute(&mut **tx)
     .await?;
     Ok(())
 }
 
 async fn upsert_member(
-    tx: &mut sqlx::Transaction<'_, sqlx::Any>,
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     vault_id: &str,
     principal_type: &str,
     principal_id: &str,
@@ -230,30 +232,30 @@ async fn upsert_member(
     seq: i64,
     now: i64,
 ) -> ApiResult<()> {
-    let updated = sqlx::query(
+    let updated = sqlx::query!(
         "UPDATE vault_members SET role = $1, seq = $2, updated_at = $3 \
          WHERE vault_id = $4 AND principal_type = $5 AND principal_id = $6",
+        role.as_str(),
+        seq,
+        now,
+        vault_id,
+        principal_type,
+        principal_id,
     )
-    .bind(role.as_str())
-    .bind(seq)
-    .bind(now)
-    .bind(vault_id)
-    .bind(principal_type)
-    .bind(principal_id)
     .execute(&mut **tx)
     .await?;
     if updated.rows_affected() == 0 {
-        sqlx::query(
+        sqlx::query!(
             "INSERT INTO vault_members (vault_id, principal_type, principal_id, role, seq, created_at, updated_at) \
              VALUES ($1, $2, $3, $4, $5, $6, $7)",
+            vault_id,
+            principal_type,
+            principal_id,
+            role.as_str(),
+            seq,
+            now,
+            now,
         )
-        .bind(vault_id)
-        .bind(principal_type)
-        .bind(principal_id)
-        .bind(role.as_str())
-        .bind(seq)
-        .bind(now)
-        .bind(now)
         .execute(&mut **tx)
         .await?;
     }
@@ -263,7 +265,7 @@ async fn upsert_member(
 /// Validates and inserts a new shared vault (inside the caller's
 /// transaction, which has checked that the uploader may create it).
 pub async fn insert_shared_vault(
-    tx: &mut sqlx::Transaction<'_, sqlx::Any>,
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     org_id: &str,
     me: &SignedBundle,
     req: &NewSharedVault,
@@ -301,18 +303,18 @@ pub async fn insert_shared_vault(
     }
     check_key(&req.keys[0], &manifest.value, me)?;
     let seq = db::next_seq(tx).await?;
-    let inserted = sqlx::query(
+    let inserted = sqlx::query!(
         "INSERT INTO vaults (id, account_id, encrypted_key, encrypted_meta, revision, seq, created_at, \
          updated_at, org_id, key_epoch, rotation_pending) \
-         VALUES ($1, $2, '', $3, 1, $4, $5, $6, $7, 1, 0) ON CONFLICT DO NOTHING",
+         VALUES ($1, $2, '', $3, 1, $4, $5, $6, $7, 1, false) ON CONFLICT DO NOTHING",
+        &req.id,
+        me_id,
+        decode(&req.encrypted_meta)?,
+        seq,
+        now,
+        now,
+        org_id,
     )
-    .bind(&req.id)
-    .bind(me_id)
-    .bind(&req.encrypted_meta)
-    .bind(seq)
-    .bind(now)
-    .bind(now)
-    .bind(org_id)
     .execute(&mut **tx)
     .await?;
     if inserted.rows_affected() == 0 {
@@ -343,7 +345,7 @@ pub async fn create(
     Json(req): Json<NewSharedVault>,
 ) -> ApiResult<(StatusCode, Json<WriteResult>)> {
     validate::id("organization id", &org_id)?;
-    let mut tx = db::begin_write(&state.db).await?;
+    let mut tx = state.db.as_account(&session.account_id).await?;
     access::require_admin(&mut tx, &org_id, &session.account_id).await?;
     let me = signed::own_bundle(&mut tx, &session.account_id).await?;
     let seq = insert_shared_vault(&mut tx, &org_id, &me, &req, now_ms()).await?;
@@ -361,13 +363,13 @@ pub async fn create(
 }
 
 async fn latest_manifest(
-    conn: &mut AnyConnection,
+    conn: &mut PgConnection,
     vault_id: &str,
 ) -> ApiResult<Signed<VaultManifest>> {
-    let row: Option<(String, String)> = sqlx::query_as(
+    let row: Option<(String, String)> = sqlx::query!(
         "SELECT manifest, signature FROM vault_manifests WHERE vault_id = $1 ORDER BY version DESC LIMIT 1",
-    )
-    .bind(vault_id)
+        vault_id,
+    ).map(|row| (row.manifest, row.signature))
     .fetch_optional(&mut *conn)
     .await?;
     let (manifest, signature) =
@@ -377,13 +379,14 @@ async fn latest_manifest(
 
 /// The server's member set of a vault: (type, id) → role.
 async fn member_set(
-    conn: &mut AnyConnection,
+    conn: &mut PgConnection,
     vault_id: &str,
 ) -> ApiResult<BTreeSet<(String, String, String)>> {
-    let rows: Vec<(String, String, String)> = sqlx::query_as(
+    let rows: Vec<(String, String, String)> = sqlx::query!(
         "SELECT principal_type, principal_id, role FROM vault_members WHERE vault_id = $1",
+        vault_id,
     )
-    .bind(vault_id)
+    .map(|row| (row.principal_type, row.principal_id, row.role))
     .fetch_all(&mut *conn)
     .await?;
     Ok(rows.into_iter().collect())
@@ -404,21 +407,21 @@ fn manifest_set(manifest: &VaultManifest) -> BTreeSet<(String, String, String)> 
 }
 
 /// Accounts that are members of a vault directly or through groups.
-async fn account_members(conn: &mut AnyConnection, vault_id: &str) -> ApiResult<Vec<String>> {
-    let direct: Vec<String> = sqlx::query_scalar(
+async fn account_members(conn: &mut PgConnection, vault_id: &str) -> ApiResult<Vec<String>> {
+    let direct: Vec<String> = sqlx::query_scalar!(
         "SELECT principal_id FROM vault_members WHERE vault_id = $1 AND principal_type = 'account'",
+        vault_id,
     )
-    .bind(vault_id)
     .fetch_all(&mut *conn)
     .await?;
-    let via_groups: Vec<String> = sqlx::query_scalar(
+    let via_groups: Vec<String> = sqlx::query_scalar!(
         "SELECT group_members.account_id FROM vault_members \
          JOIN org_groups ON org_groups.id = vault_members.principal_id \
          JOIN group_members ON group_members.group_id = org_groups.id \
            AND group_members.key_version = org_groups.key_version \
          WHERE vault_members.vault_id = $1 AND vault_members.principal_type = 'group'",
+        vault_id,
     )
-    .bind(vault_id)
     .fetch_all(&mut *conn)
     .await?;
     let mut all: Vec<String> = direct.into_iter().chain(via_groups).collect();
@@ -440,7 +443,7 @@ pub async fn put_member(
     let principal_type =
         PrincipalType::parse(&req.principal_type).map_err(|_| bad("invalid principalType"))?;
     let role = VaultRole::parse(&req.role).map_err(|_| bad("invalid role"))?;
-    let mut tx = db::begin_write(&state.db).await?;
+    let mut tx = state.db.as_account(&session.account_id).await?;
     let (org_id, key_epoch) =
         require_vault_manager(&mut tx, &vault_id, &session.account_id).await?;
     // Guests are view-only (B8): sharing with them means `view`.
@@ -549,7 +552,7 @@ pub async fn rotate(
         &req.encrypted_meta,
         validate::MAX_SMALL_LEN,
     )?;
-    let mut tx = db::begin_write(&state.db).await?;
+    let mut tx = state.db.as_account(&session.account_id).await?;
     let (org_id, key_epoch) =
         require_vault_manager(&mut tx, &vault_id, &session.account_id).await?;
     let key_epoch = u32::try_from(key_epoch).map_err(|_| bad("invalid key epoch"))?;
@@ -604,35 +607,35 @@ pub async fn rotate(
     let seq = db::next_seq(&mut tx).await?;
     insert_manifest(&mut tx, &vault_id, &manifest, seq, now).await?;
     for (principal_type, principal_id) in &removed {
-        sqlx::query(
+        sqlx::query!(
             "DELETE FROM vault_members WHERE vault_id = $1 AND principal_type = $2 AND principal_id = $3",
+            &vault_id,
+            principal_type,
+            principal_id,
         )
-        .bind(&vault_id)
-        .bind(principal_type)
-        .bind(principal_id)
         .execute(&mut *tx)
         .await?;
-        sqlx::query(
+        sqlx::query!(
             "DELETE FROM vault_keys WHERE vault_id = $1 AND principal_type = $2 AND principal_id = $3",
+            &vault_id,
+            principal_type,
+            principal_id,
         )
-        .bind(&vault_id)
-        .bind(principal_type)
-        .bind(principal_id)
         .execute(&mut *tx)
         .await?;
     }
     for key in &req.keys {
         upsert_key(&mut tx, &vault_id, key, seq, now).await?;
     }
-    sqlx::query(
+    sqlx::query!(
         "UPDATE vaults SET key_epoch = $1, encrypted_meta = $2, revision = revision + 1, \
-         rotation_pending = 0, seq = $3, updated_at = $4 WHERE id = $5",
+         rotation_pending = false, seq = $3, updated_at = $4 WHERE id = $5",
+        i64::from(req.key_epoch),
+        decode(&req.encrypted_meta)?,
+        seq,
+        now,
+        &vault_id,
     )
-    .bind(i64::from(req.key_epoch))
-    .bind(&req.encrypted_meta)
-    .bind(seq)
-    .bind(now)
-    .bind(&vault_id)
     .execute(&mut *tx)
     .await?;
     super::org_audit::record_in(
@@ -686,20 +689,20 @@ pub async fn put_wrapped_key(
 ) -> ApiResult<StatusCode> {
     validate::id("vault id", &vault_id)?;
     validate::base64("wrappedKey", &req.wrapped_key, validate::MAX_SMALL_LEN)?;
-    let mut tx = db::begin_write(&state.db).await?;
+    let mut tx = state.db.as_account(&session.account_id).await?;
     access::vault_access(&mut tx, &vault_id, &session.account_id)
         .await?
         .ok_or(ApiError::NotFound)?;
     let seq = db::next_seq(&mut tx).await?;
-    let updated = sqlx::query(
+    let updated = sqlx::query!(
         "UPDATE vault_keys SET wrapped_key = $1, seq = $2 WHERE vault_id = $3 AND key_epoch = $4 \
          AND principal_type = 'account' AND principal_id = $5",
+        decode(&req.wrapped_key)?,
+        seq,
+        &vault_id,
+        epoch,
+        &session.account_id,
     )
-    .bind(&req.wrapped_key)
-    .bind(seq)
-    .bind(&vault_id)
-    .bind(epoch)
-    .bind(&session.account_id)
     .execute(&mut *tx)
     .await?;
     if updated.rows_affected() == 0 {
@@ -737,18 +740,19 @@ pub async fn members(
     Path(vault_id): Path<String>,
 ) -> ApiResult<Json<VaultMembersResponse>> {
     validate::id("vault id", &vault_id)?;
-    let mut conn = state.db.acquire().await?;
+    let mut conn = state.db.as_account(&session.account_id).await?;
     let Some(access::VaultAccess::Shared {
         org_id, key_epoch, ..
     }) = access::vault_access(&mut conn, &vault_id, &session.account_id).await?
     else {
         return Err(ApiError::NotFound);
     };
-    let rotation_pending: i64 =
-        sqlx::query_scalar("SELECT rotation_pending FROM vaults WHERE id = $1")
-            .bind(&vault_id)
-            .fetch_one(&mut *conn)
-            .await?;
+    let rotation_pending: bool = sqlx::query_scalar!(
+        "SELECT rotation_pending FROM vaults WHERE id = $1",
+        &vault_id,
+    )
+    .fetch_one(&mut *conn)
+    .await?;
     let members = member_set(&mut conn, &vault_id)
         .await?
         .into_iter()
@@ -764,7 +768,7 @@ pub async fn members(
         vault_id,
         org_id,
         key_epoch,
-        rotation_pending: rotation_pending != 0,
+        rotation_pending,
         members,
         accounts,
         manifests,
@@ -772,13 +776,13 @@ pub async fn members(
 }
 
 pub async fn manifest_chain(
-    conn: &mut AnyConnection,
+    conn: &mut PgConnection,
     vault_id: &str,
 ) -> ApiResult<Vec<passbox_core::sharing::data::ManifestRecord>> {
-    let rows: Vec<(i64, String, String)> = sqlx::query_as(
+    let rows: Vec<(i64, String, String)> = sqlx::query!(
         "SELECT version, manifest, signature FROM vault_manifests WHERE vault_id = $1 ORDER BY version",
-    )
-    .bind(vault_id)
+        vault_id,
+    ).map(|row| (row.version, row.manifest, row.signature))
     .fetch_all(&mut *conn)
     .await?;
     Ok(rows
@@ -841,7 +845,7 @@ pub async fn batch_items(
             validate::MAX_ITEM_LEN,
         )?;
     }
-    let mut tx = db::begin_write(&state.db).await?;
+    let mut tx = state.db.as_account(&session.account_id).await?;
     let access = access::require_vault_write(&mut tx, &vault_id, &session.account_id).await?;
     let (current_epoch, batch_org) = match &access {
         access::VaultAccess::Shared {
@@ -858,45 +862,47 @@ pub async fn batch_items(
                 json!({ "currentKeyEpoch": current_epoch }),
             ));
         }
-        let row: Option<(String, i64)> =
-            sqlx::query_as("SELECT vault_id, revision FROM items WHERE id = $1")
-                .bind(&item.id)
-                .fetch_optional(&mut *tx)
-                .await?;
+        let row: Option<(String, i64)> = sqlx::query!(
+            "SELECT vault_id, revision FROM items WHERE id = $1",
+            &item.id,
+        )
+        .map(|row| (row.vault_id, row.revision))
+        .fetch_optional(&mut *tx)
+        .await?;
         let status = match row {
             Some((v, _)) if v != vault_id => return Err(ApiError::NotFound),
             Some((_, revision)) if item.revision == revision + 1 => {
                 super::items::record_version(&mut tx, &item.id).await?;
                 let seq = db::next_seq(&mut tx).await?;
-                sqlx::query(
-                    "UPDATE items SET encrypted_data = $1, revision = $2, deleted = 0, seq = $3, \
+                sqlx::query!(
+                    "UPDATE items SET encrypted_data = $1, revision = $2, deleted = false, seq = $3, \
                      updated_at = $4, key_epoch = $5, updated_by = $6 WHERE id = $7",
+                    decode(&item.encrypted_data)?,
+                    item.revision,
+                    seq,
+                    now,
+                    item.key_epoch,
+                    &session.id,
+                    &item.id,
                 )
-                .bind(&item.encrypted_data)
-                .bind(item.revision)
-                .bind(seq)
-                .bind(now)
-                .bind(item.key_epoch)
-                .bind(&session.id)
-                .bind(&item.id)
                 .execute(&mut *tx)
                 .await?;
                 "ok"
             }
             None if item.revision == 1 => {
                 let seq = db::next_seq(&mut tx).await?;
-                sqlx::query(
+                sqlx::query!(
                     "INSERT INTO items (id, vault_id, encrypted_data, revision, deleted, seq, created_at, \
-                     updated_at, key_epoch, updated_by) VALUES ($1, $2, $3, 1, 0, $4, $5, $6, $7, $8)",
+                     updated_at, key_epoch, updated_by) VALUES ($1, $2, $3, 1, false, $4, $5, $6, $7, $8)",
+                    &item.id,
+                    &vault_id,
+                    decode(&item.encrypted_data)?,
+                    seq,
+                    now,
+                    now,
+                    item.key_epoch,
+                    &session.id,
                 )
-                .bind(&item.id)
-                .bind(&vault_id)
-                .bind(&item.encrypted_data)
-                .bind(seq)
-                .bind(now)
-                .bind(now)
-                .bind(item.key_epoch)
-                .bind(&session.id)
                 .execute(&mut *tx)
                 .await?;
                 "ok"
@@ -929,26 +935,26 @@ pub async fn batch_items(
 /// account (directly or through one of `groups`) as needing a rotation and
 /// returns their IDs.
 pub async fn mark_rotation_pending(
-    tx: &mut sqlx::Transaction<'_, sqlx::Any>,
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     org_id: &str,
     account_id: &str,
     groups: &[String],
     seq: i64,
 ) -> ApiResult<Vec<String>> {
-    let mut vaults: Vec<String> = sqlx::query_scalar(
+    let mut vaults: Vec<String> = sqlx::query_scalar!(
         "SELECT vaults.id FROM vaults JOIN vault_members ON vault_members.vault_id = vaults.id \
          WHERE vaults.org_id = $1 AND vault_members.principal_type = 'account' \
          AND vault_members.principal_id = $2",
+        org_id,
+        account_id,
     )
-    .bind(org_id)
-    .bind(account_id)
     .fetch_all(&mut **tx)
     .await?;
     for group in groups {
-        let shared: Vec<String> = sqlx::query_scalar(
+        let shared: Vec<String> = sqlx::query_scalar!(
             "SELECT vault_id FROM vault_members WHERE principal_type = 'group' AND principal_id = $1",
+            group,
         )
-        .bind(group)
         .fetch_all(&mut **tx)
         .await?;
         vaults.extend(shared);
@@ -956,11 +962,13 @@ pub async fn mark_rotation_pending(
     vaults.sort();
     vaults.dedup();
     for vault in &vaults {
-        sqlx::query("UPDATE vaults SET rotation_pending = 1, seq = $1 WHERE id = $2")
-            .bind(seq)
-            .bind(vault)
-            .execute(&mut **tx)
-            .await?;
+        sqlx::query!(
+            "UPDATE vaults SET rotation_pending = true, seq = $1 WHERE id = $2",
+            seq,
+            vault,
+        )
+        .execute(&mut **tx)
+        .await?;
     }
     Ok(vaults)
 }

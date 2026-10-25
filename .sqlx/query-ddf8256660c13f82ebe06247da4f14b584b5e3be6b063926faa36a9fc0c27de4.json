@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT account_id FROM org_recovery_escrows WHERE org_id = $1 AND key_version = (SELECT MAX(key_version) FROM org_recovery_keys WHERE org_id = $2)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "account_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "org_recovery_escrows",
+            "name": "account_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "ddf8256660c13f82ebe06247da4f14b584b5e3be6b063926faa36a9fc0c27de4"
+}

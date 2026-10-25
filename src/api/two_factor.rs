@@ -32,7 +32,7 @@ use super::auth::{
     record_event, record_failure, start_session,
 };
 use super::validate;
-use crate::db::{self, Db, now_ms};
+use crate::db::{Db, Public, now_ms};
 use crate::error::{ApiError, ApiResult};
 use crate::security::ClientIp;
 use crate::state::AppState;
@@ -109,24 +109,39 @@ impl Factors {
     }
 }
 
+/// The account's second factors (in its own context).
 async fn load_factors(db: &Db, account_id: &str) -> ApiResult<Factors> {
+    let mut tx = db.as_account(account_id).await?;
     let totp: Option<i64> =
-        sqlx::query_scalar("SELECT 1 FROM two_factor_totp WHERE account_id = $1 AND confirmed = 1")
-            .bind(account_id)
-            .fetch_optional(db)
+        sqlx::query_scalar!(
+            "SELECT 1::BIGINT AS \"one!\" FROM two_factor_totp WHERE account_id = $1 AND confirmed = true",
+            account_id,
+        )
+            .fetch_optional(&mut *tx)
             .await?;
-    let rows: Vec<(String, String, String, String, i64, i64)> = sqlx::query_as(
+    let rows: Vec<(String, String, String, String, i64, i64)> = sqlx::query!(
         "SELECT id, credential_id, name, rp_id, created_at, last_used_at FROM webauthn_credentials \
          WHERE account_id = $1 ORDER BY created_at DESC, id",
+        account_id,
     )
-    .bind(account_id)
-    .fetch_all(db)
+    .map(|row| {
+        (
+            row.id,
+            row.credential_id,
+            row.name,
+            row.rp_id,
+            row.created_at,
+            row.last_used_at,
+        )
+    })
+    .fetch_all(&mut *tx)
     .await?;
-    let recovery_codes: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM recovery_codes WHERE account_id = $1")
-            .bind(account_id)
-            .fetch_one(db)
-            .await?;
+    let recovery_codes: i64 = sqlx::query_scalar!(
+        "SELECT COUNT(*) AS \"count!\" FROM recovery_codes WHERE account_id = $1",
+        account_id,
+    )
+    .fetch_one(&mut *tx)
+    .await?;
     Ok(Factors {
         totp: totp.is_some(),
         credentials: rows
@@ -148,24 +163,26 @@ async fn load_factors(db: &Db, account_id: &str) -> ApiResult<Factors> {
 
 /// Replaces the account's recovery codes with new ones and returns them.
 async fn replace_recovery_codes(
-    tx: &mut sqlx::Transaction<'static, sqlx::Any>,
+    tx: &mut sqlx::Transaction<'static, sqlx::Postgres>,
     account_id: &str,
     now: i64,
 ) -> ApiResult<Vec<String>> {
     let codes = two_factor::generate_recovery_codes().map_err(internal)?;
-    sqlx::query("DELETE FROM recovery_codes WHERE account_id = $1")
-        .bind(account_id)
-        .execute(&mut **tx)
-        .await?;
+    sqlx::query!(
+        "DELETE FROM recovery_codes WHERE account_id = $1",
+        account_id,
+    )
+    .execute(&mut **tx)
+    .await?;
     for code in &codes {
         let hash = two_factor::hash_recovery_code(account_id, code)
             .ok_or_else(|| internal(anyhow::anyhow!("generated an invalid recovery code")))?;
-        sqlx::query(
+        sqlx::query!(
             "INSERT INTO recovery_codes (code_hash, account_id, created_at) VALUES ($1, $2, $3)",
+            hash,
+            account_id,
+            now,
         )
-        .bind(hash)
-        .bind(account_id)
-        .bind(now)
         .execute(&mut **tx)
         .await?;
     }
@@ -175,17 +192,19 @@ async fn replace_recovery_codes(
 /// After the first factor is added: no device is remembered yet, and the
 /// account gets recovery codes. Returns the codes when new ones were made.
 async fn after_factor_added(
-    tx: &mut sqlx::Transaction<'static, sqlx::Any>,
+    tx: &mut sqlx::Transaction<'static, sqlx::Postgres>,
     account_id: &str,
     was_enabled: bool,
     had_recovery_codes: bool,
     now: i64,
 ) -> ApiResult<Option<Vec<String>>> {
     if !was_enabled {
-        sqlx::query("UPDATE device_tokens SET two_factor_until = 0 WHERE account_id = $1")
-            .bind(account_id)
-            .execute(&mut **tx)
-            .await?;
+        sqlx::query!(
+            "UPDATE device_tokens SET two_factor_until = 0 WHERE account_id = $1",
+            account_id,
+        )
+        .execute(&mut **tx)
+        .await?;
     }
     if had_recovery_codes {
         return Ok(None);
@@ -205,7 +224,8 @@ struct NewChallenge<'a> {
     device_token_hash: &'a str,
 }
 
-/// Stores a challenge and returns its token.
+/// Stores a challenge and returns its token. Challenges live in the
+/// sign-in context: the login's second step is signed out.
 async fn create_challenge(
     state: &AppState,
     account_id: &str,
@@ -214,28 +234,32 @@ async fn create_challenge(
     let now = now_ms();
     let token = encoding::encode(&random::bytes::<32>().map_err(internal)?);
     let expires_at = now + CHALLENGE_TTL_MS;
-    sqlx::query("DELETE FROM two_factor_challenges WHERE expires_at < $1")
-        .bind(now)
-        .execute(&state.db)
-        .await?;
-    sqlx::query(
+    let mut tx = state.db.public(Public::Auth).await?;
+    sqlx::query!(
+        "DELETE FROM two_factor_challenges WHERE expires_at < $1",
+        now,
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query!(
         "INSERT INTO two_factor_challenges (token_hash, account_id, purpose, webauthn_challenge, rp_id, \
          device_name, client_kind, ip, device_token_hash, attempts, expires_at) \
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+        hash_token(&token),
+        account_id,
+        challenge.purpose,
+        encoding::encode(challenge.webauthn_challenge),
+        challenge.rp_id,
+        challenge.device_name,
+        challenge.client_kind,
+        challenge.ip,
+        challenge.device_token_hash,
+        0i64,
+        expires_at,
     )
-    .bind(hash_token(&token))
-    .bind(account_id)
-    .bind(challenge.purpose)
-    .bind(encoding::encode(challenge.webauthn_challenge))
-    .bind(challenge.rp_id)
-    .bind(challenge.device_name)
-    .bind(challenge.client_kind)
-    .bind(challenge.ip)
-    .bind(challenge.device_token_hash)
-    .bind(0i64)
-    .bind(expires_at)
-    .execute(&state.db)
+    .execute(&mut *tx)
     .await?;
+    tx.commit().await?;
     Ok((token, expires_at))
 }
 
@@ -255,14 +279,24 @@ async fn find_challenge(db: &Db, token: &str, purpose: &str) -> ApiResult<Option
         return Ok(None);
     }
     let token_hash = hash_token(token);
-    let row: Option<(String, String, String, String, String, String)> = sqlx::query_as(
+    let row: Option<(String, String, String, String, String, String)> = sqlx::query!(
         "SELECT account_id, webauthn_challenge, rp_id, device_name, client_kind, device_token_hash \
          FROM two_factor_challenges WHERE token_hash = $1 AND purpose = $2 AND expires_at > $3",
+        &token_hash,
+        purpose,
+        now_ms(),
     )
-    .bind(&token_hash)
-    .bind(purpose)
-    .bind(now_ms())
-    .fetch_optional(db)
+    .map(|row| {
+        (
+            row.account_id,
+            row.webauthn_challenge,
+            row.rp_id,
+            row.device_name,
+            row.client_kind,
+            row.device_token_hash,
+        )
+    })
+    .fetch_optional(&mut *db.public(Public::Auth).await?)
     .await?;
     row.map(
         |(account_id, challenge, rp_id, device_name, client_kind, device_token_hash)| {
@@ -283,10 +317,14 @@ async fn find_challenge(db: &Db, token: &str, purpose: &str) -> ApiResult<Option
 /// Deletes a challenge. Returns false if it was already used, so each one
 /// completes at most once even under concurrent requests.
 async fn consume_challenge(db: &Db, token_hash: &str) -> ApiResult<bool> {
-    let result = sqlx::query("DELETE FROM two_factor_challenges WHERE token_hash = $1")
-        .bind(token_hash)
-        .execute(db)
-        .await?;
+    let mut tx = db.public(Public::Auth).await?;
+    let result = sqlx::query!(
+        "DELETE FROM two_factor_challenges WHERE token_hash = $1",
+        token_hash,
+    )
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
     Ok(result.rows_affected() == 1)
 }
 
@@ -388,25 +426,28 @@ async fn verify_factor(
             if factor.code.len() > 16 {
                 return Err(ApiError::InvalidTwoFactorCode);
             }
-            let row: Option<String> = sqlx::query_scalar(
-                "SELECT sealed_secret FROM two_factor_totp WHERE account_id = $1 AND confirmed = 1",
+            // The first factor is verified (or the account is signed in):
+            // the check runs in the account's context.
+            let mut tx = state.db.as_account(account_id).await?;
+            let row: Option<Vec<u8>> = sqlx::query_scalar!(
+                "SELECT sealed_secret FROM two_factor_totp WHERE account_id = $1 AND confirmed = true",
+                account_id,
             )
-            .bind(account_id)
-            .fetch_optional(&state.db)
+            .fetch_optional(&mut *tx)
             .await?;
             let sealed = row.ok_or(ApiError::InvalidTwoFactorCode)?;
             let step = check_totp(&state.two_factor_key, account_id, &sealed, &factor.code)?
                 .ok_or(ApiError::InvalidTwoFactorCode)?;
             // Replay protection: a step is accepted once, and never one
             // older than the last accepted step.
-            let updated = sqlx::query(
-                "UPDATE two_factor_totp SET last_step = $1 WHERE account_id = $2 AND last_step < $3",
+            let updated = sqlx::query!(
+                "UPDATE two_factor_totp SET last_step = $1 WHERE account_id = $2 AND last_step < $1",
+                step,
+                account_id,
             )
-            .bind(step)
-            .bind(account_id)
-            .bind(step)
-            .execute(&state.db)
+            .execute(&mut *tx)
             .await?;
+            tx.commit().await?;
             if updated.rows_affected() == 1 {
                 Ok(Verified::Totp)
             } else {
@@ -416,12 +457,15 @@ async fn verify_factor(
         "recovery" => {
             let hash = two_factor::hash_recovery_code(account_id, &factor.code)
                 .ok_or(ApiError::InvalidTwoFactorCode)?;
-            let deleted =
-                sqlx::query("DELETE FROM recovery_codes WHERE code_hash = $1 AND account_id = $2")
-                    .bind(hash)
-                    .bind(account_id)
-                    .execute(&state.db)
-                    .await?;
+            let mut tx = state.db.as_account(account_id).await?;
+            let deleted = sqlx::query!(
+                "DELETE FROM recovery_codes WHERE code_hash = $1 AND account_id = $2",
+                hash,
+                account_id,
+            )
+            .execute(&mut *tx)
+            .await?;
+            tx.commit().await?;
             if deleted.rows_affected() == 1 {
                 Ok(Verified::Recovery)
             } else {
@@ -445,11 +489,10 @@ async fn verify_factor(
 fn check_totp(
     key: &SymmetricKey,
     account_id: &str,
-    sealed: &str,
+    sealed: &[u8],
     code: &str,
 ) -> ApiResult<Option<i64>> {
-    let sealed = encoding::decode(sealed).map_err(internal)?;
-    let totp = two_factor::open_totp(key, account_id, &sealed).map_err(internal)?;
+    let totp = two_factor::open_totp(key, account_id, sealed).map_err(internal)?;
     let now = u64::try_from(now_ms() / 1000).unwrap_or(0);
     Ok(totp
         .verify(code, now, two_factor::TOTP_WINDOW)
@@ -478,14 +521,16 @@ async fn verify_webauthn(
     )
     .map_err(invalid)?;
     let signature = validate::base64("signature", &assertion.signature, 1024).map_err(invalid)?;
-    let row: Option<(String, String, i64)> = sqlx::query_as(
+    let mut tx = state.db.as_account(account_id).await?;
+    let row: Option<(String, String, i64)> = sqlx::query!(
         "SELECT id, public_key, sign_count FROM webauthn_credentials \
          WHERE credential_id = $1 AND account_id = $2 AND rp_id = $3",
+        encoding::encode(&credential_id),
+        account_id,
+        &challenge.rp_id,
     )
-    .bind(encoding::encode(&credential_id))
-    .bind(account_id)
-    .bind(&challenge.rp_id)
-    .fetch_optional(&state.db)
+    .map(|row| (row.id, row.public_key, row.sign_count))
+    .fetch_optional(&mut *tx)
     .await?;
     let (id, public_key, stored_count) = row.ok_or(ApiError::InvalidTwoFactorCode)?;
     let public_key = encoding::decode(&public_key).map_err(internal)?;
@@ -503,12 +548,15 @@ async fn verify_webauthn(
         tracing::info!(error = %e, "WebAuthn assertion rejected");
         ApiError::InvalidTwoFactorCode
     })?;
-    sqlx::query("UPDATE webauthn_credentials SET sign_count = $1, last_used_at = $2 WHERE id = $3")
-        .bind(i64::from(new_count))
-        .bind(now_ms())
-        .bind(&id)
-        .execute(&state.db)
-        .await?;
+    sqlx::query!(
+        "UPDATE webauthn_credentials SET sign_count = $1, last_used_at = $2 WHERE id = $3",
+        i64::from(new_count),
+        now_ms(),
+        &id,
+    )
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
     Ok(Verified::WebAuthn)
 }
 
@@ -553,14 +601,14 @@ pub(crate) async fn login_challenge(
     }
     let now = now_ms();
     if let Some(device_token_hash) = pending.device_token_hash {
-        let until: Option<i64> = sqlx::query_scalar(
+        let until: Option<i64> = sqlx::query_scalar!(
             "SELECT two_factor_until FROM device_tokens WHERE token_hash = $1 AND account_id = $2 \
              AND expires_at > $3",
+            device_token_hash,
+            account_id,
+            now,
         )
-        .bind(device_token_hash)
-        .bind(account_id)
-        .bind(now)
-        .fetch_optional(&state.db)
+        .fetch_optional(&mut *state.db.as_account(account_id).await?)
         .await?;
         if until.is_some_and(|until| until > now) {
             return Ok(None);
@@ -615,13 +663,15 @@ pub async fn login_two_factor(
     let account_id = challenge.account_id.clone();
     let limits = failure_limits(&account_id, &ip);
     check_lockout(&state, &limits)?;
-    let counted = sqlx::query(
+    let mut tx = state.db.public(Public::Auth).await?;
+    let counted = sqlx::query!(
         "UPDATE two_factor_challenges SET attempts = attempts + 1 WHERE token_hash = $1 AND attempts < $2",
+        &challenge.token_hash,
+        MAX_ATTEMPTS_PER_CHALLENGE,
     )
-    .bind(&challenge.token_hash)
-    .bind(MAX_ATTEMPTS_PER_CHALLENGE)
-    .execute(&state.db)
+    .execute(&mut *tx)
     .await?;
+    tx.commit().await?;
     if counted.rows_affected() == 0 {
         consume_challenge(&state.db, &challenge.token_hash).await?;
         return Err(ApiError::TwoFactorExpired);
@@ -650,7 +700,8 @@ pub async fn login_two_factor(
     }
 
     // The account may have been disabled since the password step.
-    crate::instance::ensure_active(&state, &account_id).await?;
+    crate::instance::ensure_active(&mut *state.db.as_account(&account_id).await?, &account_id)
+        .await?;
     let remember_until = if req.remember_device {
         now_ms() + REMEMBER_DEVICE_MS
     } else {
@@ -754,10 +805,13 @@ pub async fn totp_start(
     session: Session,
 ) -> ApiResult<Json<TotpStartResponse>> {
     require_recent_login(&session)?;
+    let mut tx = state.db.as_account(&session.account_id).await?;
     let confirmed: Option<i64> =
-        sqlx::query_scalar("SELECT 1 FROM two_factor_totp WHERE account_id = $1 AND confirmed = 1")
-            .bind(&session.account_id)
-            .fetch_optional(&state.db)
+        sqlx::query_scalar!(
+            "SELECT 1::BIGINT AS \"one!\" FROM two_factor_totp WHERE account_id = $1 AND confirmed = true",
+            &session.account_id,
+        )
+            .fetch_optional(&mut *tx)
             .await?;
     if confirmed.is_some() {
         return Err(ApiError::conflict(
@@ -765,27 +819,30 @@ pub async fn totp_start(
             serde_json::Value::Null,
         ));
     }
-    let email: String = sqlx::query_scalar("SELECT email FROM accounts WHERE id = $1")
-        .bind(&session.account_id)
-        .fetch_one(&state.db)
-        .await?;
+    let email: String = sqlx::query_scalar!(
+        "SELECT email FROM accounts WHERE id = $1",
+        &session.account_id,
+    )
+    .fetch_one(&mut *tx)
+    .await?;
     let totp = two_factor::new_login_totp(ISSUER, &email).map_err(internal)?;
     let sealed = two_factor::seal_totp(&state.two_factor_key, &session.account_id, &totp)
         .map_err(internal)?;
-    let mut tx = db::begin_write(&state.db).await?;
-    sqlx::query("DELETE FROM two_factor_totp WHERE account_id = $1 AND confirmed = 0")
-        .bind(&session.account_id)
-        .execute(&mut *tx)
-        .await?;
-    sqlx::query(
+    sqlx::query!(
+        "DELETE FROM two_factor_totp WHERE account_id = $1 AND confirmed = false",
+        &session.account_id,
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query!(
         "INSERT INTO two_factor_totp (account_id, sealed_secret, confirmed, last_step, created_at) \
          VALUES ($1, $2, $3, $4, $5)",
+        &session.account_id,
+        sealed.as_slice(),
+        false,
+        0i64,
+        now_ms(),
     )
-    .bind(&session.account_id)
-    .bind(encoding::encode(&sealed))
-    .bind(0i64)
-    .bind(0i64)
-    .bind(now_ms())
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
@@ -811,11 +868,11 @@ pub async fn totp_confirm(
     require_recent_login(&session)?;
     let limits = failure_limits(&session.account_id, &ip);
     check_lockout(&state, &limits)?;
-    let pending: Option<String> = sqlx::query_scalar(
-        "SELECT sealed_secret FROM two_factor_totp WHERE account_id = $1 AND confirmed = 0",
+    let pending: Option<Vec<u8>> = sqlx::query_scalar!(
+        "SELECT sealed_secret FROM two_factor_totp WHERE account_id = $1 AND confirmed = false",
+        &session.account_id,
     )
-    .bind(&session.account_id)
-    .fetch_optional(&state.db)
+    .fetch_optional(&mut *state.db.as_account(&session.account_id).await?)
     .await?;
     let sealed = pending
         .ok_or_else(|| ApiError::bad_request("start setting up the authenticator app first"))?;
@@ -835,12 +892,12 @@ pub async fn totp_confirm(
 
     let before = load_factors(&state.db, &session.account_id).await?;
     let now = now_ms();
-    let mut tx = db::begin_write(&state.db).await?;
-    let updated = sqlx::query(
-        "UPDATE two_factor_totp SET confirmed = 1, last_step = $1 WHERE account_id = $2 AND confirmed = 0",
+    let mut tx = state.db.as_account(&session.account_id).await?;
+    let updated = sqlx::query!(
+        "UPDATE two_factor_totp SET confirmed = true, last_step = $1 WHERE account_id = $2 AND confirmed = false",
+        step,
+        &session.account_id,
     )
-    .bind(step)
-    .bind(&session.account_id)
     .execute(&mut *tx)
     .await?;
     if updated.rows_affected() != 1 {
@@ -911,10 +968,14 @@ pub async fn totp_remove(
     if factors.credentials.is_empty() {
         return Err(last_factor_conflict());
     }
-    sqlx::query("DELETE FROM two_factor_totp WHERE account_id = $1")
-        .bind(&session.account_id)
-        .execute(&state.db)
-        .await?;
+    let mut tx = state.db.as_account(&session.account_id).await?;
+    sqlx::query!(
+        "DELETE FROM two_factor_totp WHERE account_id = $1",
+        &session.account_id,
+    )
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
     super::notify::two_factor_changed(
         &state,
         &session.account_id,
@@ -970,10 +1031,12 @@ pub async fn webauthn_register_start(
             serde_json::Value::Null,
         ));
     }
-    let email: String = sqlx::query_scalar("SELECT email FROM accounts WHERE id = $1")
-        .bind(&session.account_id)
-        .fetch_one(&state.db)
-        .await?;
+    let email: String = sqlx::query_scalar!(
+        "SELECT email FROM accounts WHERE id = $1",
+        &session.account_id,
+    )
+    .fetch_one(&mut *state.db.as_account(&session.account_id).await?)
+    .await?;
     let challenge = random::bytes::<32>().map_err(internal)?;
     let (registration_id, _) = create_challenge(
         &state,
@@ -1090,22 +1153,22 @@ pub async fn webauthn_register_finish(
     let before = load_factors(&state.db, &session.account_id).await?;
     let id = id::new_id().map_err(internal)?;
     let now = now_ms();
-    let mut tx = db::begin_write(&state.db).await?;
-    let inserted = sqlx::query(
+    let mut tx = state.db.as_account(&session.account_id).await?;
+    let inserted = sqlx::query!(
         "INSERT INTO webauthn_credentials (id, account_id, credential_id, public_key, algorithm, sign_count, \
          rp_id, name, created_at, last_used_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) \
          ON CONFLICT DO NOTHING",
+        &id,
+        &session.account_id,
+        encoding::encode(&credential.credential_id),
+        encoding::encode(&credential.public_key),
+        credential.algorithm,
+        i64::from(credential.sign_count),
+        &challenge.rp_id,
+        &name,
+        now,
+        0i64,
     )
-    .bind(&id)
-    .bind(&session.account_id)
-    .bind(encoding::encode(&credential.credential_id))
-    .bind(encoding::encode(&credential.public_key))
-    .bind(credential.algorithm)
-    .bind(i64::from(credential.sign_count))
-    .bind(&challenge.rp_id)
-    .bind(&name)
-    .bind(now)
-    .bind(0i64)
     .execute(&mut *tx)
     .await?;
     if inserted.rows_affected() == 0 {
@@ -1146,11 +1209,15 @@ pub async fn webauthn_remove(
     if !factors.totp && factors.credentials.len() == 1 {
         return Err(last_factor_conflict());
     }
-    sqlx::query("DELETE FROM webauthn_credentials WHERE id = $1 AND account_id = $2")
-        .bind(&id)
-        .bind(&session.account_id)
-        .execute(&state.db)
-        .await?;
+    let mut tx = state.db.as_account(&session.account_id).await?;
+    sqlx::query!(
+        "DELETE FROM webauthn_credentials WHERE id = $1 AND account_id = $2",
+        &id,
+        &session.account_id,
+    )
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
     super::notify::two_factor_changed(
         &state,
         &session.account_id,
@@ -1194,7 +1261,7 @@ pub async fn recovery_codes_regenerate(
             "two-factor authentication is not turned on",
         ));
     }
-    let mut tx = db::begin_write(&state.db).await?;
+    let mut tx = state.db.as_account(&session.account_id).await?;
     let recovery_codes = replace_recovery_codes(&mut tx, &session.account_id, now_ms()).await?;
     tx.commit().await?;
     super::notify::two_factor_changed(
@@ -1299,7 +1366,7 @@ pub async fn disable(
     }
     {
         // Policy D2: an organization can require two-factor sign-in.
-        let mut conn = state.db.acquire().await?;
+        let mut conn = state.db.as_account(&session.account_id).await?;
         super::org_policy::ensure_two_factor_optional(&mut conn, &session.account_id).await?;
     }
     let challenge = if req.factor.method == "webauthn" {
@@ -1331,7 +1398,7 @@ pub async fn disable(
     {
         return Err(ApiError::TwoFactorExpired);
     }
-    let mut tx = db::begin_write(&state.db).await?;
+    let mut tx = state.db.as_account(&session.account_id).await?;
     for statement in [
         "DELETE FROM two_factor_totp WHERE account_id = $1",
         "DELETE FROM webauthn_credentials WHERE account_id = $1",
@@ -1343,10 +1410,12 @@ pub async fn disable(
             .execute(&mut *tx)
             .await?;
     }
-    sqlx::query("UPDATE device_tokens SET two_factor_until = 0 WHERE account_id = $1")
-        .bind(&session.account_id)
-        .execute(&mut *tx)
-        .await?;
+    sqlx::query!(
+        "UPDATE device_tokens SET two_factor_until = 0 WHERE account_id = $1",
+        &session.account_id,
+    )
+    .execute(&mut *tx)
+    .await?;
     tx.commit().await?;
     super::notify::two_factor_changed(
         &state,

@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM mail_outbox WHERE (status = 'sent' AND sent_at < $1) OR (status = 'failed' AND created_at < $1)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f37d8309ba3974d61dbb0247d4e47530bbbed09b8dbfa11d28dd45bde11cead4"
+}

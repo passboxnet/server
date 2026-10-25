@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT passbox.purge_expired_share_links($1)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "purge_expired_share_links",
+        "type_info": "Void",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "c53fbf2b2bfa3546a08e42c77792aa2fcb9167cc3eb3e3f24e982f4976590a0d"
+}

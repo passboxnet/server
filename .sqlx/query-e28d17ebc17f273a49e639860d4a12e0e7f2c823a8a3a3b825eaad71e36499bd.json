@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE two_factor_totp SET last_step = $1 WHERE account_id = $2 AND last_step < $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e28d17ebc17f273a49e639860d4a12e0e7f2c823a8a3a3b825eaad71e36499bd"
+}

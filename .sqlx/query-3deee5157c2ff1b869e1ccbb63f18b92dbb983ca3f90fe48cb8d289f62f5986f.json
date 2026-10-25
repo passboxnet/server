@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO org_settings (org_id, audit_retention_days, updated_by, updated_at) VALUES ($1, $2, $3, $4)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8",
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "3deee5157c2ff1b869e1ccbb63f18b92dbb983ca3f90fe48cb8d289f62f5986f"
+}

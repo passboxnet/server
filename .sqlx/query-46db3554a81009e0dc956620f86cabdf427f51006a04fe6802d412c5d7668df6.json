@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT two_factor_until FROM device_tokens WHERE token_hash = $1 AND account_id = $2 AND expires_at > $3",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "two_factor_until",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "device_tokens",
+            "name": "two_factor_until"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "46db3554a81009e0dc956620f86cabdf427f51006a04fe6802d412c5d7668df6"
+}

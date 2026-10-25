@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE org_members SET role = $1, attestation = $2, attestation_signature = $3, seq = $4, updated_at = $5 WHERE org_id = $6 AND account_id = $7",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Int8",
+        "Int8",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "eadc1c5214835875c182db045814c2704c3a0fee369238ae03dc42ed5a55b450"
+}

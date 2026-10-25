@@ -32,7 +32,7 @@ use super::access;
 use super::auth::Session;
 use super::org_audit::{self, Actor, AuditHead, AuditQuery, Target};
 use super::validate;
-use crate::db::{self, now_ms};
+use crate::db::{Job, OrgCredential, Public, now_ms};
 use crate::error::{ApiError, ApiResult};
 use crate::security::ClientIp;
 use crate::state::AppState;
@@ -67,13 +67,22 @@ pub async fn tokens(
     Path(org_id): Path<String>,
 ) -> ApiResult<Json<Vec<TokenInfo>>> {
     validate::id("organization id", &org_id)?;
-    let mut conn = state.db.acquire().await?;
+    let mut conn = state.db.as_account(&session.account_id).await?;
     access::require_admin(&mut conn, &org_id, &session.account_id).await?;
-    let rows: Vec<(String, String, String, i64, i64)> = sqlx::query_as(
+    let rows: Vec<(String, String, String, i64, i64)> = sqlx::query!(
         "SELECT id, name, created_by, created_at, last_used_at FROM org_event_tokens \
          WHERE org_id = $1 AND revoked_at = 0 ORDER BY created_at",
+        &org_id,
     )
-    .bind(&org_id)
+    .map(|row| {
+        (
+            row.id,
+            row.name,
+            row.created_by,
+            row.created_at,
+            row.last_used_at,
+        )
+    })
     .fetch_all(&mut *conn)
     .await?;
     Ok(Json(
@@ -125,12 +134,12 @@ pub async fn create_token(
 ) -> ApiResult<(StatusCode, Json<CreatedToken>)> {
     validate::id("organization id", &org_id)?;
     let name = clean_name(&req.name)?;
-    let mut tx = db::begin_write(&state.db).await?;
+    let mut tx = state.db.as_account(&session.account_id).await?;
     access::require_admin(&mut tx, &org_id, &session.account_id).await?;
-    let count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM org_event_tokens WHERE org_id = $1 AND revoked_at = 0",
+    let count: i64 = sqlx::query_scalar!(
+        "SELECT COUNT(*) AS \"count!\" FROM org_event_tokens WHERE org_id = $1 AND revoked_at = 0",
+        &org_id,
     )
-    .bind(&org_id)
     .fetch_one(&mut *tx)
     .await?;
     if count >= MAX_TOKENS {
@@ -141,16 +150,16 @@ pub async fn create_token(
         "{TOKEN_PREFIX}{}",
         encoding::encode(&random::bytes::<32>().map_err(|e| ApiError::Internal(e.into()))?)
     );
-    sqlx::query(
+    sqlx::query!(
         "INSERT INTO org_event_tokens (id, org_id, name, token_hash, created_by, created_at, last_used_at, \
          revoked_at) VALUES ($1, $2, $3, $4, $5, $6, 0, 0)",
+        &token_id,
+        &org_id,
+        &name,
+        hash_token(&token),
+        &session.account_id,
+        now_ms(),
     )
-    .bind(&token_id)
-    .bind(&org_id)
-    .bind(&name)
-    .bind(hash_token(&token))
-    .bind(&session.account_id)
-    .bind(now_ms())
     .execute(&mut *tx)
     .await?;
     org_audit::record_in(
@@ -184,14 +193,14 @@ pub async fn revoke_token(
 ) -> ApiResult<StatusCode> {
     validate::id("organization id", &org_id)?;
     validate::id("token id", &token_id)?;
-    let mut tx = db::begin_write(&state.db).await?;
+    let mut tx = state.db.as_account(&session.account_id).await?;
     access::require_admin(&mut tx, &org_id, &session.account_id).await?;
-    let updated = sqlx::query(
+    let updated = sqlx::query!(
         "UPDATE org_event_tokens SET revoked_at = $1 WHERE id = $2 AND org_id = $3 AND revoked_at = 0",
+        now_ms(),
+        &token_id,
+        &org_id,
     )
-    .bind(now_ms())
-    .bind(&token_id)
-    .bind(&org_id)
     .execute(&mut *tx)
     .await?;
     if updated.rows_affected() == 0 {
@@ -255,21 +264,27 @@ pub async fn pull(
     {
         return Err(ApiError::RateLimited(wait));
     }
-    let mut conn = state.db.acquire().await?;
-    let row: Option<(String, String, i64)> = sqlx::query_as(
-        "SELECT id, org_id, last_used_at FROM org_event_tokens WHERE token_hash = $1 AND revoked_at = 0",
+    // The function resolves this token only; then the request runs in the
+    // organization's events context.
+    let row = sqlx::query!(
+        r#"SELECT id AS "id!", org_id AS "org_id!", last_used_at AS "last_used_at!"
+           FROM passbox.org_event_token($1)"#,
+        &hash,
     )
-    .bind(&hash)
-    .fetch_optional(&mut *conn)
+    .fetch_optional(&mut *state.db.public(Public::Meta).await?)
     .await?;
-    let (token_id, org_id, last_used_at) = row.ok_or(ApiError::Unauthorized)?;
+    let row = row.ok_or(ApiError::Unauthorized)?;
+    let (token_id, org_id, last_used_at) = (row.id, row.org_id, row.last_used_at);
+    let mut conn = state.db.as_org(OrgCredential::Events, &org_id).await?;
     let now = now_ms();
     if now - last_used_at > 60_000 {
-        sqlx::query("UPDATE org_event_tokens SET last_used_at = $1 WHERE id = $2")
-            .bind(now)
-            .bind(&token_id)
-            .execute(&mut *conn)
-            .await?;
+        sqlx::query!(
+            "UPDATE org_event_tokens SET last_used_at = $1 WHERE id = $2",
+            now,
+            &token_id,
+        )
+        .execute(&mut *conn)
+        .await?;
     }
     let limit = q.limit.unwrap_or(BATCH * 5).clamp(1, PULL_MAX);
     let query = AuditQuery {
@@ -281,6 +296,7 @@ pub async fn pull(
     let has_more = events.len() as i64 > limit;
     events.truncate(usize::try_from(limit).unwrap_or_default());
     let head = org_audit::head(&mut conn, &org_id).await?;
+    conn.commit().await?;
     let next_after = events
         .last()
         .map_or(u64::try_from(q.after.max(0)).unwrap_or_default(), |e| e.seq);
@@ -309,7 +325,7 @@ pub struct WebhookInfo {
     created_at: i64,
 }
 
-type WebhookRow = (String, String, i64, i64, i64, i64, String, i64, i64);
+type WebhookRow = (String, String, bool, i64, i64, i64, String, i64, i64);
 
 /// `GET /orgs/{id}/webhooks` (admins). Secrets are never shown again.
 pub async fn webhooks(
@@ -318,13 +334,13 @@ pub async fn webhooks(
     Path(org_id): Path<String>,
 ) -> ApiResult<Json<Vec<WebhookInfo>>> {
     validate::id("organization id", &org_id)?;
-    let mut conn = state.db.acquire().await?;
+    let mut conn = state.db.as_account(&session.account_id).await?;
     access::require_admin(&mut conn, &org_id, &session.account_id).await?;
-    let rows: Vec<WebhookRow> = sqlx::query_as(
+    let rows: Vec<WebhookRow> = sqlx::query!(
         "SELECT id, url, active, cursor_seq, failures, last_status, last_error, last_delivery_at, created_at \
          FROM org_webhooks WHERE org_id = $1 ORDER BY created_at",
-    )
-    .bind(&org_id)
+        &org_id,
+    ).map(|row| (row.id, row.url, row.active, row.cursor_seq, row.failures, row.last_status, row.last_error, row.last_delivery_at, row.created_at))
     .fetch_all(&mut *conn)
     .await?;
     Ok(Json(
@@ -343,7 +359,7 @@ pub async fn webhooks(
                 )| WebhookInfo {
                     id,
                     url,
-                    active: active != 0,
+                    active,
                     cursor_seq,
                     failures,
                     last_status,
@@ -455,7 +471,7 @@ pub async fn create_webhook(
     validate::id("organization id", &org_id)?;
     let url = req.url.trim().to_owned();
     {
-        let mut conn = state.db.acquire().await?;
+        let mut conn = state.db.as_account(&session.account_id).await?;
         access::require_admin(&mut conn, &org_id, &session.account_id).await?;
     }
     let allow_private = state.webhook_allow_private;
@@ -464,12 +480,14 @@ pub async fn create_webhook(
         .await
         .map_err(|e| ApiError::Internal(e.into()))?
         .map_err(ApiError::bad_request)?;
-    let mut tx = db::begin_write(&state.db).await?;
+    let mut tx = state.db.as_account(&session.account_id).await?;
     access::require_admin(&mut tx, &org_id, &session.account_id).await?;
-    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM org_webhooks WHERE org_id = $1")
-        .bind(&org_id)
-        .fetch_one(&mut *tx)
-        .await?;
+    let count: i64 = sqlx::query_scalar!(
+        "SELECT COUNT(*) AS \"count!\" FROM org_webhooks WHERE org_id = $1",
+        &org_id,
+    )
+    .fetch_one(&mut *tx)
+    .await?;
     if count >= MAX_WEBHOOKS {
         return Err(ApiError::bad_request("remove a webhook first"));
     }
@@ -480,22 +498,22 @@ pub async fn create_webhook(
         encoding::encode(&random::bytes::<32>().map_err(|e| ApiError::Internal(e.into()))?)
     );
     let now = now_ms();
-    sqlx::query(
+    sqlx::query!(
         "INSERT INTO org_webhooks (id, org_id, url, secret, active, cursor_seq, failures, next_attempt_at, \
          locked_until, last_status, last_error, last_delivery_at, created_by, created_at) \
-         VALUES ($1, $2, $3, $4, 1, $5, 0, 0, 0, 0, '', 0, $6, $7)",
-    )
-    .bind(&webhook_id)
-    .bind(&org_id)
-    .bind(&url)
-    .bind(&secret)
-    .bind(if req.from_start {
+         VALUES ($1, $2, $3, $4, true, $5, 0, 0, 0, 0, '', 0, $6, $7)",
+        &webhook_id,
+        &org_id,
+        &url,
+        &secret,
+        if req.from_start {
         i64::try_from(head.pruned_seq).unwrap_or_default()
     } else {
         i64::try_from(head.seq).unwrap_or_default()
-    })
-    .bind(&session.account_id)
-    .bind(now)
+    },
+        &session.account_id,
+        now,
+    )
     .execute(&mut *tx)
     .await?;
     org_audit::record_in(
@@ -529,13 +547,15 @@ pub async fn delete_webhook(
 ) -> ApiResult<StatusCode> {
     validate::id("organization id", &org_id)?;
     validate::id("webhook id", &webhook_id)?;
-    let mut tx = db::begin_write(&state.db).await?;
+    let mut tx = state.db.as_account(&session.account_id).await?;
     access::require_admin(&mut tx, &org_id, &session.account_id).await?;
-    let deleted = sqlx::query("DELETE FROM org_webhooks WHERE id = $1 AND org_id = $2")
-        .bind(&webhook_id)
-        .bind(&org_id)
-        .execute(&mut *tx)
-        .await?;
+    let deleted = sqlx::query!(
+        "DELETE FROM org_webhooks WHERE id = $1 AND org_id = $2",
+        &webhook_id,
+        &org_id,
+    )
+    .execute(&mut *tx)
+    .await?;
     if deleted.rows_affected() == 0 {
         return Err(ApiError::NotFound);
     }
@@ -601,31 +621,33 @@ fn deliver(url: &str, secret: &str, body: &str, allow_private: bool) -> Result<u
 /// of successful deliveries.
 pub async fn deliver_due(state: &AppState) -> ApiResult<usize> {
     let now = now_ms();
-    let due: Vec<(String, String, String, String, i64, i64)> = sqlx::query_as(
+    let due: Vec<(String, String, String, String, i64, i64)> = sqlx::query!(
         "SELECT w.id, w.org_id, w.url, w.secret, w.cursor_seq, w.failures FROM org_webhooks w \
          JOIN org_audit_heads h ON h.org_id = w.org_id \
-         WHERE w.active = 1 AND w.next_attempt_at <= $1 AND w.locked_until < $2 AND h.seq > w.cursor_seq",
-    )
-    .bind(now)
-    .bind(now)
-    .fetch_all(&state.db)
+         WHERE w.active = true AND w.next_attempt_at <= $1 AND w.locked_until < $2 AND h.seq > w.cursor_seq",
+        now,
+        now,
+    ).map(|row| (row.id, row.org_id, row.url, row.secret, row.cursor_seq, row.failures))
+    .fetch_all(&mut *state.db.system(Job::Webhooks).await?)
     .await?;
     let mut delivered = 0;
     for (webhook_id, org_id, url, secret, cursor, failures) in due {
         // Claim it so a second server process does not deliver it too.
-        let claimed = sqlx::query(
+        let mut tx = state.db.system(Job::Webhooks).await?;
+        let claimed = sqlx::query!(
             "UPDATE org_webhooks SET locked_until = $1 WHERE id = $2 AND locked_until < $3",
+            now + 60_000,
+            &webhook_id,
+            now,
         )
-        .bind(now + 60_000)
-        .bind(&webhook_id)
-        .bind(now)
-        .execute(&state.db)
+        .execute(&mut *tx)
         .await?;
+        tx.commit().await?;
         if claimed.rows_affected() == 0 {
             continue;
         }
         let (events, head) = {
-            let mut conn = state.db.acquire().await?;
+            let mut conn = state.db.system(Job::Webhooks).await?;
             let query = AuditQuery {
                 after: Some(cursor),
                 limit: Some(BATCH),
@@ -653,18 +675,20 @@ pub async fn deliver_due(state: &AppState) -> ApiResult<usize> {
                 .await
                 .map_err(|e| ApiError::Internal(e.into()))?;
         let finished = now_ms();
+        let mut tx = state.db.system(Job::Webhooks).await?;
         match result {
             Ok(status) if (200..300).contains(&status) => {
-                sqlx::query(
+                sqlx::query!(
                     "UPDATE org_webhooks SET cursor_seq = $1, failures = 0, next_attempt_at = 0, locked_until = 0, \
                      last_status = $2, last_error = '', last_delivery_at = $3 WHERE id = $4",
+                    i64::try_from(last).unwrap_or_default(),
+                    i64::from(status),
+                    finished,
+                    &webhook_id,
                 )
-                .bind(i64::try_from(last).unwrap_or_default())
-                .bind(i64::from(status))
-                .bind(finished)
-                .bind(&webhook_id)
-                .execute(&state.db)
+                .execute(&mut *tx)
                 .await?;
+                tx.commit().await?;
                 delivered += 1;
             }
             other => {
@@ -672,16 +696,17 @@ pub async fn deliver_due(state: &AppState) -> ApiResult<usize> {
                     Ok(status) => (i64::from(status), format!("the receiver answered {status}")),
                     Err(error) => (0, error.chars().take(300).collect()),
                 };
-                sqlx::query(
+                sqlx::query!(
                     "UPDATE org_webhooks SET failures = failures + 1, next_attempt_at = $1, locked_until = 0, \
                      last_status = $2, last_error = $3 WHERE id = $4",
+                    finished + backoff_ms(failures),
+                    status,
+                    &error,
+                    &webhook_id,
                 )
-                .bind(finished + backoff_ms(failures))
-                .bind(status)
-                .bind(&error)
-                .bind(&webhook_id)
-                .execute(&state.db)
+                .execute(&mut *tx)
                 .await?;
+                tx.commit().await?;
             }
         }
     }

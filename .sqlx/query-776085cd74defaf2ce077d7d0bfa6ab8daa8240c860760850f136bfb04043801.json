@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE org_audit_heads SET pruned_seq = $1, pruned_hash = $2 WHERE org_id = $3",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "776085cd74defaf2ce077d7d0bfa6ab8daa8240c860760850f136bfb04043801"
+}

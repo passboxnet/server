@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO group_versions (group_id, key_version, bundle, bundle_signature, created_at) VALUES ($1, 1, $2, $3, $4)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "1a105a10a7896c2e6faf934861338e9825f8bf01e592e3b48bc12fb2194ea631"
+}

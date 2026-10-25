@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO device_links (id, account_id, short_id, status, ephemeral_key, mac, claim_token_hash, claim_device_name, claim_ip, claimed_at, sealed_payload, created_at, expires_at) VALUES ($1, $2, $3, 'open', '', '', '', '', '', 0, '', $4, $5)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "cd959a5cd0131cb29634cbc09b9504883c50a09181b88229426186345de150e5"
+}

@@ -3,7 +3,6 @@ use std::sync::Arc;
 use anyhow::Context;
 use passbox_core::aead::SymmetricKey;
 use passbox_core::directory::LogSigner;
-use passbox_core::encoding;
 use passbox_core::opaque::ServerKeys;
 use passbox_core::random;
 
@@ -11,7 +10,7 @@ use crate::api::attachments::AttachmentLimits;
 use crate::api::breach::BreachService;
 use crate::api::icons::IconService;
 use crate::blobs::{BlobStore, DiskBlobStore};
-use crate::db::Db;
+use crate::db::{Db, Job};
 use crate::mail::Mailer;
 use crate::security::RateLimiter;
 
@@ -50,6 +49,8 @@ pub struct AppState {
     /// `PASSBOX_AGENT_LIMIT_PER_MEMBER` (0 = unlimited); the instance
     /// setting `agentLimitPerMember` overrides it.
     pub agent_limit_per_member: u32,
+    /// Request counters for `/metrics`.
+    pub metrics: Arc<crate::metrics::Metrics>,
 }
 
 impl AppState {
@@ -99,6 +100,7 @@ impl AppState {
             attachment_limits: AttachmentLimits::default(),
             breach: Arc::new(BreachService::http()),
             agent_limit_per_member: 0,
+            metrics: Arc::default(),
             db,
             opaque: Arc::new(opaque),
             prelogin_key: Arc::new(prelogin_key),
@@ -117,17 +119,18 @@ async fn load_or_create_secret(
     name: &str,
     generate: impl FnOnce() -> anyhow::Result<Vec<u8>>,
 ) -> anyhow::Result<Vec<u8>> {
-    let candidate = encoding::encode(&generate()?);
-    sqlx::query(
+    let candidate = generate()?;
+    let mut tx = db.system(Job::Secrets).await?;
+    sqlx::query!(
         "INSERT INTO server_secrets (name, value) VALUES ($1, $2) ON CONFLICT (name) DO NOTHING",
+        name,
+        candidate,
     )
-    .bind(name)
-    .bind(&candidate)
-    .execute(db)
+    .execute(&mut *tx)
     .await?;
-    let stored: String = sqlx::query_scalar("SELECT value FROM server_secrets WHERE name = $1")
-        .bind(name)
-        .fetch_one(db)
+    let stored = sqlx::query_scalar!("SELECT value FROM server_secrets WHERE name = $1", name)
+        .fetch_one(&mut *tx)
         .await?;
-    Ok(encoding::decode(&stored)?)
+    tx.commit().await?;
+    Ok(stored)
 }

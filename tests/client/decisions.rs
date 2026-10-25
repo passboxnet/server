@@ -4,7 +4,6 @@
 //! accounts, and `passbox_reveal` for AI agents. Runs on SQLite, and on
 //! PostgreSQL too when `PASSBOX_TEST_DATABASE_URL` is set.
 
-use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -14,38 +13,14 @@ use passbox_client::{
 };
 use passbox_core::policy::PolicyRules;
 use passbox_core::service_account::Permission;
-use passbox_server::config::Config;
-use passbox_server::state::AppState;
 
 const PASSWORD: &str = "correct horse battery staple";
 
-fn start_server(database_url: String, agent_limit: u32) -> String {
-    let (tx, rx) = std::sync::mpsc::channel::<SocketAddr>();
-    std::thread::spawn(move || {
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        runtime.block_on(async move {
-            let db = passbox_server::db::connect(&database_url).await.unwrap();
-            let mut state = AppState::load(db).await.unwrap();
-            state.auth_rate_limit = 1000;
-            state.agent_limit_per_member = agent_limit;
-            let app = passbox_server::routes::router(&Config::default(), state);
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-            tx.send(listener.local_addr().unwrap()).unwrap();
-            axum::serve(listener, app).await.unwrap();
-        });
-    });
-    format!("http://{}", rx.recv().unwrap())
-}
-
-fn database_urls() -> Vec<String> {
-    let mut urls = vec!["sqlite::memory:".to_owned()];
-    if let Ok(url) = std::env::var("PASSBOX_TEST_DATABASE_URL") {
-        urls.push(url);
-    }
-    urls
+fn start_server(agent_limit: u32) -> String {
+    passbox_server::testing::spawn_server(move |state, _| {
+        state.auth_rate_limit = 1000;
+        state.agent_limit_per_member = agent_limit;
+    })
 }
 
 fn person(server: &str) -> (Client, String) {
@@ -84,9 +59,7 @@ fn join(owner: &Client, member: &Client, email: &str, org_id: &str, role: &str) 
 
 #[test]
 fn recovery_by_default_and_view_only_guests() {
-    for url in database_urls() {
-        recovery_and_guests_on(&start_server(url, 0));
-    }
+    recovery_and_guests_on(&start_server(0));
 }
 
 fn recovery_and_guests_on(server: &str) {
@@ -192,9 +165,7 @@ fn recovery_and_guests_on(server: &str) {
 
 #[test]
 fn agent_fair_use_limit() {
-    for url in database_urls() {
-        agent_limit_on(&start_server(url, 1));
-    }
+    agent_limit_on(&start_server(1));
 }
 
 fn agent_limit_on(server: &str) {
@@ -256,9 +227,7 @@ fn approve(owner: Arc<Client>, reveal: bool, rounds: usize) {
 
 #[test]
 fn agent_reveal() {
-    for url in database_urls() {
-        agent_reveal_on(&start_server(url, 0));
-    }
+    agent_reveal_on(&start_server(0));
 }
 
 fn agent_reveal_on(server: &str) {

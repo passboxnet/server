@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM recovery_sessions WHERE account_id = $1 AND method = 'org' AND source_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "dfa5c0e8d51a03e956256a6f626a5cd62486b05ebdf65306d764068bc1f41c78"
+}

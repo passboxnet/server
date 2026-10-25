@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM item_versions WHERE item_id = $1 AND revision NOT IN (SELECT revision FROM item_versions WHERE item_id = $1 ORDER BY revision DESC LIMIT $2)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e09e9b98176144a329b0bc6ff9d0c07ee39eb6dbb469b1a143772744971f5cf1"
+}

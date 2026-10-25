@@ -21,7 +21,7 @@ use passbox_core::trusted_device::{
 };
 use passbox_core::{encoding, identity};
 use serde::{Deserialize, Serialize};
-use sqlx::AnyConnection;
+use sqlx::PgConnection;
 
 use super::login::{self, hash, remember, take_proof};
 use super::{load_config, sso_error};
@@ -30,7 +30,7 @@ use crate::api::auth::{
     self, CLIENT_KINDS, NewSession, Session, SessionResponse, clean_device_name, record_event,
 };
 use crate::api::{access, signed, validate};
-use crate::db::{self, now_ms};
+use crate::db::{Public, now_ms};
 use crate::error::{ApiError, ApiResult};
 use crate::security::ClientIp;
 use crate::state::AppState;
@@ -48,19 +48,19 @@ fn client_kind(kind: &str) -> String {
 }
 
 /// The organization through which the account may unlock with SSO.
-async fn unlock_org(conn: &mut AnyConnection, account_id: &str) -> ApiResult<Option<String>> {
-    Ok(sqlx::query_scalar(
+async fn unlock_org(conn: &mut PgConnection, account_id: &str) -> ApiResult<Option<String>> {
+    Ok(sqlx::query_scalar!(
         "SELECT org_sso.org_id FROM org_sso JOIN org_members ON org_members.org_id = org_sso.org_id \
          WHERE org_members.account_id = $1 AND org_members.status IN ('accepted', 'confirmed') \
-         AND org_sso.enabled = 1 AND org_sso.allow_device_unlock = 1 ORDER BY org_sso.org_id LIMIT 1",
+         AND org_sso.enabled = true AND org_sso.allow_device_unlock = true ORDER BY org_sso.org_id LIMIT 1",
+        account_id,
     )
-    .bind(account_id)
     .fetch_optional(&mut *conn)
     .await?)
 }
 
 async fn require_unlock_allowed(
-    conn: &mut AnyConnection,
+    conn: &mut PgConnection,
     account_id: &str,
     org_id: &str,
 ) -> ApiResult<()> {
@@ -80,7 +80,7 @@ async fn require_unlock_allowed(
 
 /// Checks an upload against the account's published key and the device key.
 async fn check_upload(
-    conn: &mut AnyConnection,
+    conn: &mut PgConnection,
     account_id: &str,
     device_id: &str,
     public_key: &[u8],
@@ -106,37 +106,38 @@ async fn check_upload(
 }
 
 async fn insert_device(
-    conn: &mut AnyConnection,
+    conn: &mut PgConnection,
     account_id: &str,
     name: &str,
     upload: &TrustedDeviceUpload,
     approved_by: &str,
 ) -> ApiResult<()> {
-    let count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM trusted_devices WHERE account_id = $1")
-            .bind(account_id)
-            .fetch_one(&mut *conn)
-            .await?;
+    let count: i64 = sqlx::query_scalar!(
+        "SELECT COUNT(*) AS \"count!\" FROM trusted_devices WHERE account_id = $1",
+        account_id,
+    )
+    .fetch_one(&mut *conn)
+    .await?;
     if count >= MAX_TRUSTED_DEVICES {
         return Err(ApiError::bad_request(
             "remove a trusted device first (at most 20)",
         ));
     }
     let now = now_ms();
-    let inserted = sqlx::query(
+    let inserted = sqlx::query!(
         "INSERT INTO trusted_devices (id, account_id, name, public_key, sealed_key, grant_data, grant_signature, \
          approved_by, created_at, last_used_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) ON CONFLICT DO NOTHING",
+        &upload.device_id,
+        account_id,
+        name,
+        &upload.public_key,
+        &upload.sealed_key,
+        &upload.grant,
+        &upload.grant_signature,
+        approved_by,
+        now,
+        now,
     )
-    .bind(&upload.device_id)
-    .bind(account_id)
-    .bind(name)
-    .bind(&upload.public_key)
-    .bind(&upload.sealed_key)
-    .bind(&upload.grant)
-    .bind(&upload.grant_signature)
-    .bind(approved_by)
-    .bind(now)
-    .bind(now)
     .execute(&mut *conn)
     .await?;
     if inserted.rows_affected() == 0 {
@@ -176,7 +177,7 @@ pub async fn enroll(
     } else {
         &req.name
     });
-    let mut tx = db::begin_write(&state.db).await?;
+    let mut tx = state.db.as_account(&session.account_id).await?;
     let org_id = unlock_org(&mut tx, &session.account_id)
         .await?
         .ok_or_else(|| {
@@ -257,21 +258,21 @@ pub async fn list(
     State(state): State<AppState>,
     session: Session,
 ) -> ApiResult<Json<TrustedDevicesResponse>> {
-    let mut conn = state.db.acquire().await?;
+    let mut conn = state.db.as_account(&session.account_id).await?;
     let org_id = unlock_org(&mut conn, &session.account_id).await?;
-    let devices: Vec<(String, String, String, i64, i64)> = sqlx::query_as(
+    let devices: Vec<(String, String, String, i64, i64)> = sqlx::query!(
         "SELECT id, name, approved_by, created_at, last_used_at FROM trusted_devices WHERE account_id = $1 \
          ORDER BY created_at",
-    )
-    .bind(&session.account_id)
+        &session.account_id,
+    ).map(|row| (row.id, row.name, row.approved_by, row.created_at, row.last_used_at))
     .fetch_all(&mut *conn)
     .await?;
-    let requests: Vec<(String, String, String, String, String, i64, i64)> = sqlx::query_as(
+    let requests: Vec<(String, String, String, String, String, i64, i64)> = sqlx::query!(
         "SELECT id, device_name, client_kind, ip, public_key, created_at, expires_at FROM trusted_device_requests \
          WHERE account_id = $1 AND status = 'pending' AND expires_at > $2 ORDER BY created_at DESC",
-    )
-    .bind(&session.account_id)
-    .bind(now_ms())
+        &session.account_id,
+        now_ms(),
+    ).map(|row| (row.id, row.device_name, row.client_kind, row.ip, row.public_key, row.created_at, row.expires_at))
     .fetch_all(&mut *conn)
     .await?;
     Ok(Json(TrustedDevicesResponse {
@@ -317,11 +318,15 @@ pub async fn remove(
     Path(id): Path<String>,
 ) -> ApiResult<StatusCode> {
     validate::id("device id", &id)?;
-    let deleted = sqlx::query("DELETE FROM trusted_devices WHERE id = $1 AND account_id = $2")
-        .bind(&id)
-        .bind(&session.account_id)
-        .execute(&state.db)
-        .await?;
+    let mut tx = state.db.as_account(&session.account_id).await?;
+    let deleted = sqlx::query!(
+        "DELETE FROM trusted_devices WHERE id = $1 AND account_id = $2",
+        &id,
+        &session.account_id,
+    )
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
     if deleted.rows_affected() == 0 {
         return Err(ApiError::NotFound);
     }
@@ -374,44 +379,47 @@ pub async fn create_request(
     if public_key.len() != identity::ENC_PK_LEN {
         return Err(ApiError::bad_request("invalid publicKey"));
     }
+    // The SSO proof identifies the account: the request runs as it.
     let (account_id, org_id) = take_proof(&state, &req.proof).await?;
-    let mut tx = db::begin_write(&state.db).await?;
+    let mut tx = state.db.as_account(&account_id).await?;
     require_unlock_allowed(&mut tx, &account_id, &org_id).await?;
     let now = now_ms();
-    let open: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM trusted_device_requests WHERE account_id = $1 AND status = 'pending' AND expires_at > $2",
+    let open: i64 = sqlx::query_scalar!(
+        "SELECT COUNT(*) AS \"count!\" FROM trusted_device_requests WHERE account_id = $1 AND status = 'pending' AND expires_at > $2",
+        &account_id,
+        now,
     )
-    .bind(&account_id)
-    .bind(now)
     .fetch_one(&mut *tx)
     .await?;
     if open >= MAX_OPEN_REQUESTS {
         return Err(ApiError::RateLimited(std::time::Duration::from_secs(60)));
     }
-    sqlx::query("DELETE FROM trusted_device_requests WHERE account_id = $1 AND expires_at < $2")
-        .bind(&account_id)
-        .bind(now)
-        .execute(&mut *tx)
-        .await?;
+    sqlx::query!(
+        "DELETE FROM trusted_device_requests WHERE account_id = $1 AND expires_at < $2",
+        &account_id,
+        now,
+    )
+    .execute(&mut *tx)
+    .await?;
     let request_id = login::new_id()?;
     let request_token = encoding::encode(
         &passbox_core::random::bytes::<32>().map_err(|e| ApiError::Internal(e.into()))?,
     );
     let expires_at = now + REQUEST_TTL_MS;
-    sqlx::query(
+    sqlx::query!(
         "INSERT INTO trusted_device_requests (id, account_id, org_id, public_key, device_name, client_kind, ip, \
          token_hash, status, created_at, expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending', $9, $10)",
+        &request_id,
+        &account_id,
+        &org_id,
+        encoding::encode(&public_key),
+        clean_device_name(&req.device_name),
+        client_kind(&req.client_kind),
+        &ip,
+        hash(&request_token),
+        now,
+        expires_at,
     )
-    .bind(&request_id)
-    .bind(&account_id)
-    .bind(&org_id)
-    .bind(encoding::encode(&public_key))
-    .bind(clean_device_name(&req.device_name))
-    .bind(client_kind(&req.client_kind))
-    .bind(&ip)
-    .bind(hash(&request_token))
-    .bind(now)
-    .bind(expires_at)
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
@@ -454,13 +462,14 @@ pub async fn approve(
 ) -> ApiResult<StatusCode> {
     require_recent_login(&session)?;
     validate::id("request id", &id)?;
-    let mut tx = db::begin_write(&state.db).await?;
-    let row: Option<(String, String, String, i64)> = sqlx::query_as(
+    let mut tx = state.db.as_account(&session.account_id).await?;
+    let row: Option<(String, String, String, i64)> = sqlx::query!(
         "SELECT org_id, public_key, device_name, expires_at FROM trusted_device_requests \
          WHERE id = $1 AND account_id = $2 AND status = 'pending'",
+        &id,
+        &session.account_id,
     )
-    .bind(&id)
-    .bind(&session.account_id)
+    .map(|row| (row.org_id, row.public_key, row.device_name, row.expires_at))
     .fetch_optional(&mut *tx)
     .await?;
     let Some((org_id, public_key, device_name, expires_at)) = row else {
@@ -482,10 +491,12 @@ pub async fn approve(
         &grant.value.approved_by,
     )
     .await?;
-    sqlx::query("UPDATE trusted_device_requests SET status = 'approved' WHERE id = $1")
-        .bind(&id)
-        .execute(&mut *tx)
-        .await?;
+    sqlx::query!(
+        "UPDATE trusted_device_requests SET status = 'approved' WHERE id = $1",
+        &id,
+    )
+    .execute(&mut *tx)
+    .await?;
     tx.commit().await?;
     record_event(
         &state,
@@ -507,13 +518,15 @@ pub async fn deny(
     Path(id): Path<String>,
 ) -> ApiResult<StatusCode> {
     validate::id("request id", &id)?;
-    let updated = sqlx::query(
+    let mut tx = state.db.as_account(&session.account_id).await?;
+    let updated = sqlx::query!(
         "UPDATE trusted_device_requests SET status = 'denied' WHERE id = $1 AND account_id = $2 AND status = 'pending'",
+        &id,
+        &session.account_id,
     )
-    .bind(&id)
-    .bind(&session.account_id)
-    .execute(&state.db)
+    .execute(&mut *tx)
     .await?;
+    tx.commit().await?;
     if updated.rows_affected() == 0 {
         return Err(ApiError::NotFound);
     }
@@ -549,14 +562,14 @@ async fn unlock_response(
     client_kind: &str,
     ip: &str,
 ) -> ApiResult<UnlockResponse> {
-    crate::instance::ensure_active(state, account_id).await?;
-    let mut conn = state.db.acquire().await?;
+    let mut conn = state.db.as_account(account_id).await?;
+    crate::instance::ensure_active(&mut conn, account_id).await?;
     require_unlock_allowed(&mut conn, account_id, org_id).await?;
-    let device: Option<(String, String, String)> = sqlx::query_as(
+    let device: Option<(String, String, String)> = sqlx::query!(
         "SELECT sealed_key, grant_data, grant_signature FROM trusted_devices WHERE id = $1 AND account_id = $2",
-    )
-    .bind(device_id)
-    .bind(account_id)
+        device_id,
+        account_id,
+    ).map(|row| (row.sealed_key, row.grant_data, row.grant_signature))
     .fetch_optional(&mut *conn)
     .await?;
     let Some((sealed_key, grant, grant_signature)) = device else {
@@ -565,23 +578,29 @@ async fn unlock_response(
             "this device is not trusted; approve it from a trusted device or unlock with your master password",
         ));
     };
-    let keys: (String, String, String) = sqlx::query_as(
+    let keys: (String, String, Vec<u8>) = sqlx::query!(
         "SELECT bundle, bundle_signature, encrypted_private FROM account_keys WHERE account_id = $1 \
          ORDER BY key_version DESC LIMIT 1",
-    )
-    .bind(account_id)
+        account_id,
+    ).map(|row| (row.bundle, row.bundle_signature, row.encrypted_private))
     .fetch_one(&mut *conn)
     .await?;
-    let email: String = sqlx::query_scalar("SELECT email FROM accounts WHERE id = $1")
-        .bind(account_id)
-        .fetch_one(&mut *conn)
-        .await?;
-    sqlx::query("UPDATE trusted_devices SET last_used_at = $1 WHERE id = $2")
-        .bind(now_ms())
-        .bind(device_id)
-        .execute(&mut *conn)
-        .await?;
-    drop(conn);
+    let email: String =
+        sqlx::query_scalar!("SELECT email FROM accounts WHERE id = $1", account_id,)
+            .fetch_one(&mut *conn)
+            .await?;
+    sqlx::query!(
+        "UPDATE trusted_devices SET last_used_at = $1 WHERE id = $2",
+        now_ms(),
+        device_id,
+    )
+    .execute(&mut *conn)
+    .await?;
+    let hours: i64 =
+        sqlx::query_scalar!("SELECT reauth_hours FROM org_sso WHERE org_id = $1", org_id,)
+            .fetch_one(&mut *conn)
+            .await?;
+    conn.commit().await?;
     let session = auth::start_session(
         state,
         account_id,
@@ -595,14 +614,8 @@ async fn unlock_response(
         },
     )
     .await?;
-    let until = {
-        let hours: i64 = sqlx::query_scalar("SELECT reauth_hours FROM org_sso WHERE org_id = $1")
-            .bind(org_id)
-            .fetch_one(&state.db)
-            .await?;
-        now_ms() + hours * 60 * 60 * 1000
-    };
-    remember(state, session.device_token(), until).await?;
+    let until = now_ms() + hours * 60 * 60 * 1000;
+    remember(state, account_id, session.device_token(), until).await?;
     Ok(UnlockResponse {
         session,
         email,
@@ -614,7 +627,7 @@ async fn unlock_response(
             grant_signature,
             bundle: keys.0,
             bundle_signature: keys.1,
-            encrypted_private: keys.2,
+            encrypted_private: encoding::encode(&keys.2),
         },
     })
 }
@@ -687,12 +700,12 @@ pub async fn request_status(
     if req.request_token.is_empty() || req.request_token.len() > 128 {
         return Err(ApiError::NotFound);
     }
-    let row: Option<(String, String, String, String, String, String, i64)> = sqlx::query_as(
+    let row: Option<(String, String, String, String, String, String, i64)> = sqlx::query!(
         "SELECT id, account_id, org_id, status, device_name, client_kind, expires_at FROM trusted_device_requests \
          WHERE token_hash = $1",
-    )
-    .bind(hash(&req.request_token))
-    .fetch_optional(&state.db)
+        hash(&req.request_token),
+    ).map(|row| (row.id, row.account_id, row.org_id, row.status, row.device_name, row.client_kind, row.expires_at))
+    .fetch_optional(&mut *state.db.public(Public::Auth).await?)
     .await?;
     let Some((id, account_id, org_id, status, device_name, client_kind, expires_at)) = row else {
         return Err(ApiError::NotFound);
@@ -709,12 +722,16 @@ pub async fn request_status(
             result: None,
         }));
     }
-    // Single use: the first successful poll ends the request.
-    let taken =
-        sqlx::query("DELETE FROM trusted_device_requests WHERE id = $1 AND status = 'approved'")
-            .bind(&id)
-            .execute(&state.db)
-            .await?;
+    // Single use: the first successful poll ends the request. The holder of
+    // the request token of an approved request acts for the account.
+    let mut tx = state.db.as_account(&account_id).await?;
+    let taken = sqlx::query!(
+        "DELETE FROM trusted_device_requests WHERE id = $1 AND status = 'approved'",
+        &id,
+    )
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
     if taken.rows_affected() == 0 {
         return Err(ApiError::NotFound);
     }

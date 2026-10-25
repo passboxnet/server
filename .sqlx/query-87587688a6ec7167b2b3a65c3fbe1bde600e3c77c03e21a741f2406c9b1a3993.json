@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE service_accounts SET revoked_at = $1 WHERE id = $2 AND revoked_at = 0",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "87587688a6ec7167b2b3a65c3fbe1bde600e3c77c03e21a741f2406c9b1a3993"
+}

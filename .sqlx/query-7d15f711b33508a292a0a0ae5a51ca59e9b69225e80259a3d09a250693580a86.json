@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO service_accounts (id, account_id, name, public_key, public_key_signature, encrypted_private, auth_hash, expires_at, revoked_at, last_used_at, last_used_ip, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 0, 0, '', $9)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Bytea",
+        "Text",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "7d15f711b33508a292a0a0ae5a51ca59e9b69225e80259a3d09a250693580a86"
+}

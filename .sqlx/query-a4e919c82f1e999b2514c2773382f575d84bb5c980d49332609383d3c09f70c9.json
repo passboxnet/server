@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO trusted_device_requests (id, account_id, org_id, public_key, device_name, client_kind, ip, token_hash, status, created_at, expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending', $9, $10)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a4e919c82f1e999b2514c2773382f575d84bb5c980d49332609383d3c09f70c9"
+}

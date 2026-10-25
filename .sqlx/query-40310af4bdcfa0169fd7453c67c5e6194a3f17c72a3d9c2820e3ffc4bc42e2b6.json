@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE attachments SET vault_id = $1, owner_type = $2, owner_id = $3 WHERE item_id = $4",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "40310af4bdcfa0169fd7453c67c5e6194a3f17c72a3d9c2820e3ffc4bc42e2b6"
+}

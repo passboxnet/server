@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT rotation_pending FROM vaults WHERE id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "rotation_pending",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "vaults",
+            "name": "rotation_pending"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "135cdeffc0cbb1e213d9ed8ee06c0d9da55a6cf61ddd4b7a0869a4d822fa3233"
+}

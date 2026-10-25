@@ -1,0 +1,53 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT encrypted_meta, revision, key_epoch FROM vaults WHERE id = $1 AND account_id = $2 AND org_id IS NULL",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "encrypted_meta",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "vaults",
+            "name": "encrypted_meta"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "revision",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "vaults",
+            "name": "revision"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "key_epoch",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "vaults",
+            "name": "key_epoch"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "134716291c44b7b34c973ac578ef0e9a20d01f7d63b3a3a0d279f5bbea0c40db"
+}

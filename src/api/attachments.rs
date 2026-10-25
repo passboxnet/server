@@ -14,13 +14,13 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use sqlx::AnyConnection;
+use sqlx::PgConnection;
 
 use super::access;
 use super::auth::Session;
 use super::validate;
 use crate::blobs::PutOutcome;
-use crate::db::{self, now_ms};
+use crate::db::{Job, now_ms};
 use crate::error::{ApiError, ApiResult};
 use crate::state::AppState;
 
@@ -57,13 +57,15 @@ impl Default for AttachmentLimits {
 
 /// Who the storage of a vault counts against: `("account", id)` for a
 /// personal vault, `("org", id)` for a shared one.
-pub async fn owner_of(conn: &mut AnyConnection, vault_id: &str) -> ApiResult<(String, String)> {
-    let (account_id, org_id): (String, Option<String>) =
-        sqlx::query_as("SELECT account_id, org_id FROM vaults WHERE id = $1")
-            .bind(vault_id)
-            .fetch_optional(&mut *conn)
-            .await?
-            .ok_or(ApiError::NotFound)?;
+pub async fn owner_of(conn: &mut PgConnection, vault_id: &str) -> ApiResult<(String, String)> {
+    let (account_id, org_id): (String, Option<String>) = sqlx::query!(
+        "SELECT account_id, org_id FROM vaults WHERE id = $1",
+        vault_id,
+    )
+    .map(|row| (row.account_id, row.org_id))
+    .fetch_optional(&mut *conn)
+    .await?
+    .ok_or(ApiError::NotFound)?;
     Ok(match org_id {
         Some(org) => ("org".into(), org),
         None => ("account".into(), account_id),
@@ -78,12 +80,13 @@ fn quota_for(state: &AppState, owner: &(String, String)) -> u64 {
     }
 }
 
-async fn used_by(conn: &mut AnyConnection, owner: &(String, String)) -> ApiResult<u64> {
-    let used: i64 = sqlx::query_scalar(
-        "SELECT CAST(COALESCE(SUM(size), 0) AS BIGINT) FROM attachments WHERE owner_type = $1 AND owner_id = $2",
+async fn used_by(conn: &mut PgConnection, owner: &(String, String)) -> ApiResult<u64> {
+    let used: i64 = sqlx::query_scalar!(
+        r#"SELECT CAST(COALESCE(SUM(size), 0) AS BIGINT) AS "used!" FROM attachments
+           WHERE owner_type = $1 AND owner_id = $2"#,
+        &owner.0,
+        &owner.1,
     )
-    .bind(&owner.0)
-    .bind(&owner.1)
     .fetch_one(&mut *conn)
     .await?;
     Ok(u64::try_from(used).unwrap_or(0))
@@ -99,7 +102,7 @@ fn quota_exceeded() -> ApiError {
 /// 403 `quota_exceeded` if `extra` more bytes do not fit the owner's quota.
 pub async fn ensure_quota(
     state: &AppState,
-    conn: &mut AnyConnection,
+    conn: &mut PgConnection,
     owner: &(String, String),
     extra: i64,
 ) -> ApiResult<()> {
@@ -116,16 +119,17 @@ pub async fn ensure_quota(
 
 /// The item's vault, if the account can write to it (404/403 otherwise).
 async fn writable_item(
-    conn: &mut AnyConnection,
+    conn: &mut PgConnection,
     account_id: &str,
     item_id: &str,
 ) -> ApiResult<String> {
-    let vault_id: String =
-        sqlx::query_scalar("SELECT vault_id FROM items WHERE id = $1 AND deleted = 0")
-            .bind(item_id)
-            .fetch_optional(&mut *conn)
-            .await?
-            .ok_or(ApiError::NotFound)?;
+    let vault_id: String = sqlx::query_scalar!(
+        "SELECT vault_id FROM items WHERE id = $1 AND deleted = false",
+        item_id,
+    )
+    .fetch_optional(&mut *conn)
+    .await?
+    .ok_or(ApiError::NotFound)?;
     if access::vault_access(conn, &vault_id, account_id)
         .await?
         .is_none()
@@ -169,22 +173,24 @@ pub async fn upload(
 
     // Check access and space before reading the body.
     let max_len = {
-        let mut conn = state.db.acquire().await?;
+        let mut conn = state.db.as_account(&session.account_id).await?;
         let vault_id = writable_item(&mut conn, &session.account_id, &query.item_id).await?;
-        let exists: Option<String> = sqlx::query_scalar("SELECT id FROM attachments WHERE id = $1")
-            .bind(&id)
-            .fetch_optional(&mut *conn)
-            .await?;
+        let exists: Option<String> =
+            sqlx::query_scalar!("SELECT id FROM attachments WHERE id = $1", &id,)
+                .fetch_optional(&mut *conn)
+                .await?;
         if exists.is_some() {
             return Err(ApiError::conflict(
                 "an attachment with this ID exists",
                 json!({}),
             ));
         }
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM attachments WHERE item_id = $1")
-            .bind(&query.item_id)
-            .fetch_one(&mut *conn)
-            .await?;
+        let count: i64 = sqlx::query_scalar!(
+            "SELECT COUNT(*) AS \"count!\" FROM attachments WHERE item_id = $1",
+            &query.item_id,
+        )
+        .fetch_one(&mut *conn)
+        .await?;
         if count >= MAX_PER_ITEM {
             return Err(ApiError::bad_request(format!(
                 "an item can have at most {MAX_PER_ITEM} attachments"
@@ -217,22 +223,22 @@ pub async fn upload(
     }
 
     let result: ApiResult<()> = async {
-        let mut tx = db::begin_write(&state.db).await?;
+        let mut tx = state.db.as_account(&session.account_id).await?;
         let vault_id = writable_item(&mut tx, &session.account_id, &query.item_id).await?;
         let owner = owner_of(&mut tx, &vault_id).await?;
         ensure_quota(&state, &mut tx, &owner, i64::try_from(size).unwrap_or(i64::MAX)).await?;
-        sqlx::query(
+        sqlx::query!(
             "INSERT INTO attachments (id, item_id, vault_id, uploaded_by, owner_type, owner_id, size, created_at) \
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+            &id,
+            &query.item_id,
+            &vault_id,
+            &session.account_id,
+            &owner.0,
+            &owner.1,
+            i64::try_from(size).unwrap_or(i64::MAX),
+            now_ms(),
         )
-        .bind(&id)
-        .bind(&query.item_id)
-        .bind(&vault_id)
-        .bind(&session.account_id)
-        .bind(&owner.0)
-        .bind(&owner.1)
-        .bind(i64::try_from(size).unwrap_or(i64::MAX))
-        .bind(now_ms())
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
@@ -269,12 +275,12 @@ pub async fn download(
 ) -> ApiResult<Response> {
     validate::id("attachment id", &id)?;
     {
-        let mut conn = state.db.acquire().await?;
-        let vault_id: String = sqlx::query_scalar("SELECT vault_id FROM attachments WHERE id = $1")
-            .bind(&id)
-            .fetch_optional(&mut *conn)
-            .await?
-            .ok_or(ApiError::NotFound)?;
+        let mut conn = state.db.as_account(&session.account_id).await?;
+        let vault_id: String =
+            sqlx::query_scalar!("SELECT vault_id FROM attachments WHERE id = $1", &id,)
+                .fetch_optional(&mut *conn)
+                .await?
+                .ok_or(ApiError::NotFound)?;
         if access::vault_access(&mut conn, &vault_id, &session.account_id)
             .await?
             .is_none()
@@ -306,15 +312,14 @@ pub async fn delete(
     Path(id): Path<String>,
 ) -> ApiResult<StatusCode> {
     validate::id("attachment id", &id)?;
-    let mut tx = db::begin_write(&state.db).await?;
-    let item_id: String = sqlx::query_scalar("SELECT item_id FROM attachments WHERE id = $1")
-        .bind(&id)
-        .fetch_optional(&mut *tx)
-        .await?
-        .ok_or(ApiError::NotFound)?;
+    let mut tx = state.db.as_account(&session.account_id).await?;
+    let item_id: String =
+        sqlx::query_scalar!("SELECT item_id FROM attachments WHERE id = $1", &id,)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or(ApiError::NotFound)?;
     writable_item(&mut tx, &session.account_id, &item_id).await?;
-    sqlx::query("DELETE FROM attachments WHERE id = $1")
-        .bind(&id)
+    sqlx::query!("DELETE FROM attachments WHERE id = $1", &id,)
         .execute(&mut *tx)
         .await?;
     tx.commit().await?;
@@ -325,15 +330,15 @@ pub async fn delete(
 }
 
 /// Removes the attachments of a permanently deleted item.
-pub async fn delete_for_item(state: &AppState, item_id: &str) -> ApiResult<()> {
-    let ids: Vec<String> = sqlx::query_scalar("SELECT id FROM attachments WHERE item_id = $1")
-        .bind(item_id)
-        .fetch_all(&state.db)
-        .await?;
-    sqlx::query("DELETE FROM attachments WHERE item_id = $1")
-        .bind(item_id)
-        .execute(&state.db)
-        .await?;
+pub async fn delete_for_item(state: &AppState, account_id: &str, item_id: &str) -> ApiResult<()> {
+    let mut tx = state.db.as_account(account_id).await?;
+    let ids: Vec<String> = sqlx::query_scalar!(
+        "DELETE FROM attachments WHERE item_id = $1 RETURNING id",
+        item_id,
+    )
+    .fetch_all(&mut *tx)
+    .await?;
+    tx.commit().await?;
     for id in ids {
         let _ = state.blobs.delete(&id).await;
     }
@@ -363,17 +368,17 @@ pub async fn usage(
     State(state): State<AppState>,
     session: Session,
 ) -> ApiResult<Json<UsageResponse>> {
-    let mut conn = state.db.acquire().await?;
+    let mut conn = state.db.as_account(&session.account_id).await?;
     let owner = ("account".to_owned(), session.account_id.clone());
     let mut usage = vec![Usage {
         owner: "account".into(),
         used: used_by(&mut conn, &owner).await?,
         quota: state.attachment_limits.account_quota,
     }];
-    let orgs: Vec<String> = sqlx::query_scalar(
+    let orgs: Vec<String> = sqlx::query_scalar!(
         "SELECT org_id FROM org_members WHERE account_id = $1 AND status = 'confirmed' ORDER BY org_id",
+        &session.account_id,
     )
-    .bind(&session.account_id)
     .fetch_all(&mut *conn)
     .await?;
     for org in orgs {
@@ -398,10 +403,14 @@ pub async fn sweep(state: &AppState) -> anyhow::Result<usize> {
         if age_ms < 60 * 60 * 1000 {
             continue;
         }
-        let known: Option<String> = sqlx::query_scalar("SELECT id FROM attachments WHERE id = $1")
-            .bind(&id)
-            .fetch_optional(&state.db)
-            .await?;
+        // The worker context sees every attachment row, so no referenced
+        // blob is ever taken for an orphan.
+        let mut tx = state.db.system(Job::Attachments).await?;
+        let known: Option<String> =
+            sqlx::query_scalar!("SELECT id FROM attachments WHERE id = $1", &id,)
+                .fetch_optional(&mut *tx)
+                .await?;
+        drop(tx);
         if known.is_none() {
             state.blobs.delete(&id).await?;
             removed += 1;

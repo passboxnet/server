@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT principal_id FROM vault_members WHERE vault_id = $1 AND principal_type = 'account'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "principal_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "vault_members",
+            "name": "principal_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "1b0c588f992b4505312769a328e45ce0d2c88c636bf229a961d84d00db24a613"
+}

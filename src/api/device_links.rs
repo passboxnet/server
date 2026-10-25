@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 
 use super::auth::{Session, clean_device_name, hash_token, limit_ip, record_event};
 use super::validate;
-use crate::db::{self, now_ms};
+use crate::db::{Public, now_ms};
 use crate::error::{ApiError, ApiResult};
 use crate::security::ClientIp;
 use crate::state::AppState;
@@ -58,15 +58,18 @@ pub async fn create(
     session: Session,
 ) -> ApiResult<(StatusCode, Json<CreateResponse>)> {
     let now = now_ms();
-    let mut tx = db::begin_write(&state.db).await?;
-    sqlx::query("DELETE FROM device_links WHERE expires_at < $1")
-        .bind(now)
+    let mut tx = state.db.as_account(&session.account_id).await?;
+    // Expired links of every account (a function: accounts cannot see each
+    // other's links).
+    sqlx::query!("SELECT passbox.purge_expired_device_links($1)", now)
         .execute(&mut *tx)
         .await?;
-    let open: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM device_links WHERE account_id = $1")
-        .bind(&session.account_id)
-        .fetch_one(&mut *tx)
-        .await?;
+    let open: i64 = sqlx::query_scalar!(
+        "SELECT COUNT(*) AS \"count!\" FROM device_links WHERE account_id = $1",
+        &session.account_id,
+    )
+    .fetch_one(&mut *tx)
+    .await?;
     if open >= MAX_OPEN_LINKS {
         return Err(ApiError::bad_request(
             "too many open codes; wait a few minutes",
@@ -75,12 +78,13 @@ pub async fn create(
     let mut short_id = String::new();
     for _ in 0..20 {
         let candidate = device_link::new_short_id().map_err(internal)?;
-        let taken: Option<i64> =
-            sqlx::query_scalar("SELECT 1 FROM device_links WHERE short_id = $1")
-                .bind(&candidate)
-                .fetch_optional(&mut *tx)
-                .await?;
-        if taken.is_none() {
+        let taken = sqlx::query_scalar!(
+            r#"SELECT passbox.device_link_short_id_taken($1) AS "taken!""#,
+            &candidate,
+        )
+        .fetch_one(&mut *tx)
+        .await?;
+        if !taken {
             short_id = candidate;
             break;
         }
@@ -90,16 +94,16 @@ pub async fn create(
     }
     let link_id = id::new_id().map_err(internal)?;
     let expires_at = now + LINK_TTL_MS;
-    sqlx::query(
+    sqlx::query!(
         "INSERT INTO device_links (id, account_id, short_id, status, ephemeral_key, mac, claim_token_hash, \
          claim_device_name, claim_ip, claimed_at, sealed_payload, created_at, expires_at) \
          VALUES ($1, $2, $3, 'open', '', '', '', '', '', 0, '', $4, $5)",
+        &link_id,
+        &session.account_id,
+        &short_id,
+        now,
+        expires_at,
     )
-    .bind(&link_id)
-    .bind(&session.account_id)
-    .bind(&short_id)
-    .bind(now)
-    .bind(expires_at)
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
@@ -146,14 +150,25 @@ pub async fn get(
     Path(link_id): Path<String>,
 ) -> ApiResult<Json<LinkView>> {
     validate::id("link id", &link_id)?;
-    let row: Option<(String, i64, String, String, String, String, i64)> = sqlx::query_as(
+    let row: Option<(String, i64, String, String, String, String, i64)> = sqlx::query!(
         "SELECT status, expires_at, ephemeral_key, mac, claim_device_name, claim_ip, claimed_at \
          FROM device_links WHERE id = $1 AND account_id = $2 AND expires_at > $3",
+        &link_id,
+        &session.account_id,
+        now_ms(),
     )
-    .bind(&link_id)
-    .bind(&session.account_id)
-    .bind(now_ms())
-    .fetch_optional(&state.db)
+    .map(|row| {
+        (
+            row.status,
+            row.expires_at,
+            row.ephemeral_key,
+            row.mac,
+            row.claim_device_name,
+            row.claim_ip,
+            row.claimed_at,
+        )
+    })
+    .fetch_optional(&mut *state.db.as_account(&session.account_id).await?)
     .await?;
     let (status, expires_at, ephemeral_key, mac, device_name, ip, claimed_at) =
         row.ok_or_else(gone)?;
@@ -188,16 +203,18 @@ pub async fn approve(
         &req.sealed_payload,
         validate::MAX_SMALL_LEN,
     )?;
-    let updated = sqlx::query(
+    let mut tx = state.db.as_account(&session.account_id).await?;
+    let updated = sqlx::query!(
         "UPDATE device_links SET status = 'approved', sealed_payload = $1 WHERE id = $2 AND account_id = $3 \
          AND status = 'claimed' AND expires_at > $4",
+        &req.sealed_payload,
+        &link_id,
+        &session.account_id,
+        now_ms(),
     )
-    .bind(&req.sealed_payload)
-    .bind(&link_id)
-    .bind(&session.account_id)
-    .bind(now_ms())
-    .execute(&state.db)
+    .execute(&mut *tx)
     .await?;
+    tx.commit().await?;
     if updated.rows_affected() == 0 {
         return Err(gone());
     }
@@ -220,11 +237,15 @@ pub async fn delete(
     Path(link_id): Path<String>,
 ) -> ApiResult<StatusCode> {
     validate::id("link id", &link_id)?;
-    sqlx::query("DELETE FROM device_links WHERE id = $1 AND account_id = $2")
-        .bind(&link_id)
-        .bind(&session.account_id)
-        .execute(&state.db)
-        .await?;
+    let mut tx = state.db.as_account(&session.account_id).await?;
+    sqlx::query!(
+        "DELETE FROM device_links WHERE id = $1 AND account_id = $2",
+        &link_id,
+        &session.account_id,
+    )
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -273,29 +294,24 @@ pub async fn claim(
     let token = encoding::encode(&random::bytes::<32>().map_err(internal)?);
     let now = now_ms();
     // The first claim wins; a second device (or a guess) gets "expired".
-    let updated = sqlx::query(
+    let mut tx = state.db.public(Public::Auth).await?;
+    let expires_at = sqlx::query_scalar!(
         "UPDATE device_links SET status = 'claimed', ephemeral_key = $1, mac = $2, claim_token_hash = $3, \
          claim_device_name = $4, claim_ip = $5, claimed_at = $6 WHERE short_id = $7 AND status = 'open' \
-         AND expires_at > $8",
+         AND expires_at > $8 RETURNING expires_at",
+        &req.ephemeral_key,
+        &req.mac,
+        hash_token(&token),
+        clean_device_name(&req.device_name),
+        &ip,
+        now,
+        &short_id,
+        now,
     )
-    .bind(&req.ephemeral_key)
-    .bind(&req.mac)
-    .bind(hash_token(&token))
-    .bind(clean_device_name(&req.device_name))
-    .bind(&ip)
-    .bind(now)
-    .bind(&short_id)
-    .bind(now)
-    .execute(&state.db)
-    .await?;
-    if updated.rows_affected() == 0 {
-        return Err(gone());
-    }
-    let expires_at: i64 =
-        sqlx::query_scalar("SELECT expires_at FROM device_links WHERE claim_token_hash = $1")
-            .bind(hash_token(&token))
-            .fetch_one(&state.db)
-            .await?;
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(gone)?;
+    tx.commit().await?;
     Ok(Json(ClaimResponse {
         claim_token: token,
         expires_at,
@@ -329,12 +345,13 @@ pub async fn poll(
         return Err(gone());
     }
     let token_hash = hash_token(&req.claim_token);
-    let row: Option<(String, String)> = sqlx::query_as(
+    let mut tx = state.db.public(Public::Auth).await?;
+    let row: Option<(String, String)> = sqlx::query!(
         "SELECT status, sealed_payload FROM device_links WHERE claim_token_hash = $1 AND expires_at > $2",
-    )
-    .bind(&token_hash)
-    .bind(now_ms())
-    .fetch_optional(&state.db)
+        &token_hash,
+        now_ms(),
+    ).map(|row| (row.status, row.sealed_payload))
+    .fetch_optional(&mut *tx)
     .await?;
     let (status, sealed) = row.ok_or_else(gone)?;
     if status != "approved" {
@@ -343,10 +360,13 @@ pub async fn poll(
             sealed_payload: None,
         }));
     }
-    sqlx::query("DELETE FROM device_links WHERE claim_token_hash = $1")
-        .bind(&token_hash)
-        .execute(&state.db)
-        .await?;
+    sqlx::query!(
+        "DELETE FROM device_links WHERE claim_token_hash = $1",
+        &token_hash,
+    )
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
     Ok(Json(PollResponse {
         status,
         sealed_payload: Some(sealed),

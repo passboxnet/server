@@ -1,7 +1,9 @@
 //! End-to-end tests of the HTTP API using the real client-side cryptography.
 //!
-//! Runs against in-memory SQLite. Set `PASSBOX_TEST_DATABASE_URL` to a
-//! PostgreSQL URL to run the same tests against PostgreSQL as well.
+//! Runs against PostgreSQL: `PASSBOX_TEST_DATABASE_URL` points at a
+//! superuser connection, and the run creates (and drops) a database of its
+//! own with the production roles and row level security
+//! (`passbox_server::testing`).
 
 use axum::Router;
 use axum::body::Body;
@@ -30,6 +32,8 @@ mod guests;
 mod org_admin;
 #[path = "api/recovery.rs"]
 mod recovery;
+#[path = "api/rls.rs"]
+mod rls;
 #[path = "api/sso.rs"]
 mod sso;
 
@@ -38,17 +42,15 @@ struct TestServer {
     state: AppState,
     /// Listed in `PASSBOX_ADMIN_EMAILS`.
     env_admin_email: String,
+    /// A superuser pool on the test database (bypasses row level security),
+    /// for checking and changing rows directly.
+    owner: sqlx::PgPool,
 }
 
 impl TestServer {
-    async fn new(database_url: &str) -> Self {
-        let db = passbox_server::db::connect(database_url).await.unwrap();
-        Self::with_db(db).await
-    }
-
     /// A second server process on the same database, with its own rate
     /// limits.
-    async fn with_db(db: passbox_server::db::Db) -> Self {
+    async fn with_db(db: passbox_server::db::Db, owner: sqlx::PgPool) -> Self {
         let mut state = AppState::load(db).await.unwrap();
         // Lets tests pick the client IP with `X-Forwarded-For`. Requests
         // without it count as IP "unknown".
@@ -59,11 +61,23 @@ impl TestServer {
             app: passbox_server::routes::router(&Config::default(), state.clone()),
             state,
             env_admin_email,
+            owner,
         }
     }
 
-    fn db(&self) -> &passbox_server::db::Db {
+    /// Direct SQL on the test database, past row level security.
+    fn db(&self) -> &sqlx::PgPool {
+        &self.owner
+    }
+
+    /// The server's own database pools (application roles).
+    fn pools(&self) -> &passbox_server::db::Db {
         &self.state.db
+    }
+
+    /// Another server process on the same database.
+    async fn sibling(&self) -> Self {
+        Self::with_db(self.pools().clone(), self.owner.clone()).await
     }
 
     async fn request(
@@ -253,10 +267,10 @@ impl Client {
     }
 }
 
-async fn run_all(database_url: &str) {
-    let server = TestServer::new(database_url).await;
+async fn run_all(database: &passbox_server::testing::TestDatabase) {
+    let server = TestServer::with_db(database.db.clone(), database.owner.clone()).await;
     // First: the first account on a fresh server becomes instance admin.
-    admin::instance_administration(&TestServer::with_db(server.db().clone()).await).await;
+    admin::instance_administration(&server.sibling().await).await;
     registration_and_login(&server).await;
     prelogin_does_not_reveal_accounts(&server).await;
     items_sync_and_conflicts(&server).await;
@@ -284,6 +298,8 @@ async fn run_all(database_url: &str) {
     org_admin::organization_administration(&server).await;
     comfort::comfort(&server).await;
     guests::guests_and_defaults(&server).await;
+    // Its own rate limits: the last test counts failures for the test IP.
+    rls::policies(&server.sibling().await, database).await;
     // Last: it locks out an email and counts failures for the test IP.
     failed_logins_are_rate_limited(&server).await;
 }
@@ -1637,32 +1653,9 @@ async fn failed_logins_are_rate_limited(server: &TestServer) {
 }
 
 #[tokio::test]
-async fn api_on_sqlite() {
-    run_all("sqlite::memory:").await;
-}
-
-/// Other test binaries (the client's integration tests) may have used the same
-/// database already; the admin tests need it empty.
-async fn reset_postgres(url: &str) {
-    use sqlx::Connection;
-    let mut conn = sqlx::PgConnection::connect(url)
-        .await
-        .expect("connect to the test database");
-    sqlx::raw_sql("DROP SCHEMA public CASCADE; CREATE SCHEMA public;")
-        .execute(&mut conn)
-        .await
-        .expect("reset the test database");
-}
-
-#[tokio::test]
-async fn api_on_postgres() {
-    match std::env::var("PASSBOX_TEST_DATABASE_URL") {
-        Ok(url) => {
-            reset_postgres(&url).await;
-            run_all(&url).await
-        }
-        Err(_) => eprintln!("PASSBOX_TEST_DATABASE_URL not set, skipping PostgreSQL tests"),
-    }
+async fn api() {
+    let database = passbox_server::testing::TestDatabase::create().await;
+    run_all(&database).await;
 }
 
 async fn registration_and_login(server: &TestServer) {
@@ -2002,6 +1995,7 @@ async fn website_icons(server: &TestServer) {
             app: passbox_server::routes::router(&Config::default(), state.clone()),
             state,
             env_admin_email: server.env_admin_email.clone(),
+            owner: server.owner.clone(),
         }
     };
     let icons = with_icons(true);
@@ -2377,13 +2371,13 @@ async fn two_factor_totp_and_recovery_codes(server: &TestServer) {
     assert!(body["token"].is_string());
 
     // The secret is not stored in plain text.
-    let (sealed,): (String,) =
+    let (sealed,): (Vec<u8>,) =
         sqlx::query_as("SELECT sealed_secret FROM two_factor_totp WHERE account_id = $1")
             .bind(&client.account_id)
             .fetch_one(server.db())
             .await
             .unwrap();
-    assert!(!sealed.contains(&secret));
+    assert!(!String::from_utf8_lossy(&sealed).contains(&secret));
 
     let first_code = totp_code(&secret, 0);
     let (status, confirmed) = server
@@ -2529,7 +2523,7 @@ async fn two_factor_totp_and_recovery_codes(server: &TestServer) {
 
     // The owner got a mail for every change (on, new codes, off).
     let mails: Vec<(String,)> = sqlx::query_as(
-        "SELECT params FROM mail_outbox WHERE recipient = $1 AND template = $2 ORDER BY created_at",
+        "SELECT params::text FROM mail_outbox WHERE recipient = $1 AND template = $2 ORDER BY created_at",
     )
     .bind(&client.email)
     .bind("two_factor_changed")

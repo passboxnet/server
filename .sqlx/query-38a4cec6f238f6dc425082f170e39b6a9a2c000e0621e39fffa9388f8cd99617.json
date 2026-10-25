@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE device_links SET status = 'approved', sealed_payload = $1 WHERE id = $2 AND account_id = $3 AND status = 'claimed' AND expires_at > $4",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "38a4cec6f238f6dc425082f170e39b6a9a2c000e0621e39fffa9388f8cd99617"
+}

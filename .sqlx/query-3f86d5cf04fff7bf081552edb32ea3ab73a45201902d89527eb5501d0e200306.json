@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE items SET encrypted_data = NULL, revision = $1, deleted = true, seq = $2, updated_at = $3 WHERE id = $4",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Int8",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "3f86d5cf04fff7bf081552edb32ea3ab73a45201902d89527eb5501d0e200306"
+}

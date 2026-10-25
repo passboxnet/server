@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT passbox.end_access($1)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "end_access",
+        "type_info": "Void",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "cdc6478192fe8deea0224f093735a908ac4bd30217d354b820f0b05e0a303277"
+}

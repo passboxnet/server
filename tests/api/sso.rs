@@ -214,7 +214,7 @@ impl Idp {
 
 // --- Helpers ---------------------------------------------------------------------------
 
-async fn sso_server(db: passbox_server::db::Db) -> TestServer {
+async fn sso_server(db: passbox_server::db::Db, owner: sqlx::PgPool) -> TestServer {
     passbox_server::api::sso::allow_http_loopback(true);
     let mut state = AppState::load(db.clone()).await.unwrap();
     state.trust_proxy = true;
@@ -232,6 +232,7 @@ async fn sso_server(db: passbox_server::db::Db) -> TestServer {
         app: passbox_server::routes::router(&Config::default(), state.clone()),
         state,
         env_admin_email: String::new(),
+        owner,
     }
 }
 
@@ -391,7 +392,7 @@ fn settings(idp: &Idp, domain: &str) -> Value {
 // --- OIDC sign-in --------------------------------------------------------------------------
 
 pub async fn single_sign_on(base: &TestServer) {
-    let server = sso_server(base.db().clone()).await;
+    let server = sso_server(base.pools().clone(), base.db().clone()).await;
     let server = &server;
     let idp = Idp::start().await;
     let mut alice = Member::new(server, "10.77.1.1").await;

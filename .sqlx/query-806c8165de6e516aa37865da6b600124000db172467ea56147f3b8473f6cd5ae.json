@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT COUNT(*) AS \"count!\" FROM service_accounts sa WHERE sa.account_id = $1 AND sa.revoked_at = 0 AND (sa.expires_at = 0 OR sa.expires_at > $2)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "806c8165de6e516aa37865da6b600124000db172467ea56147f3b8473f6cd5ae"
+}

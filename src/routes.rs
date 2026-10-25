@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use axum::extract::State;
-use axum::http::{Method, header};
+use axum::http::{Method, StatusCode, header};
 use axum::routing::get;
 use axum::{Json, Router};
 use passbox_core::kdf::KdfParams;
@@ -20,8 +20,10 @@ use crate::state::AppState;
 pub fn router(config: &Config, state: AppState) -> Router {
     let api = crate::api::router().route("/meta", get(meta));
 
+    let metrics = state.metrics.clone();
     let mut app = Router::new()
         .route("/health", get(health))
+        .route("/ready", get(ready))
         .nest("/api/v1", api)
         .with_state(state)
         .layer(cors());
@@ -33,6 +35,10 @@ pub fn router(config: &Config, state: AppState) -> Router {
     }
 
     app.layer(axum::middleware::from_fn(crate::security::security_headers))
+        .layer(axum::middleware::from_fn_with_state(
+            metrics,
+            crate::metrics::track,
+        ))
         .layer(TraceLayer::new_for_http())
 }
 
@@ -57,6 +63,44 @@ struct Health {
 
 async fn health() -> Json<Health> {
     Json(Health { status: "ok" })
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Readiness {
+    status: &'static str,
+    /// The applied migration version.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    migration: Option<i64>,
+    /// Why the server is not ready.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
+}
+
+/// Readiness: the database answers and has the migrations this binary
+/// expects. Load balancers send traffic only while it returns 200.
+async fn ready(State(state): State<AppState>) -> (StatusCode, Json<Readiness>) {
+    match state.db.readiness().await {
+        Ok(version) => (
+            StatusCode::OK,
+            Json(Readiness {
+                status: "ready",
+                migration: Some(version),
+                reason: None,
+            }),
+        ),
+        Err(err) => {
+            tracing::warn!(error = %err, "not ready");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(Readiness {
+                    status: "unavailable",
+                    migration: None,
+                    reason: Some(err.to_string()),
+                }),
+            )
+        }
+    }
 }
 
 /// Public server information that clients need before signing in.
@@ -90,7 +134,7 @@ struct Meta {
 }
 
 async fn meta(State(state): State<AppState>) -> ApiResult<Json<Meta>> {
-    let settings = crate::instance::load_settings(&state.db).await?;
+    let settings = crate::instance::load_settings_from(&state.db).await?;
     Ok(Json(Meta {
         name: "passbox",
         version: env!("CARGO_PKG_VERSION"),
@@ -122,12 +166,16 @@ mod tests {
 
     use super::*;
 
-    async fn app() -> Router {
-        let db = crate::db::connect("sqlite::memory:").await.unwrap();
-        router(&Config::default(), AppState::load(db).await.unwrap())
+    async fn app() -> (Router, crate::testing::TestDatabase) {
+        let database = crate::testing::TestDatabase::create().await;
+        let state = AppState::load(database.db.clone()).await.unwrap();
+        (router(&Config::default(), state), database)
     }
 
-    async fn get_json(app: Router, uri: &str) -> (StatusCode, Value) {
+    async fn get_json(
+        (app, _database): (Router, crate::testing::TestDatabase),
+        uri: &str,
+    ) -> (StatusCode, Value) {
         let response = app
             .oneshot(Request::get(uri).body(Body::empty()).unwrap())
             .await
@@ -158,6 +206,14 @@ mod tests {
         assert_eq!(body["icons"], true);
         assert_eq!(body["breachProxy"], true);
         assert_eq!(body["emailMonitoring"], false);
+    }
+
+    #[tokio::test]
+    async fn ready_reports_the_migration() {
+        let (status, body) = get_json(app().await, "/ready").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["status"], "ready");
+        assert_eq!(body["migration"], crate::db::expected_version());
     }
 
     #[tokio::test]

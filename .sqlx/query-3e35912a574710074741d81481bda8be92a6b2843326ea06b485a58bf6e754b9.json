@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE scim_users SET account_id = $1 WHERE org_id = $2 AND email = (SELECT email FROM account_directory WHERE id = $1)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "3e35912a574710074741d81481bda8be92a6b2843326ea06b485a58bf6e754b9"
+}

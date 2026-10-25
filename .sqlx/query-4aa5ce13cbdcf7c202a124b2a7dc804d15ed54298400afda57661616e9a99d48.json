@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT audit_retention_days FROM org_settings WHERE org_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "audit_retention_days",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "org_settings",
+            "name": "audit_retention_days"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "4aa5ce13cbdcf7c202a124b2a7dc804d15ed54298400afda57661616e9a99d48"
+}

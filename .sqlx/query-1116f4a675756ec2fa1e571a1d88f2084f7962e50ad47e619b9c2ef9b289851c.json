@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT code_hash, code_expires_at, code_attempts FROM breach_monitor_emails WHERE id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "code_hash",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "breach_monitor_emails",
+            "name": "code_hash"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "code_expires_at",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "breach_monitor_emails",
+            "name": "code_expires_at"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "code_attempts",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "breach_monitor_emails",
+            "name": "code_attempts"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "1116f4a675756ec2fa1e571a1d88f2084f7962e50ad47e619b9c2ef9b289851c"
+}

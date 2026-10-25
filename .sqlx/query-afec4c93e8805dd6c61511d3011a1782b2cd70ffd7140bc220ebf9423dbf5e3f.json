@@ -1,0 +1,112 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT name, title, domain, breach_date, added_date, pwn_count, data_classes, first_seen_at FROM breach_monitor_results WHERE email_id = $1 ORDER BY breach_date DESC, name",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "breach_monitor_results",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "title",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "breach_monitor_results",
+            "name": "title"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "domain",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "breach_monitor_results",
+            "name": "domain"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "breach_date",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "breach_monitor_results",
+            "name": "breach_date"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "added_date",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "breach_monitor_results",
+            "name": "added_date"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "pwn_count",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "breach_monitor_results",
+            "name": "pwn_count"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "data_classes",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "breach_monitor_results",
+            "name": "data_classes"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "first_seen_at",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "breach_monitor_results",
+            "name": "first_seen_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "afec4c93e8805dd6c61511d3011a1782b2cd70ffd7140bc220ebf9423dbf5e3f"
+}

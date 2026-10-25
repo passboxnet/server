@@ -29,7 +29,7 @@ use passbox_core::{encoding, id, random};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
-use sqlx::AnyConnection;
+use sqlx::PgConnection;
 
 use super::oidc::{self, TokenError, TokenRequest, query_encode};
 use super::{
@@ -38,7 +38,7 @@ use super::{
 use crate::api::access;
 use crate::api::auth::{self, Session, record_event};
 use crate::api::validate;
-use crate::db::{self, now_ms};
+use crate::db::{OrgCredential, Public, now_ms};
 use crate::error::{ApiError, ApiResult};
 use crate::security::ClientIp;
 use crate::state::AppState;
@@ -104,13 +104,23 @@ pub async fn discover(
     auth::limit_ip(&state, &ip)?;
     let email = validate::email(&req.email)?;
     let domain = email.rsplit_once('@').map(|(_, d)| d).unwrap_or_default();
-    let row: Option<(String, String, String, i64, i64)> = sqlx::query_as(
-        "SELECT org_sso.org_id, org_sso.display_name, org_sso.provider, org_sso.required, \
-         org_sso.allow_device_unlock FROM sso_domains JOIN org_sso ON org_sso.org_id = sso_domains.org_id \
-         WHERE sso_domains.domain = $1 AND org_sso.enabled = 1",
+    // Signed out: the function answers for one domain only.
+    let row: Option<(String, String, String, bool, bool)> = sqlx::query!(
+        r#"SELECT org_id AS "org_id!", display_name AS "display_name!", provider AS "provider!",
+                  required AS "required!", allow_device_unlock AS "allow_device_unlock!"
+           FROM passbox.sso_discover($1)"#,
+        domain,
     )
-    .bind(domain)
-    .fetch_optional(&state.db)
+    .map(|row| {
+        (
+            row.org_id,
+            row.display_name,
+            row.provider,
+            row.required,
+            row.allow_device_unlock,
+        )
+    })
+    .fetch_optional(&mut *state.db.public(Public::Auth).await?)
     .await?;
     Ok(Json(DiscoverResponse {
         sso: row.map(
@@ -118,8 +128,8 @@ pub async fn discover(
                 org_id,
                 display_name,
                 provider,
-                required: required != 0,
-                device_unlock: device_unlock != 0,
+                required,
+                device_unlock,
             },
         ),
     }))
@@ -180,26 +190,28 @@ async fn begin(
         .public_url()
         .map(|u| format!("{}/", u.trim_end_matches('/')))
         .unwrap_or_default();
-    sqlx::query("DELETE FROM sso_flows WHERE expires_at < $1")
-        .bind(now)
-        .execute(&state.db)
+    // Flows in progress belong to the signed-out sign-in context.
+    let mut tx = state.db.public(Public::Auth).await?;
+    sqlx::query!("DELETE FROM sso_flows WHERE expires_at < $1", now,)
+        .execute(&mut *tx)
         .await?;
-    sqlx::query(
+    sqlx::query!(
         "INSERT INTO sso_flows (state_hash, org_id, purpose, nonce, code_verifier, binding_hash, return_to, \
          initiated_by, created_at, expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+        hash(&state_value),
+        &config.org_id,
+        purpose,
+        &nonce,
+        &verifier,
+        hash(&flow_secret),
+        &return_to,
+        initiated_by,
+        now,
+        expires_at,
     )
-    .bind(hash(&state_value))
-    .bind(&config.org_id)
-    .bind(purpose)
-    .bind(&nonce)
-    .bind(&verifier)
-    .bind(hash(&flow_secret))
-    .bind(&return_to)
-    .bind(initiated_by)
-    .bind(now)
-    .bind(expires_at)
-    .execute(&state.db)
+    .execute(&mut *tx)
     .await?;
+    tx.commit().await?;
     let separator = if discovery.authorization_endpoint.contains('?') {
         '&'
     } else {
@@ -242,7 +254,7 @@ pub async fn start(
         Some(email) if !email.trim().is_empty() => Some(validate::email(email)?),
         _ => None,
     };
-    let mut conn = state.db.acquire().await?;
+    let mut conn = state.db.as_org(OrgCredential::Sso, &req.org_id).await?;
     let config = load_config(&mut conn, &req.org_id)
         .await?
         .filter(|c| c.settings.enabled)
@@ -268,7 +280,7 @@ pub async fn test_start(
 ) -> ApiResult<Json<StartResponse>> {
     limit(&state, format!("sso-start:{ip}"), STARTS_PER_MINUTE, 60)?;
     validate::id("organization id", &org_id)?;
-    let mut conn = state.db.acquire().await?;
+    let mut conn = state.db.as_account(&session.account_id).await?;
     access::require_admin(&mut conn, &org_id, &session.account_id).await?;
     let config = load_config(&mut conn, &org_id)
         .await?
@@ -357,12 +369,21 @@ async fn verify_token(
         && let Ok((raw, fresh)) = oidc::fetch_jwks(&discovery.jwks_uri).await
     {
         jwks = fresh;
-        let _ = sqlx::query("UPDATE org_sso SET jwks = $1, jwks_fetched_at = $2 WHERE org_id = $3")
-            .bind(raw)
-            .bind(now)
-            .bind(&config.org_id)
-            .execute(&state.db)
-            .await;
+        let stored = async {
+            let mut tx = state.db.as_org(OrgCredential::Sso, &config.org_id).await?;
+            sqlx::query!(
+                "UPDATE org_sso SET jwks = $1, jwks_fetched_at = $2 WHERE org_id = $3",
+                raw,
+                now,
+                &config.org_id,
+            )
+            .execute(&mut *tx)
+            .await?;
+            tx.commit().await
+        };
+        if let Err(err) = stored.await {
+            tracing::warn!(error = %err, "could not store the provider's keys");
+        }
     }
     core_oidc::verify_id_token(
         id_token,
@@ -423,20 +444,20 @@ enum Resolved {
 /// accepts a pending invitation of the organization (directory-provisioned
 /// people); without, only reports (the "test connection" check).
 async fn resolve(
-    conn: &mut AnyConnection,
+    conn: &mut PgConnection,
     config: &StoredConfig,
     who: &Identity,
     commit: bool,
 ) -> ApiResult<Result<Resolved, &'static str>> {
     let org_id = &config.org_id;
-    let linked: Option<(String, String)> = sqlx::query_as(
-        "SELECT sso_identities.account_id, accounts.email FROM sso_identities \
-         JOIN accounts ON accounts.id = sso_identities.account_id \
-         WHERE sso_identities.org_id = $1 AND sso_identities.subject = $2 AND sso_identities.issuer = $3",
-    )
-    .bind(org_id)
-    .bind(&who.subject)
-    .bind(&config.settings.issuer)
+    let linked: Option<(String, String)> = sqlx::query!(
+        r#"SELECT sso_identities.account_id, accounts.email AS "email!" FROM sso_identities
+         JOIN account_directory accounts ON accounts.id = sso_identities.account_id
+         WHERE sso_identities.org_id = $1 AND sso_identities.subject = $2 AND sso_identities.issuer = $3"#,
+        org_id,
+        &who.subject,
+        &config.settings.issuer,
+    ).map(|row| (row.account_id, row.email))
     .fetch_optional(&mut *conn)
     .await?;
     let (account_id, email, new_link) = match linked {
@@ -454,21 +475,27 @@ async fn resolve(
             {
                 return Ok(Err("sso_domain_not_allowed"));
             }
-            let account: Option<String> =
-                sqlx::query_scalar("SELECT id FROM accounts WHERE email = $1")
-                    .bind(&email)
-                    .fetch_optional(&mut *conn)
-                    .await?;
+            // Not linked yet, perhaps not even a member: the function
+            // finds the account by its verified email.
+            let account: Option<String> = sqlx::query_scalar!(
+                r#"SELECT id AS "id!" FROM passbox.account_by_email($1)"#,
+                &email,
+            )
+            .fetch_optional(&mut *conn)
+            .await?;
             match account {
                 Some(account_id) => (account_id, email, true),
                 None => return Ok(Ok(Resolved::NoAccount { email })),
             }
         }
     };
-    let disabled: i64 = sqlx::query_scalar("SELECT disabled_at FROM accounts WHERE id = $1")
-        .bind(&account_id)
-        .fetch_one(&mut *conn)
-        .await?;
+    let disabled: i64 = sqlx::query_scalar!(
+        r#"SELECT disabled_at AS "disabled_at!" FROM passbox.account_by_email($1)"#,
+        &email,
+    )
+    .fetch_optional(&mut *conn)
+    .await?
+    .unwrap_or(0);
     if disabled != 0 {
         return Ok(Err("account_disabled"));
     }
@@ -478,13 +505,14 @@ async fn resolve(
         None => {
             // Invited (for example provisioned by the directory): signing in
             // through the organization's provider accepts the invitation.
-            let invitation: Option<(String, String, String)> = sqlx::query_as(
+            let invitation: Option<(String, String, String)> = sqlx::query!(
                 "SELECT id, role, created_by FROM org_invitations WHERE org_id = $1 AND email = $2 \
                  AND status = 'pending' AND expires_at > $3 ORDER BY created_at DESC LIMIT 1",
+                org_id,
+                &email,
+                now_ms(),
             )
-            .bind(org_id)
-            .bind(&email)
-            .bind(now_ms())
+            .map(|row| (row.id, row.role, row.created_by))
             .fetch_optional(&mut *conn)
             .await?;
             let has_keys = crate::api::signed::bundle(conn, &account_id)
@@ -509,26 +537,26 @@ async fn resolve(
     if commit {
         let now = now_ms();
         if new_link {
-            sqlx::query(
+            sqlx::query!(
                 "INSERT INTO sso_identities (org_id, subject, issuer, account_id, email, created_at, last_login_at) \
                  VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT DO NOTHING",
+                org_id,
+                &who.subject,
+                &config.settings.issuer,
+                &account_id,
+                &email,
+                now,
+                now,
             )
-            .bind(org_id)
-            .bind(&who.subject)
-            .bind(&config.settings.issuer)
-            .bind(&account_id)
-            .bind(&email)
-            .bind(now)
-            .bind(now)
             .execute(&mut *conn)
             .await?;
         } else {
-            sqlx::query(
+            sqlx::query!(
                 "UPDATE sso_identities SET last_login_at = $1 WHERE org_id = $2 AND subject = $3",
+                now,
+                org_id,
+                &who.subject,
             )
-            .bind(now)
-            .bind(org_id)
-            .bind(&who.subject)
             .execute(&mut *conn)
             .await?;
         }
@@ -537,7 +565,7 @@ async fn resolve(
 }
 
 async fn accept_invitation(
-    conn: &mut AnyConnection,
+    conn: &mut PgConnection,
     org_id: &str,
     account_id: &str,
     invitation_id: &str,
@@ -545,39 +573,38 @@ async fn accept_invitation(
     created_by: &str,
 ) -> ApiResult<()> {
     let now = now_ms();
-    let seq: i64 = sqlx::query_scalar(
-        "UPDATE counters SET value = value + 1 WHERE name = 'change_seq' RETURNING value",
+    let seq: i64 = sqlx::query_scalar!(
+        "UPDATE counters SET value = value + 1 WHERE name = 'change_seq' RETURNING value"
     )
     .fetch_one(&mut *conn)
     .await?;
-    sqlx::query(
+    sqlx::query!(
         "INSERT INTO org_members (org_id, account_id, role, status, attestation, attestation_signature, \
          invited_by, seq, created_at, updated_at) VALUES ($1, $2, $3, 'accepted', NULL, NULL, $4, $5, $6, $7)",
+        org_id,
+        account_id,
+        role,
+        created_by,
+        seq,
+        now,
+        now,
     )
-    .bind(org_id)
-    .bind(account_id)
-    .bind(role)
-    .bind(created_by)
-    .bind(seq)
-    .bind(now)
-    .bind(now)
     .execute(&mut *conn)
     .await?;
-    sqlx::query(
+    sqlx::query!(
         "UPDATE org_invitations SET status = 'accepted', accepted_by = $1, accepted_at = $2 WHERE id = $3",
+        account_id,
+        now,
+        invitation_id,
     )
-    .bind(account_id)
-    .bind(now)
-    .bind(invitation_id)
     .execute(&mut *conn)
     .await?;
-    sqlx::query(
+    sqlx::query!(
         "UPDATE scim_users SET account_id = $1 WHERE org_id = $2 \
-         AND email = (SELECT email FROM accounts WHERE id = $3)",
+         AND email = (SELECT email FROM account_directory WHERE id = $1)",
+        account_id,
+        org_id,
     )
-    .bind(account_id)
-    .bind(org_id)
-    .bind(account_id)
     .execute(&mut *conn)
     .await?;
     Ok(())
@@ -609,14 +636,16 @@ async fn handle_callback(
     let Some(state_value) = query.state.filter(|s| s.len() <= 128) else {
         return Ok(Err("sso_expired"));
     };
+    let mut flow_tx = state.db.public(Public::Auth).await?;
     let flow: Option<FlowRow> =
-        sqlx::query_as(
+        sqlx::query!(
             "DELETE FROM sso_flows WHERE state_hash = $1 RETURNING org_id, purpose, nonce, code_verifier, \
              binding_hash, return_to, initiated_by, expires_at",
-        )
-        .bind(hash(&state_value))
-        .fetch_optional(&state.db)
+            hash(&state_value),
+        ).map(|row| (row.org_id, row.purpose, row.nonce, row.code_verifier, row.binding_hash, row.return_to, row.initiated_by, row.expires_at))
+        .fetch_optional(&mut *flow_tx)
         .await?;
+    flow_tx.commit().await?;
     let Some((org_id, purpose, nonce, verifier, binding_hash, return_to, initiated_by, expires_at)) =
         flow
     else {
@@ -632,7 +661,8 @@ async fn handle_callback(
     let Some(code) = query.code.filter(|c| !c.is_empty() && c.len() <= 4096) else {
         return Ok(Err("sso_idp_denied"));
     };
-    let mut conn = state.db.acquire().await?;
+    // From here on the flow runs as the organization's SSO integration.
+    let mut conn = state.db.as_org(OrgCredential::Sso, &org_id).await?;
     let Some(config) = load_config(&mut conn, &org_id).await? else {
         return Ok(Err("sso_not_configured"));
     };
@@ -674,7 +704,7 @@ async fn handle_callback(
     let ticket = token()?;
     let now = now_ms();
     let (outcome, account_id, email, result) = if purpose == "test" {
-        let mut conn = state.db.acquire().await?;
+        let mut conn = state.db.as_org(OrgCredential::Sso, &org_id).await?;
         let resolved = resolve(&mut conn, &config, &who, false).await?;
         drop(conn);
         let (outcome, account_found) = match &resolved {
@@ -699,7 +729,7 @@ async fn handle_callback(
             serde_json::to_string(&result).map_err(|e| ApiError::Internal(e.into()))?,
         )
     } else {
-        let mut tx = db::begin_write(&state.db).await?;
+        let mut tx = state.db.as_org(OrgCredential::Sso, &org_id).await?;
         let resolved = resolve(&mut tx, &config, &who, true).await?;
         tx.commit().await?;
         match resolved {
@@ -713,26 +743,27 @@ async fn handle_callback(
             }
         }
     };
-    sqlx::query("DELETE FROM sso_tickets WHERE expires_at < $1")
-        .bind(now)
-        .execute(&state.db)
+    let mut tx = state.db.public(Public::Auth).await?;
+    sqlx::query!("DELETE FROM sso_tickets WHERE expires_at < $1", now,)
+        .execute(&mut *tx)
         .await?;
-    sqlx::query(
+    sqlx::query!(
         "INSERT INTO sso_tickets (ticket_hash, binding_hash, org_id, purpose, outcome, account_id, email, result, \
          initiated_by, expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+        hash(&ticket),
+        &binding_hash,
+        &org_id,
+        &purpose,
+        &outcome,
+        account_id.as_deref(),
+        &email,
+        &result,
+        &initiated_by,
+        now + TICKET_TTL_MS,
     )
-    .bind(hash(&ticket))
-    .bind(&binding_hash)
-    .bind(&org_id)
-    .bind(&purpose)
-    .bind(&outcome)
-    .bind(&account_id)
-    .bind(&email)
-    .bind(&result)
-    .bind(&initiated_by)
-    .bind(now + TICKET_TTL_MS)
-    .execute(&state.db)
+    .execute(&mut *tx)
     .await?;
+    tx.commit().await?;
     Ok(Ok(format!(
         "{return_to}#/sso?ticket={ticket}{}",
         test_marker(purpose == "test")
@@ -797,13 +828,15 @@ async fn take_ticket(state: &AppState, ticket: &str, flow_secret: &str) -> ApiRe
     if ticket.len() > 128 || flow_secret.len() > 128 {
         return Err(ApiError::bad_request("invalid ticket"));
     }
-    let row: Option<TicketRow> = sqlx::query_as(
+    let mut tx = state.db.public(Public::Auth).await?;
+    let row: Option<TicketRow> = sqlx::query!(
         "DELETE FROM sso_tickets WHERE ticket_hash = $1 RETURNING binding_hash, org_id, purpose, outcome, \
          account_id, email, result, initiated_by, expires_at",
-    )
-    .bind(hash(ticket))
-    .fetch_optional(&state.db)
+        hash(ticket),
+    ).map(|row| (row.binding_hash, row.org_id, row.purpose, row.outcome, row.account_id, row.email, row.result, row.initiated_by, row.expires_at))
+    .fetch_optional(&mut *tx)
     .await?;
+    tx.commit().await?;
     let Some((binding, org_id, purpose, outcome, account_id, email, result, initiated_by, expires)) =
         row
     else {
@@ -862,20 +895,21 @@ pub(crate) async fn issue_proof(
     let proof = token()?;
     let now = now_ms();
     let expires_at = now + PROOF_TTL_MS;
-    sqlx::query("DELETE FROM sso_proofs WHERE expires_at < $1")
-        .bind(now)
-        .execute(&state.db)
+    let mut tx = state.db.public(Public::Auth).await?;
+    sqlx::query!("DELETE FROM sso_proofs WHERE expires_at < $1", now,)
+        .execute(&mut *tx)
         .await?;
-    sqlx::query(
+    sqlx::query!(
         "INSERT INTO sso_proofs (proof_hash, account_id, org_id, created_at, expires_at) VALUES ($1, $2, $3, $4, $5)",
+        hash(&proof),
+        account_id,
+        org_id,
+        now,
+        expires_at,
     )
-    .bind(hash(&proof))
-    .bind(account_id)
-    .bind(org_id)
-    .bind(now)
-    .bind(expires_at)
-    .execute(&state.db)
+    .execute(&mut *tx)
     .await?;
+    tx.commit().await?;
     Ok((proof, expires_at))
 }
 
@@ -887,12 +921,15 @@ pub(crate) async fn take_proof(state: &AppState, proof: &str) -> ApiResult<(Stri
             "the SSO sign-in is not valid; sign in with SSO again",
         ));
     }
-    let row: Option<(String, String, i64)> = sqlx::query_as(
+    let mut tx = state.db.public(Public::Auth).await?;
+    let row: Option<(String, String, i64)> = sqlx::query!(
         "DELETE FROM sso_proofs WHERE proof_hash = $1 RETURNING account_id, org_id, expires_at",
+        hash(proof),
     )
-    .bind(hash(proof))
-    .fetch_optional(&state.db)
+    .map(|row| (row.account_id, row.org_id, row.expires_at))
+    .fetch_optional(&mut *tx)
     .await?;
+    tx.commit().await?;
     match row {
         Some((account_id, org_id, expires_at)) if expires_at >= now_ms() => {
             Ok((account_id, org_id))
@@ -924,18 +961,22 @@ pub async fn redeem(
             "this ticket is for a connection test",
         ));
     }
-    let mut conn = state.db.acquire().await?;
-    let device_unlock = load_config(&mut conn, &org_id)
-        .await?
-        .is_some_and(|c| c.settings.enabled && c.settings.allow_device_unlock);
+    let device_unlock = load_config(
+        &mut *state.db.as_org(OrgCredential::Sso, &org_id).await?,
+        &org_id,
+    )
+    .await?
+    .is_some_and(|c| c.settings.enabled && c.settings.allow_device_unlock);
     let (proof, proof_expires_at, device_trusted) = match (&account_id, outcome.as_str()) {
         (Some(account_id), "ok") => {
+            // The ticket proves the SSO sign-in of this account.
+            let mut conn = state.db.as_account(account_id).await?;
             let trusted = match &req.device_id {
-                Some(device_id) if device_id.len() <= 64 => sqlx::query_scalar::<_, i64>(
-                    "SELECT 1 FROM trusted_devices WHERE id = $1 AND account_id = $2",
+                Some(device_id) if device_id.len() <= 64 => sqlx::query_scalar!(
+                    "SELECT 1::BIGINT AS \"one!\" FROM trusted_devices WHERE id = $1 AND account_id = $2",
+                    device_id,
+                    account_id,
                 )
-                .bind(device_id)
-                .bind(account_id)
                 .fetch_optional(&mut *conn)
                 .await?
                 .is_some(),
@@ -1004,22 +1045,21 @@ pub(crate) struct SsoLogin {
 /// Organizations that require SSO from this account (it is a member, but
 /// not an owner or admin, who can always use the master password so a
 /// broken provider cannot lock an organization out).
-async fn requiring_orgs(state: &AppState, account_id: &str) -> ApiResult<Vec<String>> {
-    Ok(sqlx::query_scalar(
+async fn requiring_orgs(conn: &mut PgConnection, account_id: &str) -> ApiResult<Vec<String>> {
+    Ok(sqlx::query_scalar!(
         "SELECT org_sso.org_id FROM org_sso JOIN org_members ON org_members.org_id = org_sso.org_id \
-         WHERE org_members.account_id = $1 AND org_sso.enabled = 1 AND org_sso.required = 1 \
+         WHERE org_members.account_id = $1 AND org_sso.enabled = true AND org_sso.required = true \
          AND org_members.role = 'member'",
+        account_id,
     )
-    .bind(account_id)
-    .fetch_all(&state.db)
+    .fetch_all(conn)
     .await?)
 }
 
-async fn reauth_until(state: &AppState, org_id: &str, now: i64) -> ApiResult<i64> {
+async fn reauth_until(conn: &mut PgConnection, org_id: &str, now: i64) -> ApiResult<i64> {
     let hours: Option<i64> =
-        sqlx::query_scalar("SELECT reauth_hours FROM org_sso WHERE org_id = $1")
-            .bind(org_id)
-            .fetch_optional(&state.db)
+        sqlx::query_scalar!("SELECT reauth_hours FROM org_sso WHERE org_id = $1", org_id,)
+            .fetch_optional(conn)
             .await?;
     Ok(now + hours.unwrap_or(12) * 60 * 60 * 1000)
 }
@@ -1036,6 +1076,8 @@ pub(crate) async fn login_gate(
 ) -> ApiResult<SsoLogin> {
     let now = now_ms();
     let mut result = SsoLogin::default();
+    // The password was verified: the checks run as the account.
+    let mut conn = state.db.as_account(account_id).await?;
     if let Some(proof) = proof.filter(|p| !p.is_empty()) {
         let (proof_account, org_id) = take_proof(state, proof).await?;
         if proof_account != account_id {
@@ -1045,18 +1087,18 @@ pub(crate) async fn login_gate(
             ));
         }
         result.satisfied = true;
-        result.remember_until = reauth_until(state, &org_id, now).await?;
+        result.remember_until = reauth_until(&mut conn, &org_id, now).await?;
     }
-    let required = requiring_orgs(state, account_id).await?;
+    let required = requiring_orgs(&mut conn, account_id).await?;
     if required.is_empty() || result.satisfied {
         return Ok(result);
     }
-    let remembered: Option<i64> = sqlx::query_scalar(
+    let remembered: Option<i64> = sqlx::query_scalar!(
         "SELECT sso_until FROM device_tokens WHERE token_hash = $1 AND account_id = $2",
+        device_token_hash.unwrap_or(""),
+        account_id,
     )
-    .bind(device_token_hash.unwrap_or(""))
-    .bind(account_id)
-    .fetch_optional(&state.db)
+    .fetch_optional(&mut *conn)
     .await?;
     if remembered.is_some_and(|until| until > now) {
         result.satisfied = true;
@@ -1069,35 +1111,37 @@ pub(crate) async fn login_gate(
 }
 
 /// Remembers the SSO sign-in on the device token issued with the session.
-pub(crate) async fn remember(state: &AppState, device_token: &str, until: i64) -> ApiResult<()> {
+pub(crate) async fn remember(
+    state: &AppState,
+    account_id: &str,
+    device_token: &str,
+    until: i64,
+) -> ApiResult<()> {
     if until == 0 {
         return Ok(());
     }
-    sqlx::query("UPDATE device_tokens SET sso_until = $1 WHERE token_hash = $2 AND sso_until < $3")
-        .bind(until)
-        .bind(auth::hash_token(device_token))
-        .bind(until)
-        .execute(&state.db)
-        .await?;
+    let mut tx = state.db.as_account(account_id).await?;
+    sqlx::query!(
+        "UPDATE device_tokens SET sso_until = $1 WHERE token_hash = $2 AND sso_until < $1",
+        until,
+        auth::hash_token(device_token),
+    )
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
     Ok(())
 }
 
 /// Ends everything that lets an account in: sessions, device tokens (and
 /// with them remembered SSO and two-factor sign-ins), proofs and trusted
 /// devices. Used when the directory deprovisions someone.
-pub(crate) async fn end_access(conn: &mut AnyConnection, account_id: &str) -> ApiResult<()> {
-    for statement in [
-        "DELETE FROM sessions WHERE account_id = $1",
-        "DELETE FROM device_tokens WHERE account_id = $1",
-        "DELETE FROM sso_proofs WHERE account_id = $1",
-        "DELETE FROM trusted_devices WHERE account_id = $1",
-        "DELETE FROM trusted_device_requests WHERE account_id = $1",
-    ] {
-        sqlx::query(statement)
-            .bind(account_id)
-            .execute(&mut *conn)
-            .await?;
-    }
+/// The function refuses unless the current context manages the account
+/// (`passbox.manages_account`), and the policies do not show these rows
+/// to anyone else.
+pub(crate) async fn end_access(conn: &mut PgConnection, account_id: &str) -> ApiResult<()> {
+    sqlx::query!("SELECT passbox.end_access($1)", account_id)
+        .execute(&mut *conn)
+        .await?;
     Ok(())
 }
 

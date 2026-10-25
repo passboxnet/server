@@ -1,0 +1,64 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT vault_ids, grant_data, grant_signature, sealed_keys FROM emergency_grants WHERE id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "vault_ids",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "emergency_grants",
+            "name": "vault_ids"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "grant_data",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "emergency_grants",
+            "name": "grant_data"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "grant_signature",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "emergency_grants",
+            "name": "grant_signature"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "sealed_keys",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "emergency_grants",
+            "name": "sealed_keys"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "3aa184320d4ed6eb0a7d97bc8da34317ae868eba33d39de284df188f91f53738"
+}

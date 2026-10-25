@@ -10,21 +10,43 @@ pub mod db;
 pub mod error;
 pub mod instance;
 pub mod mail;
+pub mod metrics;
 pub mod routes;
 pub mod security;
 pub mod state;
 pub mod telemetry;
+#[doc(hidden)]
+pub mod testing;
 
 use anyhow::Context;
 use tokio::net::TcpListener;
 use tracing::info;
 
-use crate::config::Config;
+use crate::config::{Command, Config};
 use crate::state::AppState;
+
+/// Runs the command of the configuration (`serve` by default).
+pub async fn run(config: Config) -> anyhow::Result<()> {
+    match config.command.unwrap_or(Command::Serve) {
+        Command::Migrate => {
+            db::migrate(config.migration_url()).await?;
+            info!(version = db::expected_version(), "database migrated");
+            Ok(())
+        }
+        Command::Serve => serve(config).await,
+    }
+}
 
 /// Starts the HTTP server and runs until it receives a shutdown signal.
 pub async fn serve(config: Config) -> anyhow::Result<()> {
-    let db = db::connect(&config.database_url).await?;
+    if config.auto_migrate {
+        db::migrate(config.migration_url()).await?;
+    }
+    let db = db::Db::connect(&config.database_urls()).await?;
+    db.warn_unless_rls_enforced().await;
+    if let Err(err) = db.readiness().await {
+        tracing::warn!(error = %err, "the database is not ready");
+    }
     let mut state = AppState::load(db).await?;
     state.trust_proxy = config.trust_proxy;
     state.auth_rate_limit = config.auth_rate_limit;
@@ -88,6 +110,18 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
     api::org_events::spawn_worker(state.clone());
     api::attachments::spawn_sweeper(state.clone());
     api::breach::spawn_worker(state.clone());
+    if let Some(bind) = config.metrics_bind {
+        let metrics_app = metrics::router(state.metrics.clone(), state.db.clone());
+        let listener = TcpListener::bind(bind)
+            .await
+            .with_context(|| format!("failed to bind {bind} (PASSBOX_METRICS_BIND)"))?;
+        info!(address = %listener.local_addr()?, "metrics listening");
+        tokio::spawn(async move {
+            if let Err(err) = axum::serve(listener, metrics_app).await {
+                tracing::error!(error = %err, "metrics server error");
+            }
+        });
+    }
     let app = routes::router(&config, state);
     let listener = TcpListener::bind(config.bind)
         .await

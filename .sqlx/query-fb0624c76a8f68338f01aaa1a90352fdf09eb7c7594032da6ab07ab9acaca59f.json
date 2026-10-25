@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE emergency_grants SET status = 'confirmed', vault_ids = $1, grant_data = $2, grant_signature = $3, sealed_keys = $4, version = $5, updated_at = $6 WHERE id = $7",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Jsonb",
+        "Text",
+        "Text",
+        "Text",
+        "Int8",
+        "Int8",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "fb0624c76a8f68338f01aaa1a90352fdf09eb7c7594032da6ab07ab9acaca59f"
+}

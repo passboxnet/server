@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO access_requests (id, vault_id, org_id, account_id, role, status, created_at, decided_by, decided_at) VALUES ($1, $2, $3, $4, $5, 'pending', $6, NULL, 0)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "1d1d1526a73a49d41dc792a922d17d505dfcba3504afb31837b6ecbc5304cac8"
+}

@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO breach_monitor_results (email_id, name, title, domain, breach_date, added_date, pwn_count, data_classes, first_seen_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) ON CONFLICT (email_id, name) DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Int8",
+        "Jsonb",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "647970aecdf64ad81c4491d7452b19aea7bab06b2d30b40f9ff993350922f6cb"
+}

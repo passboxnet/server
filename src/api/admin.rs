@@ -45,18 +45,28 @@ impl FromRequestParts<AppState> for AdminSession {
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
         let session = Session::from_request_parts(parts, state).await?;
-        let (email, flag): (String, i64) =
-            sqlx::query_as("SELECT email, instance_admin FROM accounts WHERE id = $1")
-                .bind(&session.account_id)
-                .fetch_one(&state.db)
-                .await?;
-        if flag == 0 && !instance::is_env_admin(state, &email) {
+        let (email, flag): (String, bool) = sqlx::query!(
+            "SELECT email, instance_admin FROM accounts WHERE id = $1",
+            &session.account_id,
+        )
+        .map(|row| (row.email, row.instance_admin))
+        .fetch_one(&mut *state.db.as_account(&session.account_id).await?)
+        .await?;
+        if !flag && !instance::is_env_admin(state, &email) {
             return Err(ApiError::forbidden(
                 "forbidden",
                 "only instance administrators can do this",
             ));
         }
         Ok(Self { session, email })
+    }
+}
+
+impl AdminSession {
+    /// A transaction in the instance administration's context. This is the
+    /// only way to get one: the extractor checked the account above.
+    pub async fn tx(&self, state: &AppState) -> ApiResult<crate::db::Tx> {
+        Ok(state.db.as_admin(&self.session.account_id).await?)
     }
 }
 
@@ -100,22 +110,23 @@ fn event_hash(prev_hash: &str, event: &EventFields<'_>) -> String {
 
 /// Appends an event to the admin audit log inside `tx`.
 pub async fn record_in(
-    tx: &mut sqlx::Transaction<'_, sqlx::Any>,
+    tx: &mut crate::db::Conn,
     actor: &Actor<'_>,
     action: &str,
     target: &str,
     details: &Value,
 ) -> ApiResult<()> {
     // The counter row lock orders concurrent writers.
-    let seq: i64 = sqlx::query_scalar(
-        "UPDATE counters SET value = value + 1 WHERE name = 'admin_event_seq' RETURNING value",
+    let seq: i64 = sqlx::query_scalar!(
+        "UPDATE counters SET value = value + 1 WHERE name = 'admin_event_seq' RETURNING value"
     )
-    .fetch_one(&mut **tx)
+    .fetch_one(&mut *tx)
     .await?;
+    // Accounts that log about themselves cannot read the log: a function
+    // hands out the previous entry's hash only.
     let prev_hash: Option<String> =
-        sqlx::query_scalar("SELECT hash FROM admin_events WHERE seq = $1")
-            .bind(seq - 1)
-            .fetch_optional(&mut **tx)
+        sqlx::query_scalar!("SELECT passbox.admin_event_hash($1)", seq - 1)
+            .fetch_one(&mut *tx)
             .await?;
     let prev_hash = prev_hash.unwrap_or_default();
     let id = id::new_id().map_err(|e| ApiError::Internal(e.into()))?;
@@ -133,22 +144,22 @@ pub async fn record_in(
             created_at,
         },
     );
-    sqlx::query(
+    sqlx::query!(
         "INSERT INTO admin_events (seq, id, actor_id, actor_email, action, target, details, ip, \
          created_at, prev_hash, hash) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+        seq,
+        &id,
+        actor.account_id,
+        actor.email,
+        action,
+        target,
+        &details,
+        actor.ip,
+        created_at,
+        &prev_hash,
+        &hash,
     )
-    .bind(seq)
-    .bind(&id)
-    .bind(actor.account_id)
-    .bind(actor.email)
-    .bind(action)
-    .bind(target)
-    .bind(&details)
-    .bind(actor.ip)
-    .bind(created_at)
-    .bind(&prev_hash)
-    .bind(&hash)
-    .execute(&mut **tx)
+    .execute(&mut *tx)
     .await?;
     Ok(())
 }
@@ -161,7 +172,8 @@ pub async fn record(
     target: &str,
     details: &Value,
 ) -> ApiResult<()> {
-    let mut tx = crate::db::begin_write(&state.db).await?;
+    // Accounts record their own entries (for example a used invitation).
+    let mut tx = state.db.as_account(actor.account_id).await?;
     record_in(&mut tx, actor, action, target, details).await?;
     tx.commit().await?;
     Ok(())
@@ -240,17 +252,17 @@ macro_rules! event_columns {
 }
 
 /// Checks the whole hash chain.
-pub async fn verify_chain(state: &AppState) -> ApiResult<ChainStatus> {
+pub async fn verify_chain(conn: &mut crate::db::Conn) -> ApiResult<ChainStatus> {
     let rows: Vec<EventRow> = sqlx::query_as(concat!(
         "SELECT ",
         event_columns!(),
         " FROM admin_events ORDER BY seq"
     ))
-    .fetch_all(&state.db)
+    .fetch_all(&mut *conn)
     .await?;
     let counter: i64 =
-        sqlx::query_scalar("SELECT value FROM counters WHERE name = 'admin_event_seq'")
-            .fetch_one(&state.db)
+        sqlx::query_scalar!("SELECT value FROM counters WHERE name = 'admin_event_seq'")
+            .fetch_one(&mut *conn)
             .await?;
     let mut prev_hash = String::new();
     let mut expected_seq = 1;
@@ -334,9 +346,10 @@ pub struct EventsResponse {
 
 pub async fn events(
     State(state): State<AppState>,
-    _admin: AdminSession,
+    admin: AdminSession,
     Query(query): Query<EventsQuery>,
 ) -> ApiResult<Json<EventsResponse>> {
+    let mut tx = admin.tx(&state).await?;
     let limit = query.limit.unwrap_or(50).clamp(1, 500);
     let before = query.before.unwrap_or(i64::MAX);
     let rows: Vec<EventRow> = sqlx::query_as(concat!(
@@ -346,7 +359,7 @@ pub async fn events(
     ))
     .bind(before)
     .bind(limit)
-    .fetch_all(&state.db)
+    .fetch_all(&mut *tx)
     .await?;
     let events = rows
         .into_iter()
@@ -382,7 +395,7 @@ pub async fn events(
         .collect();
     Ok(Json(EventsResponse {
         events,
-        chain: verify_chain(&state).await?,
+        chain: verify_chain(&mut tx).await?,
     }))
 }
 
@@ -418,50 +431,42 @@ pub struct InstanceUsage {
     service_accounts: i64,
 }
 
-async fn instance_usage(state: &AppState) -> ApiResult<InstanceUsage> {
-    let count = |sql: &'static str| async move {
-        sqlx::query_scalar::<_, i64>(sql)
-            .bind(now_ms())
-            .fetch_one(&state.db)
-            .await
-    };
+/// Counts across all tenants, through a function: the administration sees
+/// numbers, not the organizations' or service accounts' rows.
+async fn instance_usage(conn: &mut crate::db::Conn) -> ApiResult<InstanceUsage> {
+    let row = sqlx::query!(
+        r#"SELECT accounts AS "accounts!", organizations AS "organizations!", members AS "members!",
+                  guests AS "guests!", service_accounts AS "service_accounts!"
+           FROM passbox.instance_usage($1)"#,
+        now_ms(),
+    )
+    .fetch_one(conn)
+    .await?;
     Ok(InstanceUsage {
-        accounts: count("SELECT COUNT(*) FROM accounts WHERE created_at <= $1").await?,
-        organizations: count("SELECT COUNT(*) FROM organizations WHERE created_at <= $1").await?,
-        members: count(
-            "SELECT COUNT(DISTINCT account_id) FROM org_members WHERE status = 'confirmed' \
-             AND role <> 'guest' AND created_at <= $1",
-        )
-        .await?,
-        guests: count(
-            "SELECT COUNT(DISTINCT g.account_id) FROM org_members g WHERE g.status = 'confirmed' \
-             AND g.role = 'guest' AND g.created_at <= $1 AND NOT EXISTS (SELECT 1 FROM org_members m \
-             WHERE m.account_id = g.account_id AND m.status = 'confirmed' AND m.role <> 'guest')",
-        )
-        .await?,
-        service_accounts: count(
-            "SELECT COUNT(*) FROM service_accounts WHERE revoked_at = 0 \
-             AND (expires_at = 0 OR expires_at > $1)",
-        )
-        .await?,
+        accounts: row.accounts,
+        organizations: row.organizations,
+        members: row.members,
+        guests: row.guests,
+        service_accounts: row.service_accounts,
     })
 }
 
-async fn settings_response(state: &AppState) -> ApiResult<SettingsResponse> {
+async fn settings_response(state: &AppState, admin: &AdminSession) -> ApiResult<SettingsResponse> {
+    let mut tx = admin.tx(state).await?;
     Ok(SettingsResponse {
-        settings: instance::load_settings(&state.db).await?,
-        mail: state.mailer.status().await?,
+        settings: instance::load_settings(&mut tx).await?,
+        mail: state.mailer.status(&mut tx).await?,
         env_admin_emails: state.admin_emails.to_vec(),
         env_agent_limit_per_member: state.agent_limit_per_member,
-        usage: instance_usage(state).await?,
+        usage: instance_usage(&mut tx).await?,
     })
 }
 
 pub async fn get_settings(
     State(state): State<AppState>,
-    _admin: AdminSession,
+    admin: AdminSession,
 ) -> ApiResult<Json<SettingsResponse>> {
-    Ok(Json(settings_response(&state).await?))
+    Ok(Json(settings_response(&state, &admin).await?))
 }
 
 pub async fn put_settings(
@@ -471,7 +476,7 @@ pub async fn put_settings(
     Json(settings): Json<InstanceSettings>,
 ) -> ApiResult<Json<SettingsResponse>> {
     let settings = settings.validated()?;
-    let old = instance::load_settings(&state.db).await?;
+    let old = instance::load_settings(&mut *admin.tx(&state).await?).await?;
     let old_json = serde_json::to_value(&old).map_err(|e| ApiError::Internal(e.into()))?;
     let new_json = serde_json::to_value(&settings).map_err(|e| ApiError::Internal(e.into()))?;
     // Record which settings changed, with their new values.
@@ -484,7 +489,7 @@ pub async fn put_settings(
         }
     }
     if !changes.is_empty() {
-        let mut tx = crate::db::begin_write(&state.db).await?;
+        let mut tx = admin.tx(&state).await?;
         instance::save_settings(&mut tx, &settings).await?;
         record_in(
             &mut tx,
@@ -500,7 +505,7 @@ pub async fn put_settings(
         .await?;
         tx.commit().await?;
     }
-    Ok(Json(settings_response(&state).await?))
+    Ok(Json(settings_response(&state, &admin).await?))
 }
 
 // --- Accounts ---------------------------------------------------------------------
@@ -559,7 +564,7 @@ type UserRow = (
     String,
     i64,
     i64,
-    i64,
+    bool,
     i64,
     Option<i64>,
     Option<i64>,
@@ -568,9 +573,10 @@ type UserRow = (
 
 pub async fn users(
     State(state): State<AppState>,
-    _admin: AdminSession,
+    admin: AdminSession,
     Query(query): Query<UsersQuery>,
 ) -> ApiResult<Json<UsersResponse>> {
+    let mut tx = admin.tx(&state).await?;
     let limit = query.limit.unwrap_or(50).clamp(1, 200);
     let offset = query.offset.unwrap_or(0).max(0);
     let pattern = like_pattern(&query.q);
@@ -580,7 +586,7 @@ pub async fn users(
          (SELECT COUNT(*) FROM sessions s WHERE s.account_id = a.id AND s.expires_at > $1), \
          (SELECT MAX(s.last_used_at) FROM sessions s WHERE s.account_id = a.id), \
          (SELECT MAX(e.created_at) FROM account_events e WHERE e.account_id = a.id AND e.kind = 'login'), \
-         (SELECT COUNT(*) FROM two_factor_totp t WHERE t.account_id = a.id AND t.confirmed = 1) + \
+         (SELECT COUNT(*) FROM two_factor_totp t WHERE t.account_id = a.id AND t.confirmed = true) + \
          (SELECT COUNT(*) FROM webauthn_credentials w WHERE w.account_id = a.id) \
          FROM accounts a WHERE a.email LIKE $2 ESCAPE '\\' \
          ORDER BY a.created_at DESC, a.id LIMIT $3 OFFSET $4",
@@ -589,13 +595,14 @@ pub async fn users(
     .bind(&pattern)
     .bind(limit)
     .bind(offset)
-    .fetch_all(&state.db)
+    .fetch_all(&mut *tx)
     .await?;
-    let total: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM accounts WHERE email LIKE $1 ESCAPE '\\'")
-            .bind(&pattern)
-            .fetch_one(&state.db)
-            .await?;
+    let total: i64 = sqlx::query_scalar!(
+        "SELECT COUNT(*) AS \"count!\" FROM accounts WHERE email LIKE $1 ESCAPE '\\'",
+        &pattern,
+    )
+    .fetch_one(&mut *tx)
+    .await?;
     let users = rows
         .into_iter()
         .map(
@@ -610,7 +617,7 @@ pub async fn users(
                 last_login,
                 second_factors,
             )| {
-                let instance_admin = flag != 0 || instance::is_env_admin(&state, &email);
+                let instance_admin = flag || instance::is_env_admin(&state, &email);
                 AdminUser {
                     id,
                     email,
@@ -644,16 +651,16 @@ pub async fn disable_user(
     if id == admin.session.account_id {
         return Err(ApiError::bad_request("you cannot disable your own account"));
     }
-    let email = account_email(&state, &id).await?;
-    let mut tx = crate::db::begin_write(&state.db).await?;
-    let changed =
-        sqlx::query("UPDATE accounts SET disabled_at = $1 WHERE id = $2 AND disabled_at = 0")
-            .bind(now_ms())
-            .bind(&id)
-            .execute(&mut *tx)
-            .await?;
-    let revoked = sqlx::query("DELETE FROM sessions WHERE account_id = $1")
-        .bind(&id)
+    let mut tx = admin.tx(&state).await?;
+    let email = account_email(&mut tx, &id).await?;
+    let changed = sqlx::query!(
+        "UPDATE accounts SET disabled_at = $1 WHERE id = $2 AND disabled_at = 0",
+        now_ms(),
+        &id,
+    )
+    .execute(&mut *tx)
+    .await?;
+    let revoked = sqlx::query!("DELETE FROM sessions WHERE account_id = $1", &id,)
         .execute(&mut *tx)
         .await?;
     if changed.rows_affected() > 0 {
@@ -682,13 +689,14 @@ pub async fn enable_user(
     Path(id): Path<String>,
 ) -> ApiResult<StatusCode> {
     validate::id("id", &id)?;
-    let email = account_email(&state, &id).await?;
-    let mut tx = crate::db::begin_write(&state.db).await?;
-    let changed =
-        sqlx::query("UPDATE accounts SET disabled_at = 0 WHERE id = $1 AND disabled_at <> 0")
-            .bind(&id)
-            .execute(&mut *tx)
-            .await?;
+    let mut tx = admin.tx(&state).await?;
+    let email = account_email(&mut tx, &id).await?;
+    let changed = sqlx::query!(
+        "UPDATE accounts SET disabled_at = 0 WHERE id = $1 AND disabled_at <> 0",
+        &id,
+    )
+    .execute(&mut *tx)
+    .await?;
     if changed.rows_affected() > 0 {
         record_in(
             &mut tx,
@@ -707,10 +715,9 @@ pub async fn enable_user(
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn account_email(state: &AppState, id: &str) -> ApiResult<String> {
-    sqlx::query_scalar("SELECT email FROM accounts WHERE id = $1")
-        .bind(id)
-        .fetch_optional(&state.db)
+async fn account_email(conn: &mut crate::db::Conn, id: &str) -> ApiResult<String> {
+    sqlx::query_scalar!("SELECT email FROM accounts WHERE id = $1", id)
+        .fetch_optional(conn)
         .await?
         .ok_or(ApiError::NotFound)
 }
@@ -779,13 +786,16 @@ pub async fn test_mail(
 }
 
 async fn admin_locale(state: &AppState, admin: &AdminSession) -> ApiResult<Locale> {
-    let locale: String = sqlx::query_scalar("SELECT locale FROM accounts WHERE id = $1")
-        .bind(&admin.session.account_id)
-        .fetch_one(&state.db)
-        .await?;
+    let mut tx = admin.tx(state).await?;
+    let locale: String = sqlx::query_scalar!(
+        "SELECT locale FROM accounts WHERE id = $1",
+        &admin.session.account_id,
+    )
+    .fetch_one(&mut *tx)
+    .await?;
     Ok(match Locale::parse(&locale) {
         Some(locale) => locale,
-        None => instance::load_settings(&state.db).await?.default_locale,
+        None => instance::load_settings(&mut tx).await?.default_locale,
     })
 }
 
@@ -874,10 +884,13 @@ pub async fn create_invite(
     Json(req): Json<InviteRequest>,
 ) -> ApiResult<(StatusCode, Json<InviteCreated>)> {
     let email = validate::email(&req.email)?;
-    let exists: Option<i64> = sqlx::query_scalar("SELECT 1 FROM accounts WHERE email = $1")
-        .bind(&email)
-        .fetch_optional(&state.db)
-        .await?;
+    let mut tx = admin.tx(&state).await?;
+    let exists: Option<i64> = sqlx::query_scalar!(
+        "SELECT 1::BIGINT AS \"one!\" FROM accounts WHERE email = $1",
+        &email,
+    )
+    .fetch_optional(&mut *tx)
+    .await?;
     if exists.is_some() {
         return Err(ApiError::conflict(
             "an account with this email already exists",
@@ -886,7 +899,7 @@ pub async fn create_invite(
     }
     let locale = match req.locale.as_deref().and_then(Locale::parse) {
         Some(locale) => locale,
-        None => instance::load_settings(&state.db).await?.default_locale,
+        None => instance::load_settings(&mut tx).await?.default_locale,
     };
     let token = encoding::encode(&random::bytes::<32>().map_err(|e| ApiError::Internal(e.into()))?);
     let id = id::new_id().map_err(|e| ApiError::Internal(e.into()))?;
@@ -894,22 +907,23 @@ pub async fn create_invite(
     let expires_at = now + instance::INVITE_TTL_MS;
     let link = invite_link(&state.mailer, req.link_base.as_deref(), &token, &email);
 
-    let mut tx = crate::db::begin_write(&state.db).await?;
     // A new invitation replaces earlier unused ones for the same email.
-    sqlx::query("DELETE FROM instance_invites WHERE email = $1 AND used_at = 0")
-        .bind(&email)
-        .execute(&mut *tx)
-        .await?;
-    sqlx::query(
+    sqlx::query!(
+        "DELETE FROM instance_invites WHERE email = $1 AND used_at = 0",
+        &email,
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query!(
         "INSERT INTO instance_invites (id, email, token_hash, invited_by, created_at, expires_at, used_at) \
          VALUES ($1, $2, $3, $4, $5, $6, 0)",
+        &id,
+        &email,
+        instance::hash_invite_token(&token),
+        &admin.email,
+        now,
+        expires_at,
     )
-    .bind(&id)
-    .bind(&email)
-    .bind(instance::hash_invite_token(&token))
-    .bind(&admin.email)
-    .bind(now)
-    .bind(expires_at)
     .execute(&mut *tx)
     .await?;
     Mailer::enqueue_in(
@@ -959,13 +973,23 @@ pub async fn create_invite(
 
 pub async fn invites(
     State(state): State<AppState>,
-    _admin: AdminSession,
+    admin: AdminSession,
 ) -> ApiResult<Json<Vec<Invite>>> {
-    let rows: Vec<(String, String, String, i64, i64, i64)> = sqlx::query_as(
+    let rows: Vec<(String, String, String, i64, i64, i64)> = sqlx::query!(
         "SELECT id, email, invited_by, created_at, expires_at, used_at FROM instance_invites \
-         ORDER BY created_at DESC LIMIT 200",
+         ORDER BY created_at DESC LIMIT 200"
     )
-    .fetch_all(&state.db)
+    .map(|row| {
+        (
+            row.id,
+            row.email,
+            row.invited_by,
+            row.created_at,
+            row.expires_at,
+            row.used_at,
+        )
+    })
+    .fetch_all(&mut *admin.tx(&state).await?)
     .await?;
     let now = now_ms();
     Ok(Json(
@@ -998,11 +1022,13 @@ pub async fn revoke_invite(
     Path(id): Path<String>,
 ) -> ApiResult<StatusCode> {
     validate::id("id", &id)?;
-    let mut tx = crate::db::begin_write(&state.db).await?;
-    let deleted = sqlx::query("DELETE FROM instance_invites WHERE id = $1 AND used_at = 0")
-        .bind(&id)
-        .execute(&mut *tx)
-        .await?;
+    let mut tx = admin.tx(&state).await?;
+    let deleted = sqlx::query!(
+        "DELETE FROM instance_invites WHERE id = $1 AND used_at = 0",
+        &id,
+    )
+    .execute(&mut *tx)
+    .await?;
     if deleted.rows_affected() == 0 {
         return Err(ApiError::NotFound);
     }

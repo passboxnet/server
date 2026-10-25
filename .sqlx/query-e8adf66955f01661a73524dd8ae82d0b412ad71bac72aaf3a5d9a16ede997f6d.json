@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO org_recovery_grants (org_id, key_version, account_id, sealed_key, grant_data, grant_signature, granted_by, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT (org_id, key_version, account_id) DO UPDATE SET sealed_key = excluded.sealed_key, grant_data = excluded.grant_data, grant_signature = excluded.grant_signature, granted_by = excluded.granted_by, created_at = excluded.created_at",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8",
+        "Text",
+        "Bytea",
+        "Text",
+        "Text",
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e8adf66955f01661a73524dd8ae82d0b412ad71bac72aaf3a5d9a16ede997f6d"
+}

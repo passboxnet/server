@@ -3,6 +3,7 @@
 use std::sync::{Arc, Mutex};
 
 use passbox_server::mail::{Locale, MailConfig, Mailer, Template};
+use passbox_server::testing::TestDatabase;
 use serde_json::json;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
@@ -76,12 +77,10 @@ async fn smtp_sink(rcpt: Rcpt) -> (u16, Arc<Mutex<Vec<String>>>) {
     (port, received)
 }
 
-async fn mailer(port: u16) -> (Mailer, passbox_server::db::Db) {
-    let db = passbox_server::db::connect("sqlite::memory:")
-        .await
-        .unwrap();
+async fn mailer(port: u16) -> (Mailer, TestDatabase) {
+    let db = TestDatabase::create().await;
     let mailer = Mailer::new(
-        db.clone(),
+        db.db.clone(),
         &MailConfig {
             smtp_url: Some(format!("smtp://127.0.0.1:{port}")),
             from: Some("Passbox <passbox@example.com>".to_owned()),
@@ -92,12 +91,21 @@ async fn mailer(port: u16) -> (Mailer, passbox_server::db::Db) {
     (mailer, db)
 }
 
-async fn outbox_row(db: &passbox_server::db::Db, id: &str) -> (String, i64, String, String) {
-    sqlx::query_as("SELECT status, attempts, last_error, params FROM mail_outbox WHERE id = $1")
-        .bind(id)
-        .fetch_one(db)
-        .await
-        .unwrap()
+async fn outbox_row(db: &TestDatabase, id: &str) -> (String, i64, String, String) {
+    sqlx::query_as(
+        "SELECT status, attempts, last_error, params::text FROM mail_outbox WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_one(&db.owner)
+    .await
+    .unwrap()
+}
+
+/// The delivery status as the instance administration sees it.
+async fn delivery_status(mailer: &Mailer, db: &TestDatabase) -> passbox_server::mail::MailStatus {
+    let admin = passbox_core::id::new_id().unwrap();
+    let mut tx = db.db.as_admin(&admin).await.unwrap();
+    mailer.status(&mut tx).await.unwrap()
 }
 
 #[tokio::test]
@@ -149,7 +157,7 @@ async fn outbox_worker_delivers_over_smtp() {
     let (_, attempts, _, params) = outbox_row(&db, &id).await;
     assert_eq!(attempts, 1);
     assert_eq!(params, "{}");
-    let status = mailer.status().await.unwrap();
+    let status = delivery_status(&mailer, &db).await;
     assert!(status.configured);
     assert_eq!(status.transport, "smtp");
     assert_eq!(status.host.as_deref(), Some(&*format!("127.0.0.1:{port}")));
@@ -170,7 +178,7 @@ async fn temporary_failures_are_retried_with_backoff() {
     assert!(error.contains("451"), "{error}");
     let next: i64 = sqlx::query_scalar("SELECT next_attempt_at FROM mail_outbox WHERE id = $1")
         .bind(&id)
-        .fetch_one(&db)
+        .fetch_one(&db.owner)
         .await
         .unwrap();
     assert!(next > passbox_server::db::now_ms() + 20_000);
@@ -182,12 +190,12 @@ async fn temporary_failures_are_retried_with_backoff() {
     sqlx::query("UPDATE mail_outbox SET next_attempt_at = 0, attempts = $1 WHERE id = $2")
         .bind(passbox_server::mail::MAX_ATTEMPTS - 1)
         .bind(&id)
-        .execute(&db)
+        .execute(&db.owner)
         .await
         .unwrap();
     assert_eq!(mailer.process_due().await.unwrap(), 1);
     assert_eq!(outbox_row(&db, &id).await.0, "failed");
-    let status = mailer.status().await.unwrap();
+    let status = delivery_status(&mailer, &db).await;
     assert_eq!(status.failed, 1);
     assert!(status.last_error.unwrap().contains("451"));
 }
@@ -208,9 +216,8 @@ async fn permanent_failures_are_not_retried() {
 
 #[tokio::test]
 async fn invalid_configuration_is_refused() {
-    let db = passbox_server::db::connect("sqlite::memory:")
-        .await
-        .unwrap();
+    let database = TestDatabase::create().await;
+    let db = database.db.clone();
     let config = |smtp: &str, from: Option<&str>, public: Option<&str>| MailConfig {
         smtp_url: Some(smtp.to_owned()),
         from: from.map(str::to_owned),
@@ -252,7 +259,7 @@ async fn invalid_configuration_is_refused() {
         ),
     )
     .unwrap();
-    let status = mailer.status().await.unwrap();
+    let status = delivery_status(&mailer, &database).await;
     assert_eq!(status.transport, "starttls");
     assert_eq!(status.host.as_deref(), Some("mail.example.com:587"));
 }

@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT entry_hash FROM key_log WHERE seq = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "entry_hash",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "key_log",
+            "name": "entry_hash"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "37b6b342190c412ef952ccb91dd5a260a7f25415ea9c1e6a76820c2cc0689e44"
+}

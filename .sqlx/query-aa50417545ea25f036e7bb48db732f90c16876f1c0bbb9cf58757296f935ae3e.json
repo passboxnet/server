@@ -1,0 +1,42 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT sso_identities.account_id, accounts.email AS \"email!\" FROM sso_identities\n         JOIN account_directory accounts ON accounts.id = sso_identities.account_id\n         WHERE sso_identities.org_id = $1 AND sso_identities.subject = $2 AND sso_identities.issuer = $3",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "account_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "sso_identities",
+            "name": "account_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "email!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "account_directory",
+            "name": "email"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      true
+    ]
+  },
+  "hash": "aa50417545ea25f036e7bb48db732f90c16876f1c0bbb9cf58757296f935ae3e"
+}

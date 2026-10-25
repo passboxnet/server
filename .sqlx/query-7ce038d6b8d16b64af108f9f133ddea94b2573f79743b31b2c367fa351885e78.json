@@ -1,0 +1,149 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id, grant_id, principal_kind, principal_id, client_name, tool, item_ids, target, result, ip, created_at FROM agent_events WHERE account_id = $1 ORDER BY created_at DESC LIMIT $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "agent_events",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "grant_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "agent_events",
+            "name": "grant_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "principal_kind",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "agent_events",
+            "name": "principal_kind"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "principal_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "agent_events",
+            "name": "principal_id"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "client_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "agent_events",
+            "name": "client_name"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "tool",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "agent_events",
+            "name": "tool"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "item_ids",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "agent_events",
+            "name": "item_ids"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "target",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "agent_events",
+            "name": "target"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "result",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "agent_events",
+            "name": "result"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "ip",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "agent_events",
+            "name": "ip"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "created_at",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "agent_events",
+            "name": "created_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "7ce038d6b8d16b64af108f9f133ddea94b2573f79743b31b2c367fa351885e78"
+}

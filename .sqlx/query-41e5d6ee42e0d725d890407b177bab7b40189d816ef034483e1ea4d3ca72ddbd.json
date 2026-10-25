@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO breach_monitor_emails (id, account_id, email, verified_at, code_hash, code_expires_at, code_attempts, code_sent_at, checked_at, check_error, created_at) VALUES ($1, $2, $3, 0, '', 0, 0, 0, 0, '', $4)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "41e5d6ee42e0d725d890407b177bab7b40189d816ef034483e1ea4d3ca72ddbd"
+}

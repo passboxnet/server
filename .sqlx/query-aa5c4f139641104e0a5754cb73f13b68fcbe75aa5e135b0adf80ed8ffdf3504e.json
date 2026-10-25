@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO org_groups (id, org_id, key_version, bundle, bundle_signature, encrypted_meta, meta_epoch, seq, created_at, updated_at) VALUES ($1, $2, 1, $3, $4, $5, $6, $7, $8, $9) ON CONFLICT DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Bytea",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "aa5c4f139641104e0a5754cb73f13b68fcbe75aa5e135b0adf80ed8ffdf3504e"
+}

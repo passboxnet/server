@@ -7,7 +7,7 @@
 //! skipped these checks could not grant access to keys, only to ciphertext.
 
 use passbox_core::sharing::objects::{OrgRole, VaultRole};
-use sqlx::AnyConnection;
+use sqlx::PgConnection;
 
 use crate::error::{ApiError, ApiResult};
 
@@ -29,15 +29,16 @@ impl Membership {
 }
 
 pub async fn membership(
-    conn: &mut AnyConnection,
+    conn: &mut PgConnection,
     org_id: &str,
     account_id: &str,
 ) -> ApiResult<Option<Membership>> {
-    let row: Option<(String, String)> = sqlx::query_as(
+    let row: Option<(String, String)> = sqlx::query!(
         "SELECT role, status FROM org_members WHERE org_id = $1 AND account_id = $2",
+        org_id,
+        account_id,
     )
-    .bind(org_id)
-    .bind(account_id)
+    .map(|row| (row.role, row.status))
     .fetch_optional(&mut *conn)
     .await?;
     row.map(|(role, status)| {
@@ -52,7 +53,7 @@ pub async fn membership(
 /// Any membership (including accepted and suspended); 404 otherwise, so
 /// non-members cannot tell whether an organization exists.
 pub async fn require_member(
-    conn: &mut AnyConnection,
+    conn: &mut PgConnection,
     org_id: &str,
     account_id: &str,
 ) -> ApiResult<Membership> {
@@ -62,7 +63,7 @@ pub async fn require_member(
 }
 
 pub async fn require_confirmed(
-    conn: &mut AnyConnection,
+    conn: &mut PgConnection,
     org_id: &str,
     account_id: &str,
 ) -> ApiResult<Membership> {
@@ -77,7 +78,7 @@ pub async fn require_confirmed(
 }
 
 pub async fn require_admin(
-    conn: &mut AnyConnection,
+    conn: &mut PgConnection,
     org_id: &str,
     account_id: &str,
 ) -> ApiResult<Membership> {
@@ -125,7 +126,7 @@ pub fn guest_view_only() -> ApiError {
 }
 
 /// Whether the account is a guest of the organization.
-pub async fn is_guest(conn: &mut AnyConnection, org_id: &str, account_id: &str) -> ApiResult<bool> {
+pub async fn is_guest(conn: &mut PgConnection, org_id: &str, account_id: &str) -> ApiResult<bool> {
     Ok(membership(conn, org_id, account_id)
         .await?
         .is_some_and(|m| m.role == OrgRole::Guest))
@@ -135,7 +136,7 @@ pub async fn is_guest(conn: &mut AnyConnection, org_id: &str, account_id: &str) 
 /// if it is a confirmed member of the vault's organization. Guests are
 /// view-only: their role is capped at `view` whatever the manifest says.
 pub async fn shared_role(
-    conn: &mut AnyConnection,
+    conn: &mut PgConnection,
     vault_id: &str,
     org_id: &str,
     account_id: &str,
@@ -144,24 +145,24 @@ pub async fn shared_role(
         Some(m) if m.is_confirmed() => m.role == OrgRole::Guest,
         _ => return Ok(None),
     };
-    let direct: Vec<String> = sqlx::query_scalar(
+    let direct: Vec<String> = sqlx::query_scalar!(
         "SELECT role FROM vault_members WHERE vault_id = $1 AND principal_type = 'account' \
          AND principal_id = $2",
+        vault_id,
+        account_id,
     )
-    .bind(vault_id)
-    .bind(account_id)
     .fetch_all(&mut *conn)
     .await?;
-    let via_groups: Vec<String> = sqlx::query_scalar(
+    let via_groups: Vec<String> = sqlx::query_scalar!(
         "SELECT vault_members.role FROM vault_members \
          JOIN org_groups ON org_groups.id = vault_members.principal_id \
          JOIN group_members ON group_members.group_id = org_groups.id \
            AND group_members.key_version = org_groups.key_version \
          WHERE vault_members.vault_id = $1 AND vault_members.principal_type = 'group' \
            AND group_members.account_id = $2",
+        vault_id,
+        account_id,
     )
-    .bind(vault_id)
-    .bind(account_id)
     .fetch_all(&mut *conn)
     .await?;
     let role = direct
@@ -179,15 +180,17 @@ pub async fn shared_role(
 /// The account's access to a vault; `None` if it has none (callers answer
 /// 404 so vault IDs of others are not revealed).
 pub async fn vault_access(
-    conn: &mut AnyConnection,
+    conn: &mut PgConnection,
     vault_id: &str,
     account_id: &str,
 ) -> ApiResult<Option<VaultAccess>> {
-    let row: Option<(String, Option<String>, i64)> =
-        sqlx::query_as("SELECT account_id, org_id, key_epoch FROM vaults WHERE id = $1")
-            .bind(vault_id)
-            .fetch_optional(&mut *conn)
-            .await?;
+    let row: Option<(String, Option<String>, i64)> = sqlx::query!(
+        "SELECT account_id, org_id, key_epoch FROM vaults WHERE id = $1",
+        vault_id,
+    )
+    .map(|row| (row.account_id, row.org_id, row.key_epoch))
+    .fetch_optional(&mut *conn)
+    .await?;
     let Some((owner, org_id, key_epoch)) = row else {
         return Ok(None);
     };
@@ -206,7 +209,7 @@ pub async fn vault_access(
 /// Requires write access (personal vault, or `edit`/`manage`). A member
 /// with `view` gets 403.
 pub async fn require_vault_write(
-    conn: &mut AnyConnection,
+    conn: &mut PgConnection,
     vault_id: &str,
     account_id: &str,
 ) -> ApiResult<VaultAccess> {
@@ -228,7 +231,7 @@ pub async fn require_vault_write(
 }
 
 pub async fn require_vault_manager(
-    conn: &mut AnyConnection,
+    conn: &mut PgConnection,
     vault_id: &str,
     account_id: &str,
 ) -> ApiResult<(String, i64)> {

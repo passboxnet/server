@@ -1,0 +1,124 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id, url, active, cursor_seq, failures, last_status, last_error, last_delivery_at, created_at FROM org_webhooks WHERE org_id = $1 ORDER BY created_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "org_webhooks",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "url",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "org_webhooks",
+            "name": "url"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "active",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "org_webhooks",
+            "name": "active"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "cursor_seq",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "org_webhooks",
+            "name": "cursor_seq"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "failures",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "org_webhooks",
+            "name": "failures"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "last_status",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "org_webhooks",
+            "name": "last_status"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "last_error",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "org_webhooks",
+            "name": "last_error"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "last_delivery_at",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "org_webhooks",
+            "name": "last_delivery_at"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "created_at",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "org_webhooks",
+            "name": "created_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "48ab852aefb024df9d390e474e93143975e5df022bddf37a264968781e30342e"
+}

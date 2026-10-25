@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE org_recovery_requests SET status = 'cancelled' WHERE org_id = $1 AND status IN ('pending', 'approved')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "13958d4163b89208c90fd89552109dd90bbb8a2e4f4bb03ce195f18c6c32c265"
+}

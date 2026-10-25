@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT admin AS \"admin!\" FROM passbox.org_recovery_admins($1) AS admin",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "admin!",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "7e02f891bc54ca40fdae4b8da6ba6284fce5f240b6eff62f84e3f1aac28b1e5e"
+}

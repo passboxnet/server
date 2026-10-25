@@ -1,0 +1,268 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT org_id, enabled, required, allow_device_unlock, provider, display_name, issuer, client_id, encrypted_client_secret, token_auth_method, scopes, email_claim, require_verified_email, name_claim, groups_claim, allowed_domains, reauth_hours, discovery, jwks, jwks_fetched_at, updated_at FROM org_sso WHERE org_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "org_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "org_sso",
+            "name": "org_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "enabled",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "org_sso",
+            "name": "enabled"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "required",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "org_sso",
+            "name": "required"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "allow_device_unlock",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "org_sso",
+            "name": "allow_device_unlock"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "provider",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "org_sso",
+            "name": "provider"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "display_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "org_sso",
+            "name": "display_name"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "issuer",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "org_sso",
+            "name": "issuer"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "client_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "org_sso",
+            "name": "client_id"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "encrypted_client_secret",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "org_sso",
+            "name": "encrypted_client_secret"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "token_auth_method",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "org_sso",
+            "name": "token_auth_method"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "scopes",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "org_sso",
+            "name": "scopes"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "email_claim",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "org_sso",
+            "name": "email_claim"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "require_verified_email",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "org_sso",
+            "name": "require_verified_email"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
+        "name": "name_claim",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "org_sso",
+            "name": "name_claim"
+          }
+        }
+      },
+      {
+        "ordinal": 14,
+        "name": "groups_claim",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "org_sso",
+            "name": "groups_claim"
+          }
+        }
+      },
+      {
+        "ordinal": 15,
+        "name": "allowed_domains",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "org_sso",
+            "name": "allowed_domains"
+          }
+        }
+      },
+      {
+        "ordinal": 16,
+        "name": "reauth_hours",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "org_sso",
+            "name": "reauth_hours"
+          }
+        }
+      },
+      {
+        "ordinal": 17,
+        "name": "discovery",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "org_sso",
+            "name": "discovery"
+          }
+        }
+      },
+      {
+        "ordinal": 18,
+        "name": "jwks",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "org_sso",
+            "name": "jwks"
+          }
+        }
+      },
+      {
+        "ordinal": 19,
+        "name": "jwks_fetched_at",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "org_sso",
+            "name": "jwks_fetched_at"
+          }
+        }
+      },
+      {
+        "ordinal": 20,
+        "name": "updated_at",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "org_sso",
+            "name": "updated_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "29079da1469c566f757c543fa32d258169b3fa166ecf9f02c945c84de38399b4"
+}

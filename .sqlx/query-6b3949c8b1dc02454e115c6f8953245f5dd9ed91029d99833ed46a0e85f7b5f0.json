@@ -1,0 +1,35 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE device_links SET status = 'claimed', ephemeral_key = $1, mac = $2, claim_token_hash = $3, claim_device_name = $4, claim_ip = $5, claimed_at = $6 WHERE short_id = $7 AND status = 'open' AND expires_at > $8 RETURNING expires_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "expires_at",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "device_links",
+            "name": "expires_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Int8",
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "6b3949c8b1dc02454e115c6f8953245f5dd9ed91029d99833ed46a0e85f7b5f0"
+}

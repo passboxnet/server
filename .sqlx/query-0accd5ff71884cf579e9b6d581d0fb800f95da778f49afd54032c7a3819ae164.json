@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT sealed_secret FROM two_factor_totp WHERE account_id = $1 AND confirmed = true",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "sealed_secret",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "two_factor_totp",
+            "name": "sealed_secret"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "0accd5ff71884cf579e9b6d581d0fb800f95da778f49afd54032c7a3819ae164"
+}

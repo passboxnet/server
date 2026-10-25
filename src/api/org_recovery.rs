@@ -17,54 +17,51 @@ use passbox_core::recovery::org::{
 };
 use serde::Serialize;
 use serde_json::json;
-use sqlx::AnyConnection;
+use sqlx::PgConnection;
 
 use super::access;
 use super::auth::{Session, record_event};
 use super::signed::{self, bad};
 use super::validate;
-use crate::db::{self, now_ms};
+use crate::db::{Public, now_ms};
 use crate::error::{ApiError, ApiResult};
 use crate::mail::Template;
 use crate::security::ClientIp;
 use crate::state::AppState;
 
-/// Admins (confirmed owners and admins) who hold the current recovery key.
-pub(crate) async fn recovery_admins(state: &AppState, org_id: &str) -> ApiResult<Vec<String>> {
-    Ok(sqlx::query_scalar(
-        "SELECT g.account_id FROM org_recovery_grants g \
-         JOIN org_members m ON m.org_id = g.org_id AND m.account_id = g.account_id \
-         WHERE g.org_id = $1 AND m.status = 'confirmed' AND m.role IN ('owner', 'admin') \
-         AND g.key_version = (SELECT MAX(key_version) FROM org_recovery_keys WHERE org_id = $2) \
-         ORDER BY g.account_id",
+/// Admins (confirmed owners and admins) who hold the current recovery key,
+/// for notifications. Also called by the signed-out requesting device, so
+/// it goes through a function that reveals the account IDs only.
+pub(crate) async fn recovery_admins_from(state: &AppState, org_id: &str) -> ApiResult<Vec<String>> {
+    Ok(sqlx::query_scalar!(
+        r#"SELECT admin AS "admin!" FROM passbox.org_recovery_admins($1) AS admin"#,
+        org_id,
     )
-    .bind(org_id)
-    .bind(org_id)
-    .fetch_all(&state.db)
+    .fetch_all(&mut *state.db.public(Public::Auth).await?)
     .await?)
 }
 
 async fn current_key(
-    conn: &mut AnyConnection,
+    conn: &mut PgConnection,
     org_id: &str,
 ) -> ApiResult<Option<(i64, String, String, String, String)>> {
-    Ok(sqlx::query_as(
+    Ok(sqlx::query!(
         "SELECT key_version, bundle, bundle_signature, bundle_hash, created_by FROM org_recovery_keys \
          WHERE org_id = $1 ORDER BY key_version DESC LIMIT 1",
-    )
-    .bind(org_id)
+        org_id,
+    ).map(|row| (row.key_version, row.bundle, row.bundle_signature, row.bundle_hash, row.created_by))
     .fetch_optional(&mut *conn)
     .await?)
 }
 
-async fn holds_key(conn: &mut AnyConnection, org_id: &str, account_id: &str) -> ApiResult<bool> {
-    let found: Option<i64> = sqlx::query_scalar(
-        "SELECT 1 FROM org_recovery_grants WHERE org_id = $1 AND account_id = $2 \
+async fn holds_key(conn: &mut PgConnection, org_id: &str, account_id: &str) -> ApiResult<bool> {
+    let found: Option<i64> = sqlx::query_scalar!(
+        "SELECT 1::BIGINT AS \"one!\" FROM org_recovery_grants WHERE org_id = $1 AND account_id = $2 \
          AND key_version = (SELECT MAX(key_version) FROM org_recovery_keys WHERE org_id = $3)",
+        org_id,
+        account_id,
+        org_id,
     )
-    .bind(org_id)
-    .bind(account_id)
-    .bind(org_id)
     .fetch_optional(&mut *conn)
     .await?;
     Ok(found.is_some())
@@ -139,16 +136,16 @@ pub async fn get(
     Path(org_id): Path<String>,
 ) -> ApiResult<Json<RecoveryState>> {
     validate::id("organization id", &org_id)?;
-    let mut conn = state.db.acquire().await?;
+    let mut conn = state.db.as_account(&session.account_id).await?;
     let me = access::require_confirmed(&mut conn, &org_id, &session.account_id).await?;
     let key = match current_key(&mut conn, &org_id).await? {
         Some((key_version, bundle, bundle_signature, _, _)) => {
-            let rows: Vec<(String, String, String, String)> = sqlx::query_as(
+            let rows: Vec<(String, String, String, Vec<u8>)> = sqlx::query!(
                 "SELECT account_id, grant_data, grant_signature, sealed_key FROM org_recovery_grants \
                  WHERE org_id = $1 AND key_version = $2 ORDER BY account_id",
-            )
-            .bind(&org_id)
-            .bind(key_version)
+                &org_id,
+                key_version,
+            ).map(|row| (row.account_id, row.grant_data, row.grant_signature, row.sealed_key))
             .fetch_all(&mut *conn)
             .await?;
             Some(KeyView {
@@ -158,7 +155,8 @@ pub async fn get(
                 grants: rows
                     .into_iter()
                     .map(|(account_id, grant, grant_signature, sealed)| GrantView {
-                        sealed_key: (account_id == session.account_id).then_some(sealed),
+                        sealed_key: (account_id == session.account_id)
+                            .then(|| encoding::encode(&sealed)),
                         account_id,
                         key_version,
                         grant,
@@ -169,31 +167,31 @@ pub async fn get(
         }
         None => None,
     };
-    let escrow: Option<(i64, i64)> = sqlx::query_as(
+    let escrow: Option<(i64, i64)> = sqlx::query!(
         "SELECT key_version, created_at FROM org_recovery_escrows WHERE org_id = $1 AND account_id = $2",
-    )
-    .bind(&org_id)
-    .bind(&session.account_id)
+        &org_id,
+        &session.account_id,
+    ).map(|row| (row.key_version, row.created_at))
     .fetch_optional(&mut *conn)
     .await?;
     let (enrolled, pending) = if me.is_admin() {
-        let enrolled: Vec<String> = sqlx::query_scalar(
+        let enrolled: Vec<String> = sqlx::query_scalar!(
             "SELECT e.account_id FROM org_recovery_escrows e WHERE e.org_id = $1 \
              AND e.key_version = (SELECT MAX(key_version) FROM org_recovery_keys WHERE org_id = $2) \
              ORDER BY e.account_id",
+            &org_id,
+            &org_id,
         )
-        .bind(&org_id)
-        .bind(&org_id)
         .fetch_all(&mut *conn)
         .await?;
         let pending = if holds_key(&mut conn, &org_id, &session.account_id).await? {
             Some(
-                sqlx::query_scalar(
-                    "SELECT COUNT(*) FROM org_recovery_requests WHERE org_id = $1 AND status = 'pending' \
+                sqlx::query_scalar!(
+                    "SELECT COUNT(*) AS \"count!\" FROM org_recovery_requests WHERE org_id = $1 AND status = 'pending' \
                      AND expires_at > $2",
+                    &org_id,
+                    now_ms(),
                 )
-                .bind(&org_id)
-                .bind(now_ms())
                 .fetch_one(&mut *conn)
                 .await?,
             )
@@ -248,7 +246,7 @@ pub async fn create_key(
     Json(req): Json<OrgRecoveryKeyUpload>,
 ) -> ApiResult<StatusCode> {
     validate::id("organization id", &org_id)?;
-    let mut tx = db::begin_write(&state.db).await?;
+    let mut tx = state.db.as_account(&session.account_id).await?;
     access::require_admin(&mut tx, &org_id, &session.account_id).await?;
     let latest = current_key(&mut tx, &org_id).await?.map_or(0, |k| k.0);
     if i64::from(req.key_version) != latest + 1 {
@@ -277,17 +275,17 @@ pub async fn create_key(
     )?;
     check_grant(&grant, &req.grant, &org_id, &session.account_id, &me.hash())?;
     let now = now_ms();
-    sqlx::query(
+    sqlx::query!(
         "INSERT INTO org_recovery_keys (org_id, key_version, bundle, bundle_signature, bundle_hash, created_by, \
          created_at) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        &org_id,
+        i64::from(req.key_version),
+        &req.bundle,
+        &req.bundle_signature,
+        encoding::encode(&bundle.hash()),
+        &session.account_id,
+        now,
     )
-    .bind(&org_id)
-    .bind(i64::from(req.key_version))
-    .bind(&req.bundle)
-    .bind(&req.bundle_signature)
-    .bind(encoding::encode(&bundle.hash()))
-    .bind(&session.account_id)
-    .bind(now)
     .execute(&mut *tx)
     .await?;
     insert_grant(&mut tx, &org_id, &req.grant, &session.account_id).await?;
@@ -313,29 +311,26 @@ pub async fn create_key(
 }
 
 async fn insert_grant(
-    tx: &mut sqlx::Transaction<'_, sqlx::Any>,
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     org_id: &str,
     upload: &RecoveryGrantUpload,
     granted_by: &str,
 ) -> ApiResult<()> {
-    sqlx::query("DELETE FROM org_recovery_grants WHERE org_id = $1 AND key_version = $2 AND account_id = $3")
-        .bind(org_id)
-        .bind(i64::from(upload.key_version))
-        .bind(&upload.account_id)
-        .execute(&mut **tx)
-        .await?;
-    sqlx::query(
+    sqlx::query!(
         "INSERT INTO org_recovery_grants (org_id, key_version, account_id, sealed_key, grant_data, \
-         grant_signature, granted_by, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+         grant_signature, granted_by, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
+         ON CONFLICT (org_id, key_version, account_id) DO UPDATE SET sealed_key = excluded.sealed_key, \
+         grant_data = excluded.grant_data, grant_signature = excluded.grant_signature, \
+         granted_by = excluded.granted_by, created_at = excluded.created_at",
+        org_id,
+        i64::from(upload.key_version),
+        &upload.account_id,
+        super::vaults::decode(&upload.sealed_key)?,
+        &upload.grant,
+        &upload.grant_signature,
+        granted_by,
+        now_ms(),
     )
-    .bind(org_id)
-    .bind(i64::from(upload.key_version))
-    .bind(&upload.account_id)
-    .bind(&upload.sealed_key)
-    .bind(&upload.grant)
-    .bind(&upload.grant_signature)
-    .bind(granted_by)
-    .bind(now_ms())
     .execute(&mut **tx)
     .await?;
     Ok(())
@@ -352,7 +347,7 @@ pub async fn add_grant(
 ) -> ApiResult<StatusCode> {
     validate::id("organization id", &org_id)?;
     validate::id("account id", &req.account_id)?;
-    let mut tx = db::begin_write(&state.db).await?;
+    let mut tx = state.db.as_account(&session.account_id).await?;
     access::require_admin(&mut tx, &org_id, &session.account_id).await?;
     if !holds_key(&mut tx, &org_id, &session.account_id).await? {
         return Err(ApiError::forbidden(
@@ -412,7 +407,7 @@ pub async fn put_escrow(
     Json(req): Json<RecoveryEscrowUpload>,
 ) -> ApiResult<StatusCode> {
     validate::id("organization id", &org_id)?;
-    let mut tx = db::begin_write(&state.db).await?;
+    let mut tx = state.db.as_account(&session.account_id).await?;
     access::require_confirmed(&mut tx, &org_id, &session.account_id).await?;
     let (key_version, _, _, bundle_hash, _) = current_key(&mut tx, &org_id)
         .await?
@@ -437,22 +432,22 @@ pub async fn put_escrow(
     {
         return Err(bad("the escrow does not match the request"));
     }
-    sqlx::query("DELETE FROM org_recovery_escrows WHERE org_id = $1 AND account_id = $2")
-        .bind(&org_id)
-        .bind(&session.account_id)
-        .execute(&mut *tx)
-        .await?;
-    sqlx::query(
+    // One statement, so two enrollments at the same time (the app enrolls
+    // on its own when a policy requires it) do not collide.
+    sqlx::query!(
         "INSERT INTO org_recovery_escrows (org_id, account_id, key_version, escrow, escrow_signature, \
-         sealed_key, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+         sealed_key, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7) \
+         ON CONFLICT (org_id, account_id) DO UPDATE SET key_version = excluded.key_version, \
+         escrow = excluded.escrow, escrow_signature = excluded.escrow_signature, \
+         sealed_key = excluded.sealed_key, created_at = excluded.created_at",
+        &org_id,
+        &session.account_id,
+        key_version,
+        &req.escrow,
+        &req.escrow_signature,
+        super::vaults::decode(&req.sealed_key)?,
+        now_ms(),
     )
-    .bind(&org_id)
-    .bind(&session.account_id)
-    .bind(key_version)
-    .bind(&req.escrow)
-    .bind(&req.escrow_signature)
-    .bind(&req.sealed_key)
-    .bind(now_ms())
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
@@ -484,23 +479,26 @@ pub async fn delete_escrow(
     Path(org_id): Path<String>,
 ) -> ApiResult<StatusCode> {
     validate::id("organization id", &org_id)?;
-    let deleted =
-        sqlx::query("DELETE FROM org_recovery_escrows WHERE org_id = $1 AND account_id = $2")
-            .bind(&org_id)
-            .bind(&session.account_id)
-            .execute(&state.db)
-            .await?;
+    let mut tx = state.db.as_account(&session.account_id).await?;
+    let deleted = sqlx::query!(
+        "DELETE FROM org_recovery_escrows WHERE org_id = $1 AND account_id = $2",
+        &org_id,
+        &session.account_id,
+    )
+    .execute(&mut *tx)
+    .await?;
     if deleted.rows_affected() == 0 {
         return Err(ApiError::NotFound);
     }
-    sqlx::query(
+    sqlx::query!(
         "UPDATE org_recovery_requests SET status = 'cancelled' WHERE org_id = $1 AND account_id = $2 \
          AND status IN ('pending', 'approved')",
+        &org_id,
+        &session.account_id,
     )
-    .bind(&org_id)
-    .bind(&session.account_id)
-    .execute(&state.db)
+    .execute(&mut *tx)
     .await?;
+    tx.commit().await?;
     super::org_audit::record(
         &state,
         &org_id,
@@ -534,7 +532,7 @@ pub async fn turn_off(
     Path(org_id): Path<String>,
 ) -> ApiResult<StatusCode> {
     validate::id("organization id", &org_id)?;
-    let mut tx = db::begin_write(&state.db).await?;
+    let mut tx = state.db.as_account(&session.account_id).await?;
     access::require_admin(&mut tx, &org_id, &session.account_id).await?;
     if current_key(&mut tx, &org_id).await?.is_none() {
         return Err(ApiError::NotFound);
@@ -548,11 +546,11 @@ pub async fn turn_off(
             "the organization's policy requires recovery; turn off \"Require recovery\" in the policy first",
         ));
     }
-    sqlx::query(
+    sqlx::query!(
         "UPDATE org_recovery_requests SET status = 'cancelled' WHERE org_id = $1 \
          AND status IN ('pending', 'approved')",
+        &org_id,
     )
-    .bind(&org_id)
     .execute(&mut *tx)
     .await?;
     for sql in [
@@ -604,7 +602,7 @@ pub struct RequestView {
 }
 
 async fn require_key_holder(
-    conn: &mut AnyConnection,
+    conn: &mut PgConnection,
     org_id: &str,
     account_id: &str,
 ) -> ApiResult<()> {
@@ -625,7 +623,7 @@ pub async fn requests(
     Path(org_id): Path<String>,
 ) -> ApiResult<Json<Vec<RequestView>>> {
     validate::id("organization id", &org_id)?;
-    let mut conn = state.db.acquire().await?;
+    let mut conn = state.db.as_account(&session.account_id).await?;
     require_key_holder(&mut conn, &org_id, &session.account_id).await?;
     type Row = (
         String,
@@ -639,17 +637,17 @@ pub async fn requests(
         i64,
         String,
         String,
-        String,
+        Vec<u8>,
     );
-    let rows: Vec<Row> = sqlx::query_as(
-        "SELECT r.id, r.account_id, a.email, r.device_name, r.ip, r.created_at, r.expires_at, r.ephemeral_key, \
+    let rows: Vec<Row> = sqlx::query!(
+        "SELECT r.id, r.account_id, a.email AS \"email!\", r.device_name, r.ip, r.created_at, r.expires_at, r.ephemeral_key, \
          e.key_version, e.escrow, e.escrow_signature, e.sealed_key FROM org_recovery_requests r \
-         JOIN accounts a ON a.id = r.account_id \
+         JOIN account_directory a ON a.id = r.account_id \
          JOIN org_recovery_escrows e ON e.org_id = r.org_id AND e.account_id = r.account_id \
          WHERE r.org_id = $1 AND r.status = 'pending' AND r.expires_at > $2 ORDER BY r.created_at",
-    )
-    .bind(&org_id)
-    .bind(now_ms())
+        &org_id,
+        now_ms(),
+    ).map(|row| (row.id, row.account_id, row.email, row.device_name, row.ip, row.created_at, row.expires_at, row.ephemeral_key, row.key_version, row.escrow, row.escrow_signature, row.sealed_key))
     .fetch_all(&mut *conn)
     .await?;
     Ok(Json(
@@ -681,7 +679,7 @@ pub async fn requests(
                     key_version,
                     escrow,
                     escrow_signature,
-                    sealed_key,
+                    sealed_key: encoding::encode(&sealed_key),
                 },
             )
             .collect(),
@@ -689,17 +687,18 @@ pub async fn requests(
 }
 
 async fn pending_request(
-    conn: &mut AnyConnection,
+    conn: &mut PgConnection,
     org_id: &str,
     request_id: &str,
 ) -> ApiResult<(String, String)> {
-    let row: Option<(String, String)> = sqlx::query_as(
+    let row: Option<(String, String)> = sqlx::query!(
         "SELECT account_id, ephemeral_key FROM org_recovery_requests WHERE id = $1 AND org_id = $2 \
          AND status = 'pending' AND expires_at > $3",
+        request_id,
+        org_id,
+        now_ms(),
     )
-    .bind(request_id)
-    .bind(org_id)
-    .bind(now_ms())
+    .map(|row| (row.account_id, row.ephemeral_key))
     .fetch_optional(&mut *conn)
     .await?;
     row.ok_or(ApiError::NotFound)
@@ -715,7 +714,7 @@ pub async fn approve(
 ) -> ApiResult<StatusCode> {
     validate::id("organization id", &org_id)?;
     validate::id("request id", &request_id)?;
-    let mut tx = db::begin_write(&state.db).await?;
+    let mut tx = state.db.as_account(&session.account_id).await?;
     require_key_holder(&mut tx, &org_id, &session.account_id).await?;
     let (account_id, ephemeral_key) = pending_request(&mut tx, &org_id, &request_id).await?;
     if account_id == session.account_id {
@@ -740,17 +739,17 @@ pub async fn approve(
         return Err(bad("the approval does not match the request"));
     }
     let now = now_ms();
-    sqlx::query(
+    sqlx::query!(
         "UPDATE org_recovery_requests SET status = 'approved', approval = $1, approval_signature = $2, \
          sealed_key = $3, request_code = $4, decided_by = $5, decided_at = $6 WHERE id = $7",
+        &req.approval,
+        &req.approval_signature,
+        &req.sealed_key,
+        request_code(&ephemeral),
+        &session.account_id,
+        now,
+        &request_id,
     )
-    .bind(&req.approval)
-    .bind(&req.approval_signature)
-    .bind(&req.sealed_key)
-    .bind(request_code(&ephemeral))
-    .bind(&session.account_id)
-    .bind(now)
-    .bind(&request_id)
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
@@ -772,10 +771,12 @@ pub async fn approve(
     )
     .await?;
     record_event(&state, &account_id, "org_recovery_approved", "", "", &ip).await?;
-    let approver: String = sqlx::query_scalar("SELECT email FROM accounts WHERE id = $1")
-        .bind(&session.account_id)
-        .fetch_one(&state.db)
-        .await?;
+    let approver: String = sqlx::query_scalar!(
+        "SELECT email FROM accounts WHERE id = $1",
+        &session.account_id,
+    )
+    .fetch_one(&mut *state.db.as_account(&session.account_id).await?)
+    .await?;
     if let Err(err) = state
         .mailer
         .enqueue_for_account(
@@ -799,15 +800,15 @@ pub async fn deny(
 ) -> ApiResult<StatusCode> {
     validate::id("organization id", &org_id)?;
     validate::id("request id", &request_id)?;
-    let mut tx = db::begin_write(&state.db).await?;
+    let mut tx = state.db.as_account(&session.account_id).await?;
     require_key_holder(&mut tx, &org_id, &session.account_id).await?;
     let (account_id, _) = pending_request(&mut tx, &org_id, &request_id).await?;
-    sqlx::query(
+    sqlx::query!(
         "UPDATE org_recovery_requests SET status = 'denied', decided_by = $1, decided_at = $2 WHERE id = $3",
+        &session.account_id,
+        now_ms(),
+        &request_id,
     )
-    .bind(&session.account_id)
-    .bind(now_ms())
-    .bind(&request_id)
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
@@ -829,10 +830,12 @@ pub async fn deny(
     )
     .await?;
     record_event(&state, &account_id, "org_recovery_denied", "", "", &ip).await?;
-    let approver: String = sqlx::query_scalar("SELECT email FROM accounts WHERE id = $1")
-        .bind(&session.account_id)
-        .fetch_one(&state.db)
-        .await?;
+    let approver: String = sqlx::query_scalar!(
+        "SELECT email FROM accounts WHERE id = $1",
+        &session.account_id,
+    )
+    .fetch_one(&mut *state.db.as_account(&session.account_id).await?)
+    .await?;
     if let Err(err) = state
         .mailer
         .enqueue_for_account(

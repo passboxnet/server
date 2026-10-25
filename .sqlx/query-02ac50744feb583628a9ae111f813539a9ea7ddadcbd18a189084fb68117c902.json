@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT bundle, bundle_signature, encrypted_private FROM account_keys WHERE account_id = $1 ORDER BY key_version DESC LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "bundle",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "account_keys",
+            "name": "bundle"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "bundle_signature",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "account_keys",
+            "name": "bundle_signature"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "encrypted_private",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "account_keys",
+            "name": "encrypted_private"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "02ac50744feb583628a9ae111f813539a9ea7ddadcbd18a189084fb68117c902"
+}

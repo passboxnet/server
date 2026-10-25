@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM trusted_device_requests WHERE account_id = $1 AND expires_at < $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c9b409e833786fa45525a7cc189558d399af50b7bda0e406ee148fa89757214f"
+}

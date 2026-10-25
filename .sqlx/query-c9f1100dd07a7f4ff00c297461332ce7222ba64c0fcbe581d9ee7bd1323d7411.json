@@ -1,0 +1,53 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT sealed_key, grant_data, grant_signature FROM trusted_devices WHERE id = $1 AND account_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "sealed_key",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "trusted_devices",
+            "name": "sealed_key"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "grant_data",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "trusted_devices",
+            "name": "grant_data"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "grant_signature",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "trusted_devices",
+            "name": "grant_signature"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "c9f1100dd07a7f4ff00c297461332ce7222ba64c0fcbe581d9ee7bd1323d7411"
+}

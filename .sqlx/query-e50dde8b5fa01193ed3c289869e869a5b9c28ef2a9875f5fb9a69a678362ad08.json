@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE agent_grants SET status = 'revoked' WHERE id = $1 AND account_id = $2 AND status IN ('pending', 'approved')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e50dde8b5fa01193ed3c289869e869a5b9c28ef2a9875f5fb9a69a678362ad08"
+}

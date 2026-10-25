@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM two_factor_totp WHERE account_id = $1 AND confirmed = false",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "358f14eb708832f3f3ce06e92e78ba8c4787ab1cf75a8246f06b23dd068cbbb7"
+}

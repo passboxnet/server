@@ -15,6 +15,9 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   WASM_BINDGEN_VERSION: 0.2.129
+  # The sqlx query macros check against the committed cache in .sqlx/, no
+  # database at build time.
+  SQLX_OFFLINE: "true"
 
 jobs:
   rust:
@@ -31,6 +34,8 @@ jobs:
         options: >-
           --health-cmd "pg_isready -U passbox -d passbox_test" --health-interval 5s --health-timeout 5s --health-retries 10
     env:
+      # A superuser (the image's POSTGRES_USER): every test run creates and
+      # drops a database of its own with the production roles.
       PASSBOX_TEST_DATABASE_URL: postgres://passbox:passbox@localhost:5432/passbox_test
     steps:
       - uses: actions/checkout@v5
@@ -57,6 +62,19 @@ jobs:
   web:
     name: TypeScript
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: passbox
+          POSTGRES_PASSWORD: passbox
+          POSTGRES_DB: passbox
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U passbox -d passbox" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      # A superuser; e2e/database.sh creates a database per test server.
+      PASSBOX_E2E_DATABASE_URL: postgres://passbox:passbox@localhost:5432/passbox
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
@@ -79,8 +97,15 @@ jobs:
       - name: Start a server for client integration tests
         run: |
           cargo build --package passbox-server --package passbox-cli --locked
-          PASSBOX_DATABASE_URL=sqlite::memory: PASSBOX_BIND=127.0.0.1:8080 PASSBOX_AUTH_RATE_LIMIT=1000 ./target/debug/passbox-server &
-          for i in $(seq 1 30); do curl -sf http://127.0.0.1:8080/health && break; sleep 1; done
+          sh e2e/database.sh passbox_client_tests
+          # The superuser connection switches to the production roles, so row
+          # level security applies as in production.
+          base=postgres://passbox:passbox@localhost:5432/passbox_client_tests?options=-c%20role%3D
+          PASSBOX_DATABASE_URL=${base}passbox_app \
+          PASSBOX_WORKER_DATABASE_URL=${base}passbox_worker \
+          PASSBOX_MIGRATION_DATABASE_URL=${base}passbox_migrator \
+          PASSBOX_BIND=127.0.0.1:8080 PASSBOX_AUTH_RATE_LIMIT=1000 ./target/debug/passbox-server &
+          for i in $(seq 1 60); do curl -sf http://127.0.0.1:8080/ready && break; sleep 1; done
       - run: pnpm test
         env:
           PASSBOX_TEST_SERVER_URL: http://127.0.0.1:8080

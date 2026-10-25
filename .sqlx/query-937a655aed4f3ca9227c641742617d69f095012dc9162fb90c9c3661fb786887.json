@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO sessions (token_hash, account_id, created_at, expires_at, id, device_name, client_kind, ip, last_used_at, device_token_hash) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $3, $9)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Int8",
+        "Int8",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "937a655aed4f3ca9227c641742617d69f095012dc9162fb90c9c3661fb786887"
+}

@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE service_account_grants SET permission = $1 WHERE service_account_id = $2 AND vault_id = $3",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "638e07b5526aec13d2ec9001689cac3756429077edb6aa6e7fbf83c5559a7bf0"
+}

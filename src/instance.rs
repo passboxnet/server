@@ -14,7 +14,7 @@ use data_encoding::HEXLOWER;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::db::{Db, now_ms};
+use crate::db::{Conn, Db, Public, Tx, now_ms};
 use crate::error::{ApiError, ApiResult};
 use crate::mail::Locale;
 use crate::state::AppState;
@@ -180,14 +180,14 @@ fn is_domain(domain: &str) -> bool {
         })
 }
 
-/// Loads the instance settings (defaults if none were saved).
-pub async fn load_settings(db: &Db) -> anyhow::Result<InstanceSettings> {
-    let value: Option<String> =
-        sqlx::query_scalar("SELECT value FROM instance_state WHERE name = 'settings'")
-            .fetch_optional(db)
-            .await?;
+/// Loads the instance settings (defaults if none were saved). Every
+/// context may read them.
+pub async fn load_settings(conn: &mut Conn) -> anyhow::Result<InstanceSettings> {
+    let value = sqlx::query_scalar!("SELECT value FROM instance_state WHERE name = 'settings'")
+        .fetch_optional(conn)
+        .await?;
     Ok(match value {
-        Some(json) => serde_json::from_str(&json).unwrap_or_else(|err| {
+        Some(json) => serde_json::from_value(json).unwrap_or_else(|err| {
             tracing::error!(error = %err, "stored instance settings are invalid; using defaults");
             InstanceSettings::default()
         }),
@@ -195,22 +195,23 @@ pub async fn load_settings(db: &Db) -> anyhow::Result<InstanceSettings> {
     })
 }
 
-/// Saves the instance settings inside a write transaction.
-pub async fn save_settings(
-    tx: &mut sqlx::Transaction<'_, sqlx::Any>,
-    settings: &InstanceSettings,
-) -> anyhow::Result<()> {
-    let json = serde_json::to_string(settings)?;
-    let now = now_ms();
-    sqlx::query(
+/// Loads the instance settings in a context of its own (instance
+/// information is public).
+pub async fn load_settings_from(db: &Db) -> anyhow::Result<InstanceSettings> {
+    let mut tx = db.public(Public::Meta).await?;
+    load_settings(&mut tx).await
+}
+
+/// Saves the instance settings inside an instance admin's transaction.
+pub async fn save_settings(conn: &mut Conn, settings: &InstanceSettings) -> anyhow::Result<()> {
+    let json = serde_json::to_value(settings)?;
+    sqlx::query!(
         "INSERT INTO instance_state (name, value, updated_at) VALUES ('settings', $1, $2) \
-         ON CONFLICT (name) DO UPDATE SET value = $3, updated_at = $4",
+         ON CONFLICT (name) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+        json,
+        now_ms(),
     )
-    .bind(&json)
-    .bind(now)
-    .bind(&json)
-    .bind(now)
-    .execute(&mut **tx)
+    .execute(conn)
     .await?;
     Ok(())
 }
@@ -223,26 +224,27 @@ pub fn is_env_admin(state: &AppState, email: &str) -> bool {
         .any(|admin| admin.eq_ignore_ascii_case(email))
 }
 
-/// Whether the account is an instance admin.
-pub async fn is_admin(state: &AppState, account_id: &str) -> ApiResult<bool> {
-    let row: Option<(String, i64)> =
-        sqlx::query_as("SELECT email, instance_admin FROM accounts WHERE id = $1")
-            .bind(account_id)
-            .fetch_optional(&state.db)
-            .await?;
+/// Whether the account is an instance admin. Runs in the account's own
+/// context.
+pub async fn is_admin(state: &AppState, conn: &mut Conn, account_id: &str) -> ApiResult<bool> {
+    let row = sqlx::query!(
+        "SELECT email, instance_admin FROM accounts WHERE id = $1",
+        account_id
+    )
+    .fetch_optional(conn)
+    .await?;
     Ok(match row {
-        Some((email, flag)) => flag != 0 || is_env_admin(state, &email),
+        Some(row) => row.instance_admin || is_env_admin(state, &row.email),
         None => false,
     })
 }
 
 /// Fails with `account_disabled` if an admin disabled the account. Called
 /// after the password was verified, so it reveals nothing to strangers.
-pub async fn ensure_active(state: &AppState, account_id: &str) -> ApiResult<()> {
-    let disabled_at: Option<i64> =
-        sqlx::query_scalar("SELECT disabled_at FROM accounts WHERE id = $1")
-            .bind(account_id)
-            .fetch_optional(&state.db)
+pub async fn ensure_active(conn: &mut Conn, account_id: &str) -> ApiResult<()> {
+    let disabled_at =
+        sqlx::query_scalar!("SELECT disabled_at FROM accounts WHERE id = $1", account_id)
+            .fetch_optional(conn)
             .await?;
     if disabled_at.unwrap_or(0) != 0 {
         return Err(ApiError::forbidden(
@@ -271,6 +273,7 @@ pub struct RegistrationGrant {
 /// `registration_closed`, `domain_not_allowed` or `invitation_invalid`.
 pub async fn check_registration(
     state: &AppState,
+    conn: &mut Conn,
     email: &str,
     invite_token: Option<&str>,
 ) -> ApiResult<RegistrationGrant> {
@@ -280,46 +283,48 @@ pub async fn check_registration(
         if token.len() > 128 {
             return Err(invitation_invalid());
         }
-        let invite: Option<String> = sqlx::query_scalar(
+        let token_hash = hash_invite_token(token);
+        let invite = sqlx::query_scalar!(
             "SELECT id FROM instance_invites WHERE token_hash = $1 AND email = $2 \
              AND used_at = 0 AND expires_at > $3",
+            token_hash,
+            email,
+            now_ms(),
         )
-        .bind(hash_invite_token(token))
-        .bind(email)
-        .bind(now_ms())
-        .fetch_optional(&state.db)
+        .fetch_optional(&mut *conn)
         .await?;
         if let Some(id) = invite {
             grant.invite_id = Some(id);
             return Ok(grant);
         }
         // A pending invitation to an organization for this email allows
-        // registering too; it is accepted after sign-in.
-        let org_invite: Option<String> = sqlx::query_scalar(
-            "SELECT id FROM org_invitations WHERE token_hash = $1 AND email = $2 \
-             AND status = 'pending' AND expires_at > $3",
+        // registering too; it is accepted after sign-in. The lookup goes
+        // through a function: signed-out requests cannot read invitations.
+        let org_invite = sqlx::query_scalar!(
+            r#"SELECT passbox.org_invitation_pending($1, $2, $3) AS "pending!""#,
+            token_hash,
+            email,
+            now_ms(),
         )
-        .bind(hash_invite_token(token))
-        .bind(email)
-        .bind(now_ms())
-        .fetch_optional(&state.db)
+        .fetch_one(&mut *conn)
         .await?;
-        return match org_invite {
-            Some(_) => Ok(grant),
-            None => Err(invitation_invalid()),
+        return if org_invite {
+            Ok(grant)
+        } else {
+            Err(invitation_invalid())
         };
     }
     if is_env_admin(state, email) {
         return Ok(grant);
     }
-    let any_account: Option<i64> = sqlx::query_scalar("SELECT 1 FROM accounts LIMIT 1")
-        .fetch_optional(&state.db)
+    let any_account = sqlx::query_scalar!(r#"SELECT 1 AS "one!" FROM accounts LIMIT 1"#)
+        .fetch_optional(&mut *conn)
         .await?;
     if any_account.is_none() {
         // The first account sets up the server.
         return Ok(grant);
     }
-    let settings = load_settings(&state.db).await?;
+    let settings = load_settings(conn).await?;
     match settings.registration {
         RegistrationMode::Open => Ok(grant),
         RegistrationMode::InviteOnly => Err(ApiError::forbidden(
@@ -347,52 +352,48 @@ fn invitation_invalid() -> ApiError {
     )
 }
 
-/// Runs inside the transaction that creates an account: marks the
-/// invitation as used, stores the language and makes the first account of
-/// the server instance admin. Returns whether the account became admin.
+/// Runs inside the transaction that creates an account, after the
+/// account row was inserted (still in the sign-up context): marks the
+/// invitation as used, then switches the transaction to the new account,
+/// stores the language and makes the first account of the server instance
+/// admin. Returns whether the account became admin.
 pub async fn on_account_created(
-    tx: &mut sqlx::Transaction<'_, sqlx::Any>,
+    tx: &mut Tx,
     account_id: &str,
     grant: &RegistrationGrant,
     locale: Option<Locale>,
     now: i64,
 ) -> ApiResult<bool> {
     if let Some(invite_id) = &grant.invite_id {
-        let used =
-            sqlx::query("UPDATE instance_invites SET used_at = $1 WHERE id = $2 AND used_at = 0")
-                .bind(now)
-                .bind(invite_id)
-                .execute(&mut **tx)
-                .await?;
+        let used = sqlx::query!(
+            "UPDATE instance_invites SET used_at = $1 WHERE id = $2 AND used_at = 0",
+            now,
+            invite_id,
+        )
+        .execute(&mut **tx)
+        .await?;
         if used.rows_affected() == 0 {
             return Err(invitation_invalid());
         }
     }
+    crate::db::switch_to_account(tx, account_id).await?;
     if let Some(locale) = locale {
-        sqlx::query("UPDATE accounts SET locale = $1 WHERE id = $2")
-            .bind(locale.as_str())
-            .bind(account_id)
-            .execute(&mut **tx)
-            .await?;
+        sqlx::query!(
+            "UPDATE accounts SET locale = $1 WHERE id = $2",
+            locale.as_str(),
+            account_id,
+        )
+        .execute(&mut **tx)
+        .await?;
     }
     // Only one account can insert the marker; a concurrent registration
-    // waits for this transaction and then inserts nothing.
-    let first = sqlx::query(
-        "INSERT INTO instance_state (name, value, updated_at) VALUES ('first_admin', $1, $2) \
-         ON CONFLICT (name) DO NOTHING",
-    )
-    .bind(account_id)
-    .bind(now)
-    .execute(&mut **tx)
-    .await?;
-    if first.rows_affected() == 1 {
-        sqlx::query("UPDATE accounts SET instance_admin = 1 WHERE id = $1")
-            .bind(account_id)
-            .execute(&mut **tx)
-            .await?;
-        return Ok(true);
-    }
-    Ok(false)
+    // waits for this transaction and then inserts nothing. The function
+    // is the only way to set `instance_admin` (the app role cannot update
+    // that column).
+    let first = sqlx::query_scalar!(r#"SELECT passbox.claim_first_admin($1) AS "first!""#, now)
+        .fetch_one(&mut **tx)
+        .await?;
+    Ok(first)
 }
 
 #[cfg(test)]

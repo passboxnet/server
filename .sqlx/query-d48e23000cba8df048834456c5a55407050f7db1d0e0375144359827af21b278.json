@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT wrapped_account_key FROM account_recovery WHERE account_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "wrapped_account_key",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "account_recovery",
+            "name": "wrapped_account_key"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "d48e23000cba8df048834456c5a55407050f7db1d0e0375144359827af21b278"
+}

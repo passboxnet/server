@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO device_tokens (token_hash, account_id, created_at, expires_at, two_factor_until, sso_until) VALUES ($1, $2, $3, $4, $5, $6)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "61b27f3f7918b775448d8041de0aea8ee956e0f95a7eef73358f18178bdd1ac6"
+}

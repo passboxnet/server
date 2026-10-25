@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE vault_members SET role = $1, seq = $2, updated_at = $3 WHERE vault_id = $4 AND principal_type = $5 AND principal_id = $6",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8",
+        "Int8",
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "083780c4f6397e45f1f7863ed52f8fbedfd97a6e68be60c17f76b849114f100c"
+}

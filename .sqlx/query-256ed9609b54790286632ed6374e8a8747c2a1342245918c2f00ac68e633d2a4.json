@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM device_tokens WHERE account_id = $1 AND token_hash NOT IN (SELECT device_token_hash FROM sessions WHERE token_hash = $2)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "256ed9609b54790286632ed6374e8a8747c2a1342245918c2f00ac68e633d2a4"
+}

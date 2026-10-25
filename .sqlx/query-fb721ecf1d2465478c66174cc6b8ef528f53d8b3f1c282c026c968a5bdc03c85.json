@@ -1,0 +1,89 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT w.id, w.org_id, w.url, w.secret, w.cursor_seq, w.failures FROM org_webhooks w JOIN org_audit_heads h ON h.org_id = w.org_id WHERE w.active = true AND w.next_attempt_at <= $1 AND w.locked_until < $2 AND h.seq > w.cursor_seq",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "org_webhooks",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "org_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "org_webhooks",
+            "name": "org_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "url",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "org_webhooks",
+            "name": "url"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "secret",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "org_webhooks",
+            "name": "secret"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "cursor_seq",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "org_webhooks",
+            "name": "cursor_seq"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "failures",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "org_webhooks",
+            "name": "failures"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "fb721ecf1d2465478c66174cc6b8ef528f53d8b3f1c282c026c968a5bdc03c85"
+}

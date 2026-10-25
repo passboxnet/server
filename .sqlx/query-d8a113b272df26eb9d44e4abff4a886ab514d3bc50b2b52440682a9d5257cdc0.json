@@ -1,0 +1,124 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT grantor_id, grantee_id, grantee_email, wait_days, status, version, requested_at, approved_at, accessed_at FROM emergency_grants WHERE id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "grantor_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "emergency_grants",
+            "name": "grantor_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "grantee_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "emergency_grants",
+            "name": "grantee_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "grantee_email",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "emergency_grants",
+            "name": "grantee_email"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "wait_days",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "emergency_grants",
+            "name": "wait_days"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "status",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "emergency_grants",
+            "name": "status"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "version",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "emergency_grants",
+            "name": "version"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "requested_at",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "emergency_grants",
+            "name": "requested_at"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "approved_at",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "emergency_grants",
+            "name": "approved_at"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "accessed_at",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "emergency_grants",
+            "name": "accessed_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "d8a113b272df26eb9d44e4abff4a886ab514d3bc50b2b52440682a9d5257cdc0"
+}

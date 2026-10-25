@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM instance_invites WHERE id = $1 AND used_at = 0",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "996d4c514db34e0ebc9848c3eac4c3ecfa7450332fcb9074fb2bb35013612a13"
+}

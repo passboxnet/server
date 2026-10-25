@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT t.account_id FROM two_factor_totp t JOIN org_members m ON m.account_id = t.account_id WHERE m.org_id = $1 AND t.confirmed = true",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "account_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "two_factor_totp",
+            "name": "account_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "dd2f46ef3c1e3b066fd1c5c2ec627a1543e7f11318e6abbb1ed71fe5867094e4"
+}

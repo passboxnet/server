@@ -1,0 +1,41 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT status, sealed_payload FROM device_links WHERE claim_token_hash = $1 AND expires_at > $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "status",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "device_links",
+            "name": "status"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "sealed_payload",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "device_links",
+            "name": "sealed_payload"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "fb9086adc1842cc1396005f33be1872966827b2ac0cf6a57d108e5b5bceafe3d"
+}

@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT p.org_id, p.rules FROM org_policies p JOIN org_members m ON m.org_id = p.org_id WHERE m.account_id = $1 AND m.status IN ('confirmed', 'suspended') AND p.version = (SELECT MAX(version) FROM org_policies WHERE org_id = p.org_id)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "org_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "org_policies",
+            "name": "org_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "rules",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "org_policies",
+            "name": "rules"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "3481c38bd6e35cc8180ce4e11488c41a84cfb8d3ce5bc2b0ec43c596beb37eaa"
+}

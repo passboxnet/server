@@ -1,38 +1,12 @@
 //! Recovery code, organization recovery, emergency access and adding a
 //! device by code against a real, in-process server.
 
-use std::net::SocketAddr;
 use std::sync::Arc;
 
 use passbox_client::{Client, Error, FieldType, ItemCategory, ItemData, MemoryStore, Store, field};
-use passbox_server::config::Config;
-use passbox_server::state::AppState;
 
 fn start_server() -> String {
-    let (tx, rx) = std::sync::mpsc::channel::<SocketAddr>();
-    std::thread::spawn(move || {
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        runtime.block_on(async move {
-            let db = passbox_server::db::connect("sqlite::memory:")
-                .await
-                .unwrap();
-            let mut state = AppState::load(db).await.unwrap();
-            state.auth_rate_limit = 1000;
-            let app = passbox_server::routes::router(&Config::default(), state);
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-            tx.send(listener.local_addr().unwrap()).unwrap();
-            axum::serve(
-                listener,
-                app.into_make_service_with_connect_info::<SocketAddr>(),
-            )
-            .await
-            .unwrap();
-        });
-    });
-    format!("http://{}", rx.recv().unwrap())
+    passbox_server::testing::spawn_server(|state, _| state.auth_rate_limit = 1000)
 }
 
 const PASSWORD: &str = "correct horse battery staple";

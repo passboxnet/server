@@ -29,7 +29,7 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 
 use super::auth::Session;
-use crate::db::now_ms;
+use crate::db::{Job, now_ms};
 use crate::error::{ApiError, ApiResult};
 use crate::mail::{Locale, Template, request_locale};
 use crate::state::AppState;
@@ -344,16 +344,29 @@ pub struct MonitorOverview {
 
 type EmailRow = (String, String, i64, i64, String, i64);
 /// name, title, domain, breach date, added date, count, data classes (JSON), first seen.
-type BreachRow = (String, String, String, String, String, i64, String, i64);
+type BreachRow = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    i64,
+    serde_json::Value,
+    i64,
+);
 
-async fn load_email(state: &AppState, row: EmailRow) -> ApiResult<MonitoredEmail> {
+async fn load_email(
+    state: &AppState,
+    account_id: &str,
+    row: EmailRow,
+) -> ApiResult<MonitoredEmail> {
     let (id, email, verified_at, checked_at, check_error, created_at) = row;
-    let breaches: Vec<BreachRow> = sqlx::query_as(
+    let breaches: Vec<BreachRow> = sqlx::query!(
         "SELECT name, title, domain, breach_date, added_date, pwn_count, data_classes, first_seen_at \
          FROM breach_monitor_results WHERE email_id = $1 ORDER BY breach_date DESC, name",
-    )
-    .bind(&id)
-    .fetch_all(&state.db)
+        &id,
+    ).map(|row| (row.name, row.title, row.domain, row.breach_date, row.added_date, row.pwn_count, row.data_classes, row.first_seen_at))
+    .fetch_all(&mut *state.db.as_account(account_id).await?)
     .await?;
     Ok(MonitoredEmail {
         id,
@@ -382,7 +395,7 @@ async fn load_email(state: &AppState, row: EmailRow) -> ApiResult<MonitoredEmail
                         breach_date,
                         added_date,
                         pwn_count,
-                        data_classes: serde_json::from_str(&classes).unwrap_or_default(),
+                        data_classes: serde_json::from_value(classes).unwrap_or_default(),
                         first_seen_at,
                     }
                 },
@@ -392,13 +405,23 @@ async fn load_email(state: &AppState, row: EmailRow) -> ApiResult<MonitoredEmail
 }
 
 async fn own_email(state: &AppState, session: &Session, id: &str) -> ApiResult<EmailRow> {
-    sqlx::query_as(
+    sqlx::query!(
         "SELECT id, email, verified_at, checked_at, check_error, created_at \
          FROM breach_monitor_emails WHERE id = $1 AND account_id = $2",
+        id,
+        &session.account_id,
     )
-    .bind(id)
-    .bind(&session.account_id)
-    .fetch_optional(&state.db)
+    .map(|row| {
+        (
+            row.id,
+            row.email,
+            row.verified_at,
+            row.checked_at,
+            row.check_error,
+            row.created_at,
+        )
+    })
+    .fetch_optional(&mut *state.db.as_account(&session.account_id).await?)
     .await?
     .ok_or(ApiError::NotFound)
 }
@@ -419,16 +442,26 @@ pub async fn emails(
     State(state): State<AppState>,
     session: Session,
 ) -> ApiResult<Json<MonitorOverview>> {
-    let rows: Vec<EmailRow> = sqlx::query_as(
+    let rows: Vec<EmailRow> = sqlx::query!(
         "SELECT id, email, verified_at, checked_at, check_error, created_at \
          FROM breach_monitor_emails WHERE account_id = $1 ORDER BY created_at, email",
+        &session.account_id,
     )
-    .bind(&session.account_id)
-    .fetch_all(&state.db)
+    .map(|row| {
+        (
+            row.id,
+            row.email,
+            row.verified_at,
+            row.checked_at,
+            row.check_error,
+            row.created_at,
+        )
+    })
+    .fetch_all(&mut *state.db.as_account(&session.account_id).await?)
     .await?;
     let mut emails = Vec::with_capacity(rows.len());
     for row in rows {
-        emails.push(load_email(&state, row).await?);
+        emails.push(load_email(&state, &session.account_id, row).await?);
     }
     Ok(Json(MonitorOverview {
         available: state.breach.monitoring,
@@ -462,20 +495,28 @@ fn valid_email(email: &str) -> bool {
         && !email.chars().any(|c| c.is_whitespace() || c.is_control())
 }
 
-async fn send_code(state: &AppState, email_id: &str, email: &str, locale: Locale) -> ApiResult<()> {
+async fn send_code(
+    state: &AppState,
+    account_id: &str,
+    email_id: &str,
+    email: &str,
+    locale: Locale,
+) -> ApiResult<()> {
     let bytes = random::bytes::<8>().map_err(|e| ApiError::Internal(e.into()))?;
     let code = format!("{:06}", u64::from_be_bytes(bytes) % 1_000_000);
     let now = now_ms();
-    sqlx::query(
+    let mut tx = state.db.as_account(account_id).await?;
+    sqlx::query!(
         "UPDATE breach_monitor_emails SET code_hash = $1, code_expires_at = $2, code_attempts = 0, \
          code_sent_at = $3 WHERE id = $4",
+        hash_code(email_id, &code),
+        now + CODE_TTL_MS,
+        now,
+        email_id,
     )
-    .bind(hash_code(email_id, &code))
-    .bind(now + CODE_TTL_MS)
-    .bind(now)
-    .bind(email_id)
-    .execute(&state.db)
+    .execute(&mut *tx)
     .await?;
+    tx.commit().await?;
     state
         .mailer
         .enqueue(
@@ -508,25 +549,30 @@ pub async fn add_email(
     ) {
         return Err(ApiError::RateLimited(wait));
     }
+    let mut tx = state.db.as_account(&session.account_id).await?;
     let locale = match request_locale(body.locale.as_deref(), &headers) {
         Some(locale) => locale,
         None => {
-            crate::instance::load_settings(&state.db)
+            crate::instance::load_settings(&mut tx)
                 .await?
                 .default_locale
         }
     };
-    let existing: Option<(String, i64, i64)> = sqlx::query_as(
+    let existing: Option<(String, i64, i64)> = sqlx::query!(
         "SELECT id, verified_at, code_sent_at FROM breach_monitor_emails WHERE account_id = $1 AND email = $2",
-    )
-    .bind(&session.account_id)
-    .bind(&email)
-    .fetch_optional(&state.db)
+        &session.account_id,
+        &email,
+    ).map(|row| (row.id, row.verified_at, row.code_sent_at))
+    .fetch_optional(&mut *tx)
     .await?;
     let id = match existing {
         Some((id, verified_at, _)) if verified_at > 0 => {
+            drop(tx);
             let row = own_email(&state, &session, &id).await?;
-            return Ok((StatusCode::OK, Json(load_email(&state, row).await?)));
+            return Ok((
+                StatusCode::OK,
+                Json(load_email(&state, &session.account_id, row).await?),
+            ));
         }
         Some((_, _, sent_at)) if now_ms() - sent_at < CODE_RESEND_MS => {
             return Err(ApiError::RateLimited(Duration::from_millis(
@@ -535,11 +581,11 @@ pub async fn add_email(
         }
         Some((id, _, _)) => id,
         None => {
-            let count: i64 = sqlx::query_scalar(
-                "SELECT COUNT(*) FROM breach_monitor_emails WHERE account_id = $1",
+            let count: i64 = sqlx::query_scalar!(
+                "SELECT COUNT(*) AS \"count!\" FROM breach_monitor_emails WHERE account_id = $1",
+                &session.account_id,
             )
-            .bind(&session.account_id)
-            .fetch_one(&state.db)
+            .fetch_one(&mut *tx)
             .await?;
             if count >= MAX_EMAILS {
                 return Err(ApiError::bad_request(format!(
@@ -547,23 +593,27 @@ pub async fn add_email(
                 )));
             }
             let id = id::new_id().map_err(|e| ApiError::Internal(e.into()))?;
-            sqlx::query(
+            sqlx::query!(
                 "INSERT INTO breach_monitor_emails (id, account_id, email, verified_at, code_hash, \
                  code_expires_at, code_attempts, code_sent_at, checked_at, check_error, created_at) \
                  VALUES ($1, $2, $3, 0, '', 0, 0, 0, 0, '', $4)",
+                &id,
+                &session.account_id,
+                &email,
+                now_ms(),
             )
-            .bind(&id)
-            .bind(&session.account_id)
-            .bind(&email)
-            .bind(now_ms())
-            .execute(&state.db)
+            .execute(&mut *tx)
             .await?;
             id
         }
     };
-    send_code(&state, &id, &email, locale).await?;
+    tx.commit().await?;
+    send_code(&state, &session.account_id, &id, &email, locale).await?;
     let row = own_email(&state, &session, &id).await?;
-    Ok((StatusCode::CREATED, Json(load_email(&state, row).await?)))
+    Ok((
+        StatusCode::CREATED,
+        Json(load_email(&state, &session.account_id, row).await?),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -582,11 +632,12 @@ pub async fn verify_email(
     require_monitoring(&state)?;
     let (_, email, verified_at, _, _, _) = own_email(&state, &session, &id).await?;
     if verified_at == 0 {
-        let (code_hash, expires_at, attempts): (String, i64, i64) = sqlx::query_as(
+        let mut tx = state.db.as_account(&session.account_id).await?;
+        let (code_hash, expires_at, attempts): (String, i64, i64) = sqlx::query!(
             "SELECT code_hash, code_expires_at, code_attempts FROM breach_monitor_emails WHERE id = $1",
-        )
-        .bind(&id)
-        .fetch_one(&state.db)
+            &id,
+        ).map(|row| (row.code_hash, row.code_expires_at, row.code_attempts))
+        .fetch_one(&mut *tx)
         .await?;
         if code_hash.is_empty() || expires_at < now_ms() || attempts >= CODE_MAX_ATTEMPTS {
             return Err(ApiError::forbidden(
@@ -596,26 +647,28 @@ pub async fn verify_email(
         }
         let code: String = body.code.chars().filter(char::is_ascii_digit).collect();
         if hash_code(&id, &code) != code_hash {
-            sqlx::query(
+            sqlx::query!(
                 "UPDATE breach_monitor_emails SET code_attempts = code_attempts + 1 WHERE id = $1",
+                &id,
             )
-            .bind(&id)
-            .execute(&state.db)
+            .execute(&mut *tx)
             .await?;
+            tx.commit().await?;
             return Err(ApiError::InvalidTwoFactorCode);
         }
-        sqlx::query(
+        sqlx::query!(
             "UPDATE breach_monitor_emails SET verified_at = $1, code_hash = '', code_expires_at = 0 WHERE id = $2",
+            now_ms(),
+            &id,
         )
-        .bind(now_ms())
-        .bind(&id)
-        .execute(&state.db)
+        .execute(&mut *tx)
         .await?;
+        tx.commit().await?;
         // The first check: results are shown, not mailed.
         let _ = check_email(&state, &id, &email, false).await;
     }
     let row = own_email(&state, &session, &id).await?;
-    Ok(Json(load_email(&state, row).await?))
+    Ok(Json(load_email(&state, &session.account_id, row).await?))
 }
 
 /// `POST /api/v1/breach/emails/{id}/check`: checks a confirmed address now
@@ -640,7 +693,7 @@ pub async fn check_now(
         tracing::warn!(error = %err, "email breach check failed");
     }
     let row = own_email(&state, &session, &id).await?;
-    Ok(Json(load_email(&state, row).await?))
+    Ok(Json(load_email(&state, &session.account_id, row).await?))
 }
 
 /// `DELETE /api/v1/breach/emails/{id}`: stops monitoring and deletes the
@@ -651,14 +704,17 @@ pub async fn delete_email(
     Path(id): Path<String>,
 ) -> ApiResult<StatusCode> {
     own_email(&state, &session, &id).await?;
-    sqlx::query("DELETE FROM breach_monitor_results WHERE email_id = $1")
-        .bind(&id)
-        .execute(&state.db)
+    let mut tx = state.db.as_account(&session.account_id).await?;
+    sqlx::query!(
+        "DELETE FROM breach_monitor_results WHERE email_id = $1",
+        &id,
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query!("DELETE FROM breach_monitor_emails WHERE id = $1", &id,)
+        .execute(&mut *tx)
         .await?;
-    sqlx::query("DELETE FROM breach_monitor_emails WHERE id = $1")
-        .bind(&id)
-        .execute(&state.db)
-        .await?;
+    tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -684,58 +740,72 @@ async fn check_email(
                 }
                 UpstreamError::Failed(_) => "Have I Been Pwned could not be reached",
             };
-            let _ = sqlx::query("UPDATE breach_monitor_emails SET check_error = $1 WHERE id = $2")
-                .bind(message)
-                .bind(email_id)
-                .execute(&state.db)
-                .await;
+            let stored = async {
+                let mut tx = state.db.system(Job::Breach).await?;
+                sqlx::query!(
+                    "UPDATE breach_monitor_emails SET check_error = $1 WHERE id = $2",
+                    message,
+                    email_id,
+                )
+                .execute(&mut *tx)
+                .await?;
+                tx.commit().await
+            };
+            if let Err(err) = stored.await {
+                tracing::warn!(error = %err, "could not store the breach check error");
+            }
             return Err(err);
         }
     };
+    // The checker runs as the breach monitoring job, also when a user asks.
     let store = async {
-        let (account_id, previous_check): (String, i64) = sqlx::query_as(
+        let mut tx = state.db.system(Job::Breach).await?;
+        let (account_id, previous_check): (String, i64) = sqlx::query!(
             "SELECT account_id, checked_at FROM breach_monitor_emails WHERE id = $1",
+            email_id,
         )
-        .bind(email_id)
-        .fetch_one(&state.db)
+        .map(|row| (row.account_id, row.checked_at))
+        .fetch_one(&mut *tx)
         .await?;
-        let known: BTreeSet<String> =
-            sqlx::query_scalar("SELECT name FROM breach_monitor_results WHERE email_id = $1")
-                .bind(email_id)
-                .fetch_all(&state.db)
-                .await?
-                .into_iter()
-                .collect();
+        let known: BTreeSet<String> = sqlx::query_scalar!(
+            "SELECT name FROM breach_monitor_results WHERE email_id = $1",
+            email_id,
+        )
+        .fetch_all(&mut *tx)
+        .await?
+        .into_iter()
+        .collect();
         let mut new = Vec::new();
         for breach in &breaches {
             if known.contains(&breach.name) {
                 continue;
             }
-            sqlx::query(
+            sqlx::query!(
                 "INSERT INTO breach_monitor_results (email_id, name, title, domain, breach_date, \
                  added_date, pwn_count, data_classes, first_seen_at) \
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) ON CONFLICT (email_id, name) DO NOTHING",
+                email_id,
+                &breach.name,
+                if breach.title.is_empty() { &breach.name } else { &breach.title },
+                &breach.domain,
+                &breach.breach_date,
+                &breach.added_date,
+                breach.pwn_count,
+                serde_json::to_value(&breach.data_classes).unwrap_or_else(|_| json!([])),
+                now,
             )
-            .bind(email_id)
-            .bind(&breach.name)
-            .bind(if breach.title.is_empty() { &breach.name } else { &breach.title })
-            .bind(&breach.domain)
-            .bind(&breach.breach_date)
-            .bind(&breach.added_date)
-            .bind(breach.pwn_count)
-            .bind(serde_json::to_string(&breach.data_classes).unwrap_or_else(|_| "[]".into()))
-            .bind(now)
-            .execute(&state.db)
+            .execute(&mut *tx)
             .await?;
             new.push(breach);
         }
-        sqlx::query(
+        sqlx::query!(
             "UPDATE breach_monitor_emails SET checked_at = $1, check_error = '' WHERE id = $2",
+            now,
+            email_id,
         )
-        .bind(now)
-        .bind(email_id)
-        .execute(&state.db)
+        .execute(&mut *tx)
         .await?;
+        tx.commit().await?;
         if notify && previous_check > 0 && !new.is_empty() {
             let titles: Vec<&str> = new
                 .iter()
@@ -776,12 +846,13 @@ pub async fn check_due(state: &AppState) -> anyhow::Result<usize> {
         return Ok(0);
     }
     let due_before = now_ms() - state.breach.check_interval.as_millis() as i64;
-    let due: Vec<(String, String)> = sqlx::query_as(
+    let due: Vec<(String, String)> = sqlx::query!(
         "SELECT id, email FROM breach_monitor_emails WHERE verified_at > 0 AND checked_at < $1 \
          ORDER BY checked_at LIMIT 50",
+        due_before,
     )
-    .bind(due_before)
-    .fetch_all(&state.db)
+    .map(|row| (row.id, row.email))
+    .fetch_all(&mut *state.db.system(Job::Breach).await?)
     .await?;
     let pause = Duration::from_millis(60_000 / u64::from(state.breach.requests_per_minute.max(1)));
     let mut checked = 0;

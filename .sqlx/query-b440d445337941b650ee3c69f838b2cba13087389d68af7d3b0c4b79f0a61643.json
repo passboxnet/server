@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO items (id, vault_id, encrypted_data, revision, deleted, seq, created_at, updated_at, key_epoch, updated_by) VALUES ($1, $2, $3, 1, false, $4, $5, $5, $6, $7)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Bytea",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b440d445337941b650ee3c69f838b2cba13087389d68af7d3b0c4b79f0a61643"
+}

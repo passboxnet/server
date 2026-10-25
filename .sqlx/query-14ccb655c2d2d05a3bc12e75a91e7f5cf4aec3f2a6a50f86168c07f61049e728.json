@@ -1,0 +1,67 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT epoch, sealed_key, grant_data, grant_signature FROM org_keys WHERE org_id = $1 AND account_id = $2 AND seq > $3 AND seq <= $4",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "epoch",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "org_keys",
+            "name": "epoch"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "sealed_key",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "org_keys",
+            "name": "sealed_key"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "grant_data",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "org_keys",
+            "name": "grant_data"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "grant_signature",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "org_keys",
+            "name": "grant_signature"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "14ccb655c2d2d05a3bc12e75a91e7f5cf4aec3f2a6a50f86168c07f61049e728"
+}

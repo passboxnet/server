@@ -20,15 +20,15 @@ use axum::http::StatusCode;
 use passbox_core::emergency::{
     DAY_MS, EmergencyGrant, EmergencyGrantUpload, MAX_WAIT_DAYS, MIN_WAIT_DAYS, SCOPE_VAULTS,
 };
-use passbox_core::id;
 use passbox_core::identity::sealed_hash;
+use passbox_core::{encoding, id};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use super::auth::{Session, record_event};
 use super::signed::{self, bad};
 use super::validate;
-use crate::db::{self, now_ms};
+use crate::db::now_ms;
 use crate::error::{ApiError, ApiResult};
 use crate::mail::Template;
 use crate::security::ClientIp;
@@ -127,7 +127,7 @@ type GrantRow = (
     String,
     i64,
     String,
-    String,
+    serde_json::Value,
     String,
     String,
     i64,
@@ -187,7 +187,7 @@ fn view(row: GrantRow, now: i64) -> GrantView {
         scope: SCOPE_VAULTS.to_owned(),
         wait_days,
         status,
-        vault_ids: serde_json::from_str(&vault_ids).unwrap_or_default(),
+        vault_ids: serde_json::from_value(vault_ids).unwrap_or_default(),
         version,
         grant,
         grant_signature,
@@ -202,28 +202,32 @@ fn view(row: GrantRow, now: i64) -> GrantView {
 
 /// `GET /emergency`: both directions.
 pub async fn list(State(state): State<AppState>, session: Session) -> ApiResult<Json<GrantList>> {
-    let email: String = sqlx::query_scalar("SELECT email FROM accounts WHERE id = $1")
-        .bind(&session.account_id)
-        .fetch_one(&state.db)
-        .await?;
+    let mut conn = state.db.as_account(&session.account_id).await?;
+    let email: String = sqlx::query_scalar!(
+        "SELECT email FROM accounts WHERE id = $1",
+        &session.account_id,
+    )
+    .fetch_one(&mut *conn)
+    .await?;
+    // Grantors are other accounts: their email comes from the directory.
     let granted: Vec<GrantRow> = sqlx::query_as(concat!(
         "SELECT ",
         grant_columns!(),
-        " FROM emergency_grants g JOIN accounts a ON a.id = g.grantor_id \
+        " FROM emergency_grants g JOIN account_directory a ON a.id = g.grantor_id \
          WHERE g.grantor_id = $1 ORDER BY g.created_at"
     ))
     .bind(&session.account_id)
-    .fetch_all(&state.db)
+    .fetch_all(&mut *conn)
     .await?;
     let received: Vec<GrantRow> = sqlx::query_as(concat!(
         "SELECT ",
         grant_columns!(),
-        " FROM emergency_grants g JOIN accounts a ON a.id = g.grantor_id \
+        " FROM emergency_grants g JOIN account_directory a ON a.id = g.grantor_id \
          WHERE g.grantee_id = $1 OR (g.grantee_id IS NULL AND g.grantee_email = $2) ORDER BY g.created_at"
     ))
     .bind(&session.account_id)
     .bind(&email)
-    .fetch_all(&state.db)
+    .fetch_all(&mut *conn)
     .await?;
     let now = now_ms();
     Ok(Json(GrantList {
@@ -294,29 +298,32 @@ pub async fn create(
     ) {
         return Err(ApiError::RateLimited(wait));
     }
-    let own_email: String = sqlx::query_scalar("SELECT email FROM accounts WHERE id = $1")
-        .bind(&session.account_id)
-        .fetch_one(&state.db)
-        .await?;
+    let mut tx = state.db.as_account(&session.account_id).await?;
+    let own_email: String = sqlx::query_scalar!(
+        "SELECT email FROM accounts WHERE id = $1",
+        &session.account_id,
+    )
+    .fetch_one(&mut *tx)
+    .await?;
     if own_email == email {
         return Err(bad("you cannot be your own emergency contact"));
     }
-    let mut tx = db::begin_write(&state.db).await?;
-    let count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM emergency_grants WHERE grantor_id = $1")
-            .bind(&session.account_id)
-            .fetch_one(&mut *tx)
-            .await?;
+    let count: i64 = sqlx::query_scalar!(
+        "SELECT COUNT(*) AS \"count!\" FROM emergency_grants WHERE grantor_id = $1",
+        &session.account_id,
+    )
+    .fetch_one(&mut *tx)
+    .await?;
     if count >= MAX_GRANTS {
         return Err(bad(
             "you have reached the maximum number of emergency contacts",
         ));
     }
-    let existing: Option<i64> = sqlx::query_scalar(
-        "SELECT 1 FROM emergency_grants WHERE grantor_id = $1 AND grantee_email = $2",
+    let existing: Option<i64> = sqlx::query_scalar!(
+        "SELECT 1::BIGINT AS \"one!\" FROM emergency_grants WHERE grantor_id = $1 AND grantee_email = $2",
+        &session.account_id,
+        &email,
     )
-    .bind(&session.account_id)
-    .bind(&email)
     .fetch_optional(&mut *tx)
     .await?;
     if existing.is_some() {
@@ -327,19 +334,19 @@ pub async fn create(
     }
     let grant_id = id::new_id().map_err(internal)?;
     let now = now_ms();
-    sqlx::query(
+    sqlx::query!(
         "INSERT INTO emergency_grants (id, grantor_id, grantee_email, grantee_id, scope, wait_days, status, \
          vault_ids, grant_data, grant_signature, sealed_keys, version, requested_at, approved_at, denied_at, \
          accessed_at, created_at, updated_at) VALUES ($1, $2, $3, NULL, $4, $5, 'invited', '[]', '', '', '', 0, \
          0, 0, 0, 0, $6, $7)",
+        &grant_id,
+        &session.account_id,
+        &email,
+        &req.scope,
+        req.wait_days,
+        now,
+        now,
     )
-    .bind(&grant_id)
-    .bind(&session.account_id)
-    .bind(&email)
-    .bind(&req.scope)
-    .bind(req.wait_days)
-    .bind(now)
-    .bind(now)
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
@@ -351,15 +358,19 @@ pub async fn create(
         &ip,
     )
     .await?;
-    let locale = crate::instance::load_settings(&state.db)
+    let mut conn = state.db.as_account(&session.account_id).await?;
+    let locale = crate::instance::load_settings(&mut conn)
         .await?
         .default_locale;
     // The recipient may not have an account yet; mail them in their
     // account's language if they do.
-    let grantee: Option<String> = sqlx::query_scalar("SELECT id FROM accounts WHERE email = $1")
-        .bind(&email)
-        .fetch_optional(&state.db)
-        .await?;
+    let grantee: Option<String> = sqlx::query_scalar!(
+        r#"SELECT id AS "id!" FROM passbox.account_by_email($1)"#,
+        &email,
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
+    drop(conn);
     let params = json!({ "inviter": own_email, "waitDays": req.wait_days, "link": link(&state) });
     let result = match grantee {
         Some(account_id) => state
@@ -392,7 +403,7 @@ struct StoredGrant {
 }
 
 #[allow(clippy::type_complexity)]
-async fn load(conn: &mut sqlx::AnyConnection, grant_id: &str) -> ApiResult<StoredGrant> {
+async fn load(conn: &mut sqlx::PgConnection, grant_id: &str) -> ApiResult<StoredGrant> {
     let row: Option<(
         String,
         Option<String>,
@@ -403,11 +414,24 @@ async fn load(conn: &mut sqlx::AnyConnection, grant_id: &str) -> ApiResult<Store
         i64,
         i64,
         i64,
-    )> = sqlx::query_as(
+    )> = sqlx::query!(
         "SELECT grantor_id, grantee_id, grantee_email, wait_days, status, version, requested_at, \
              approved_at, accessed_at FROM emergency_grants WHERE id = $1",
+        grant_id,
     )
-    .bind(grant_id)
+    .map(|row| {
+        (
+            row.grantor_id,
+            row.grantee_id,
+            row.grantee_email,
+            row.wait_days,
+            row.status,
+            row.version,
+            row.requested_at,
+            row.approved_at,
+            row.accessed_at,
+        )
+    })
     .fetch_optional(&mut *conn)
     .await?;
     let (
@@ -444,7 +468,7 @@ pub async fn confirm(
     Json(req): Json<EmergencyGrantUpload>,
 ) -> ApiResult<StatusCode> {
     validate::id("grant id", &grant_id)?;
-    let mut tx = db::begin_write(&state.db).await?;
+    let mut tx = state.db.as_account(&session.account_id).await?;
     let stored = load(&mut tx, &grant_id).await?;
     if stored.grantor_id != session.account_id {
         return Err(ApiError::NotFound);
@@ -489,11 +513,11 @@ pub async fn confirm(
     }
     for vault_id in &vault_ids {
         validate::id("vault id", vault_id)?;
-        let own: Option<i64> = sqlx::query_scalar(
-            "SELECT 1 FROM vaults WHERE id = $1 AND account_id = $2 AND org_id IS NULL",
+        let own: Option<i64> = sqlx::query_scalar!(
+            "SELECT 1::BIGINT AS \"one!\" FROM vaults WHERE id = $1 AND account_id = $2 AND org_id IS NULL",
+            vault_id,
+            &session.account_id,
         )
-        .bind(vault_id)
-        .bind(&session.account_id)
         .fetch_optional(&mut *tx)
         .await?;
         if own.is_none() {
@@ -502,17 +526,17 @@ pub async fn confirm(
             ));
         }
     }
-    sqlx::query(
+    sqlx::query!(
         "UPDATE emergency_grants SET status = 'confirmed', vault_ids = $1, grant_data = $2, grant_signature = $3, \
          sealed_keys = $4, version = $5, updated_at = $6 WHERE id = $7",
+        serde_json::to_value(&vault_ids).map_err(internal)?,
+        &req.grant,
+        &req.grant_signature,
+        &req.sealed_keys,
+        i64::try_from(req.version).map_err(internal)?,
+        now_ms(),
+        &grant_id,
     )
-    .bind(serde_json::to_string(&vault_ids).map_err(internal)?)
-    .bind(&req.grant)
-    .bind(&req.grant_signature)
-    .bind(&req.sealed_keys)
-    .bind(i64::try_from(req.version).map_err(internal)?)
-    .bind(now_ms())
-    .bind(&grant_id)
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
@@ -547,22 +571,23 @@ pub async fn delete(
     Path(grant_id): Path<String>,
 ) -> ApiResult<StatusCode> {
     validate::id("grant id", &grant_id)?;
-    let mut conn = state.db.acquire().await?;
+    let mut conn = state.db.as_account(&session.account_id).await?;
     let stored = load(&mut conn, &grant_id).await?;
-    let own_email: String = sqlx::query_scalar("SELECT email FROM accounts WHERE id = $1")
-        .bind(&session.account_id)
-        .fetch_one(&mut *conn)
-        .await?;
+    let own_email: String = sqlx::query_scalar!(
+        "SELECT email FROM accounts WHERE id = $1",
+        &session.account_id,
+    )
+    .fetch_one(&mut *conn)
+    .await?;
     let is_grantee = stored.grantee_id.as_deref() == Some(session.account_id.as_str())
         || (stored.grantee_id.is_none() && stored.grantee_email == own_email);
     if stored.grantor_id != session.account_id && !is_grantee {
         return Err(ApiError::NotFound);
     }
-    sqlx::query("DELETE FROM emergency_grants WHERE id = $1")
-        .bind(&grant_id)
+    sqlx::query!("DELETE FROM emergency_grants WHERE id = $1", &grant_id,)
         .execute(&mut *conn)
         .await?;
-    drop(conn);
+    conn.commit().await?;
     event(
         &state,
         &session.account_id,
@@ -590,7 +615,7 @@ pub async fn deny(
     Path(grant_id): Path<String>,
 ) -> ApiResult<StatusCode> {
     validate::id("grant id", &grant_id)?;
-    let mut tx = db::begin_write(&state.db).await?;
+    let mut tx = state.db.as_account(&session.account_id).await?;
     let stored = load(&mut tx, &grant_id).await?;
     if stored.grantor_id != session.account_id {
         return Err(ApiError::NotFound);
@@ -598,13 +623,13 @@ pub async fn deny(
     if stored.requested_at == 0 {
         return Err(bad("there is no request to decline"));
     }
-    sqlx::query(
+    sqlx::query!(
         "UPDATE emergency_grants SET requested_at = 0, approved_at = 0, accessed_at = 0, denied_at = $1, \
          updated_at = $2 WHERE id = $3",
+        now_ms(),
+        now_ms(),
+        &grant_id,
     )
-    .bind(now_ms())
-    .bind(now_ms())
-    .bind(&grant_id)
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
@@ -618,10 +643,12 @@ pub async fn deny(
     .await?;
     if let Some(grantee) = &stored.grantee_id {
         record_event(&state, grantee, "emergency_access_denied", "", "", &ip).await?;
-        let email: String = sqlx::query_scalar("SELECT email FROM accounts WHERE id = $1")
-            .bind(&session.account_id)
-            .fetch_one(&state.db)
-            .await?;
+        let email: String = sqlx::query_scalar!(
+            "SELECT email FROM accounts WHERE id = $1",
+            &session.account_id,
+        )
+        .fetch_one(&mut *state.db.as_account(&session.account_id).await?)
+        .await?;
         notify(
             &state,
             grantee,
@@ -642,7 +669,7 @@ pub async fn approve(
     Path(grant_id): Path<String>,
 ) -> ApiResult<StatusCode> {
     validate::id("grant id", &grant_id)?;
-    let mut tx = db::begin_write(&state.db).await?;
+    let mut tx = state.db.as_account(&session.account_id).await?;
     let stored = load(&mut tx, &grant_id).await?;
     if stored.grantor_id != session.account_id {
         return Err(ApiError::NotFound);
@@ -651,12 +678,14 @@ pub async fn approve(
         return Err(bad("there is no request to approve"));
     }
     if stored.approved_at == 0 {
-        sqlx::query("UPDATE emergency_grants SET approved_at = $1, updated_at = $2 WHERE id = $3")
-            .bind(now_ms())
-            .bind(now_ms())
-            .bind(&grant_id)
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query!(
+            "UPDATE emergency_grants SET approved_at = $1, updated_at = $2 WHERE id = $3",
+            now_ms(),
+            now_ms(),
+            &grant_id,
+        )
+        .execute(&mut *tx)
+        .await?;
     }
     tx.commit().await?;
     event(
@@ -669,10 +698,12 @@ pub async fn approve(
     .await?;
     if let Some(grantee) = &stored.grantee_id {
         record_event(&state, grantee, "emergency_access_approved", "", "", &ip).await?;
-        let email: String = sqlx::query_scalar("SELECT email FROM accounts WHERE id = $1")
-            .bind(&session.account_id)
-            .fetch_one(&state.db)
-            .await?;
+        let email: String = sqlx::query_scalar!(
+            "SELECT email FROM accounts WHERE id = $1",
+            &session.account_id,
+        )
+        .fetch_one(&mut *state.db.as_account(&session.account_id).await?)
+        .await?;
         notify(
             &state,
             grantee,
@@ -694,21 +725,23 @@ pub async fn accept(
     Path(grant_id): Path<String>,
 ) -> ApiResult<StatusCode> {
     validate::id("grant id", &grant_id)?;
-    let mut tx = db::begin_write(&state.db).await?;
+    let mut tx = state.db.as_account(&session.account_id).await?;
     let stored = load(&mut tx, &grant_id).await?;
-    let own_email: String = sqlx::query_scalar("SELECT email FROM accounts WHERE id = $1")
-        .bind(&session.account_id)
-        .fetch_one(&mut *tx)
-        .await?;
+    let own_email: String = sqlx::query_scalar!(
+        "SELECT email FROM accounts WHERE id = $1",
+        &session.account_id,
+    )
+    .fetch_one(&mut *tx)
+    .await?;
     if stored.grantee_email != own_email || stored.grantee_id.is_some() {
         return Err(ApiError::NotFound);
     }
-    sqlx::query(
+    sqlx::query!(
         "UPDATE emergency_grants SET grantee_id = $1, status = 'accepted', updated_at = $2 WHERE id = $3",
+        &session.account_id,
+        now_ms(),
+        &grant_id,
     )
-    .bind(&session.account_id)
-    .bind(now_ms())
-    .bind(&grant_id)
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
@@ -750,7 +783,7 @@ pub async fn request(
     Path(grant_id): Path<String>,
 ) -> ApiResult<StatusCode> {
     validate::id("grant id", &grant_id)?;
-    let mut tx = db::begin_write(&state.db).await?;
+    let mut tx = state.db.as_account(&session.account_id).await?;
     let stored = load(&mut tx, &grant_id).await?;
     require_grantee(&stored, &session)?;
     if stored.requested_at > 0 {
@@ -760,13 +793,13 @@ pub async fn request(
         ));
     }
     let now = now_ms();
-    sqlx::query(
+    sqlx::query!(
         "UPDATE emergency_grants SET requested_at = $1, approved_at = 0, denied_at = 0, accessed_at = 0, \
          updated_at = $2 WHERE id = $3",
+        now,
+        now,
+        &grant_id,
     )
-    .bind(now)
-    .bind(now)
-    .bind(&grant_id)
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
@@ -787,10 +820,12 @@ pub async fn request(
         &ip,
     )
     .await?;
-    let requester: String = sqlx::query_scalar("SELECT email FROM accounts WHERE id = $1")
-        .bind(&session.account_id)
-        .fetch_one(&state.db)
-        .await?;
+    let requester: String = sqlx::query_scalar!(
+        "SELECT email FROM accounts WHERE id = $1",
+        &session.account_id,
+    )
+    .fetch_one(&mut *state.db.as_account(&session.account_id).await?)
+    .await?;
     notify(
         &state,
         &stored.grantor_id,
@@ -846,7 +881,7 @@ pub async fn access(
     Path(grant_id): Path<String>,
 ) -> ApiResult<Json<AccessResponse>> {
     validate::id("grant id", &grant_id)?;
-    let mut conn = state.db.acquire().await?;
+    let mut conn = state.db.as_account(&session.account_id).await?;
     let stored = load(&mut conn, &grant_id).await?;
     require_grantee(&stored, &session)?;
     let release = release_at(stored.requested_at, stored.approved_at, stored.wait_days);
@@ -857,23 +892,23 @@ pub async fn access(
             "the waiting period has not ended yet",
         ));
     }
-    let (vault_ids, grant, grant_signature, sealed_keys): (String, String, String, String) =
-        sqlx::query_as(
+    let (vault_ids, grant, grant_signature, sealed_keys): (serde_json::Value, String, String, String) =
+        sqlx::query!(
             "SELECT vault_ids, grant_data, grant_signature, sealed_keys FROM emergency_grants WHERE id = $1",
-        )
-        .bind(&grant_id)
+            &grant_id,
+        ).map(|row| (row.vault_ids, row.grant_data, row.grant_signature, row.sealed_keys))
         .fetch_one(&mut *conn)
         .await?;
-    let vault_ids: Vec<String> = serde_json::from_str(&vault_ids).unwrap_or_default();
+    let vault_ids: Vec<String> = serde_json::from_value(vault_ids).unwrap_or_default();
     let mut vaults = Vec::new();
     let mut items = Vec::new();
     for vault_id in &vault_ids {
-        let vault: Option<(String, i64, i64)> = sqlx::query_as(
+        let vault: Option<(Vec<u8>, i64, i64)> = sqlx::query!(
             "SELECT encrypted_meta, revision, key_epoch FROM vaults WHERE id = $1 AND account_id = $2 \
              AND org_id IS NULL",
-        )
-        .bind(vault_id)
-        .bind(&stored.grantor_id)
+            vault_id,
+            &stored.grantor_id,
+        ).map(|row| (row.encrypted_meta, row.revision, row.key_epoch))
         .fetch_optional(&mut *conn)
         .await?;
         let Some((encrypted_meta, revision, key_epoch)) = vault else {
@@ -881,15 +916,24 @@ pub async fn access(
         };
         vaults.push(AccessVault {
             id: vault_id.clone(),
-            encrypted_meta,
+            encrypted_meta: encoding::encode(&encrypted_meta),
             revision,
             key_epoch,
         });
-        let rows: Vec<(String, i64, Option<String>, i64, i64)> = sqlx::query_as(
+        let rows = sqlx::query!(
             "SELECT id, revision, encrypted_data, updated_at, key_epoch FROM items \
-             WHERE vault_id = $1 AND deleted = 0 ORDER BY id",
+             WHERE vault_id = $1 AND deleted = false ORDER BY id",
+            vault_id,
         )
-        .bind(vault_id)
+        .map(|row| {
+            (
+                row.id,
+                row.revision,
+                row.encrypted_data,
+                row.updated_at,
+                row.key_epoch,
+            )
+        })
         .fetch_all(&mut *conn)
         .await?;
         items.extend(
@@ -899,7 +943,7 @@ pub async fn access(
                         id,
                         vault_id: vault_id.clone(),
                         revision,
-                        encrypted_data,
+                        encrypted_data: encoding::encode(&encrypted_data),
                         updated_at,
                         key_epoch,
                     })
@@ -907,12 +951,14 @@ pub async fn access(
         );
     }
     if stored.accessed_at == 0 {
-        sqlx::query("UPDATE emergency_grants SET accessed_at = $1 WHERE id = $2")
-            .bind(now)
-            .bind(&grant_id)
-            .execute(&mut *conn)
-            .await?;
-        drop(conn);
+        sqlx::query!(
+            "UPDATE emergency_grants SET accessed_at = $1 WHERE id = $2",
+            now,
+            &grant_id,
+        )
+        .execute(&mut *conn)
+        .await?;
+        conn.commit().await?;
         event(
             &state,
             &session.account_id,
@@ -930,10 +976,12 @@ pub async fn access(
             &ip,
         )
         .await?;
-        let grantee: String = sqlx::query_scalar("SELECT email FROM accounts WHERE id = $1")
-            .bind(&session.account_id)
-            .fetch_one(&state.db)
-            .await?;
+        let grantee: String = sqlx::query_scalar!(
+            "SELECT email FROM accounts WHERE id = $1",
+            &session.account_id,
+        )
+        .fetch_one(&mut *state.db.as_account(&session.account_id).await?)
+        .await?;
         notify(
             &state,
             &stored.grantor_id,

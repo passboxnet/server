@@ -66,6 +66,7 @@ fn with_breach(
         app: passbox_server::routes::router(&Config::default(), state.clone()),
         state,
         env_admin_email: server.env_admin_email.clone(),
+        owner: server.owner.clone(),
     }
 }
 
@@ -87,7 +88,7 @@ async fn get_text(server: &TestServer, uri: &str, token: Option<&str>) -> (Statu
 
 async fn mailed_code(server: &TestServer, to: &str) -> String {
     let (params,): (String,) = sqlx::query_as(
-        "SELECT params FROM mail_outbox WHERE recipient = $1 AND template = 'breach_monitor_code' \
+        "SELECT params::text FROM mail_outbox WHERE recipient = $1 AND template = 'breach_monitor_code' \
          ORDER BY created_at DESC LIMIT 1",
     )
     .bind(to)
@@ -253,7 +254,7 @@ pub async fn breach_proxy_and_monitoring(server: &TestServer) {
     assert_eq!(names.len(), 2, "{list}");
     assert!(names.contains(&"Dropbox"));
     let (params,): (String,) = sqlx::query_as(
-        "SELECT params FROM mail_outbox WHERE recipient = $1 AND template = 'breach_monitor_alert'",
+        "SELECT params::text FROM mail_outbox WHERE recipient = $1 AND template = 'breach_monitor_alert'",
     )
     .bind(&member.client.email)
     .fetch_one(on.db())

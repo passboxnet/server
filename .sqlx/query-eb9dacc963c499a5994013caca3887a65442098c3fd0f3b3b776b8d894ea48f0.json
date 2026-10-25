@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT scim_users.id, scim_users.user_name FROM scim_group_members JOIN scim_users ON scim_users.id = scim_group_members.user_id WHERE scim_group_members.group_id = $1 ORDER BY scim_users.user_name",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "scim_users",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "user_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "scim_users",
+            "name": "user_name"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "eb9dacc963c499a5994013caca3887a65442098c3fd0f3b3b776b8d894ea48f0"
+}

@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE device_tokens SET sso_until = $1 WHERE token_hash = $2 AND sso_until < $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "79bea5ed2a3610a5b9b91ff0e1e59f084ab4de709dbd0c92665f8ad5606f7592"
+}

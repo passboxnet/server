@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE trusted_device_requests SET status = 'approved' WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "9e6d3c867e138a86c6e9a73369787d6de1fa3b266c34849d25377b50b1c10422"
+}

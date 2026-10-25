@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO org_webhooks (id, org_id, url, secret, active, cursor_seq, failures, next_attempt_at, locked_until, last_status, last_error, last_delivery_at, created_by, created_at) VALUES ($1, $2, $3, $4, true, $5, 0, 0, 0, 0, '', 0, $6, $7)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Int8",
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "37f3cafd5cac201b76f8aeffff0d4041a25609a0d992468c80e2ab7719ab932e"
+}

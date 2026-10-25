@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT CAST(COALESCE(SUM(size), 0) AS BIGINT) AS \"used!\" FROM attachments\n           WHERE owner_type = $1 AND owner_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "used!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "c782e3e5bbecc48094445c591a57392c72f6010353a7630d2b459d3bb125d1cd"
+}

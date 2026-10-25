@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM org_audit_events WHERE org_id = $1 AND seq <= $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ff3babf26e52203c136a99f25ec472359e4d9598ebb4ae6d3bf1013fe9e182e5"
+}

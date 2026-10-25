@@ -21,13 +21,13 @@ use passbox_core::service_account::{self as sa, Grant, Permission, PublicKey};
 use passbox_core::{encoding, id, identity};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use sqlx::AnyConnection;
+use sqlx::PgConnection;
 
 use super::access::{self, VaultAccess};
 use super::auth::{Session, record_event};
 use super::validate;
 use super::vaults::WriteResponse;
-use crate::db::{self, now_ms};
+use crate::db::{self, Public, now_ms};
 use crate::error::{ApiError, ApiResult};
 use crate::security::ClientIp;
 use crate::state::AppState;
@@ -65,12 +65,13 @@ fn check_expiry(expires_at: i64) -> ApiResult<()> {
 }
 
 /// The owner's published signing key.
-async fn owner_sig_pk(conn: &mut AnyConnection, account_id: &str) -> ApiResult<[u8; 32]> {
-    let row: Option<(String, String)> = sqlx::query_as(
-        "SELECT bundle, bundle_signature FROM account_keys WHERE account_id = $1 \
-         ORDER BY key_version DESC LIMIT 1",
+async fn owner_sig_pk(conn: &mut PgConnection, account_id: &str) -> ApiResult<[u8; 32]> {
+    let row: Option<(String, String)> = sqlx::query!(
+        r#"SELECT bundle AS "bundle!", bundle_signature AS "bundle_signature!" FROM public_keys
+           WHERE account_id = $1 ORDER BY key_version DESC LIMIT 1"#,
+        account_id,
     )
-    .bind(account_id)
+    .map(|row| (row.bundle, row.bundle_signature))
     .fetch_optional(&mut *conn)
     .await?;
     let (bundle, signature) = row.ok_or_else(|| {
@@ -96,7 +97,7 @@ pub struct GrantUploadJson {
 /// Checks an uploaded grant against the service account, the owner's
 /// signature and the owner's current access to the vault.
 async fn check_grant(
-    conn: &mut AnyConnection,
+    conn: &mut PgConnection,
     owner_id: &str,
     sig_pk: &[u8; 32],
     sa_id: &str,
@@ -158,57 +159,57 @@ async fn check_grant(
 }
 
 async fn insert_grant(
-    conn: &mut AnyConnection,
+    conn: &mut PgConnection,
     sa_id: &str,
     upload: &GrantUploadJson,
 ) -> ApiResult<()> {
-    sqlx::query(
+    sqlx::query!(
         "DELETE FROM service_account_grants WHERE service_account_id = $1 AND vault_id = $2 \
          AND key_epoch = $3",
+        sa_id,
+        &upload.vault_id,
+        upload.key_epoch,
     )
-    .bind(sa_id)
-    .bind(&upload.vault_id)
-    .bind(upload.key_epoch)
     .execute(&mut *conn)
     .await?;
     // A changed permission applies to every epoch of the vault.
-    sqlx::query(
+    sqlx::query!(
         "UPDATE service_account_grants SET permission = $1 WHERE service_account_id = $2 \
          AND vault_id = $3",
+        &upload.permission,
+        sa_id,
+        &upload.vault_id,
     )
-    .bind(&upload.permission)
-    .bind(sa_id)
-    .bind(&upload.vault_id)
     .execute(&mut *conn)
     .await?;
-    sqlx::query(
+    sqlx::query!(
         "INSERT INTO service_account_grants (service_account_id, vault_id, key_epoch, permission, \
          sealed_key, grant_data, grant_signature, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+        sa_id,
+        &upload.vault_id,
+        upload.key_epoch,
+        &upload.permission,
+        super::vaults::decode(&upload.sealed_key)?,
+        &upload.grant,
+        &upload.grant_signature,
+        now_ms(),
     )
-    .bind(sa_id)
-    .bind(&upload.vault_id)
-    .bind(upload.key_epoch)
-    .bind(&upload.permission)
-    .bind(&upload.sealed_key)
-    .bind(&upload.grant)
-    .bind(&upload.grant_signature)
-    .bind(now_ms())
     .execute(&mut *conn)
     .await?;
     Ok(())
 }
 
-async fn sa_event(conn: &mut AnyConnection, sa_id: &str, kind: &str, detail: &str, ip: &str) {
-    let result = sqlx::query(
+async fn sa_event(conn: &mut PgConnection, sa_id: &str, kind: &str, detail: &str, ip: &str) {
+    let result = sqlx::query!(
         "INSERT INTO service_account_events (id, service_account_id, kind, detail, ip, created_at) \
          VALUES ($1, $2, $3, $4, $5, $6)",
+        id::new_id().unwrap_or_default(),
+        sa_id,
+        kind,
+        detail,
+        ip,
+        now_ms(),
     )
-    .bind(id::new_id().unwrap_or_default())
-    .bind(sa_id)
-    .bind(kind)
-    .bind(detail)
-    .bind(ip)
-    .bind(now_ms())
     .execute(&mut *conn)
     .await;
     if let Err(e) = result {
@@ -263,7 +264,7 @@ pub struct ServiceAccountInfo {
 
 type SaRow = (String, String, String, String, i64, i64, i64, String, i64);
 
-async fn info(conn: &mut AnyConnection, row: SaRow) -> ApiResult<ServiceAccountInfo> {
+async fn info(conn: &mut PgConnection, row: SaRow) -> ApiResult<ServiceAccountInfo> {
     let (
         id,
         name,
@@ -349,14 +350,10 @@ impl AgentUsage {
 
 /// The limit in force: the instance setting, else
 /// `PASSBOX_AGENT_LIMIT_PER_MEMBER`.
-pub async fn agent_limit_per_member(state: &AppState, conn: &mut AnyConnection) -> ApiResult<u32> {
-    let stored: Option<String> =
-        sqlx::query_scalar("SELECT value FROM instance_state WHERE name = 'settings'")
-            .fetch_optional(&mut *conn)
-            .await?;
-    let setting = stored
-        .and_then(|json| serde_json::from_str::<crate::instance::InstanceSettings>(&json).ok())
-        .and_then(|s| s.agent_limit_per_member);
+pub async fn agent_limit_per_member(state: &AppState, conn: &mut PgConnection) -> ApiResult<u32> {
+    let setting = crate::instance::load_settings(conn)
+        .await?
+        .agent_limit_per_member;
     Ok(setting.unwrap_or(state.agent_limit_per_member))
 }
 
@@ -365,17 +362,17 @@ pub async fn agent_limit_per_member(state: &AppState, conn: &mut AnyConnection) 
 /// confirmed members who are not guests; the organization with the most
 /// room counts), everyone else from their own allowance of `limit`.
 pub async fn agent_usage(
-    conn: &mut AnyConnection,
+    conn: &mut PgConnection,
     limit: u32,
     account_id: &str,
 ) -> ApiResult<AgentUsage> {
     let now = now_ms();
-    let own: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM service_accounts sa WHERE sa.account_id = $1 \
+    let own: i64 = sqlx::query_scalar!(
+        "SELECT COUNT(*) AS \"count!\" FROM service_accounts sa WHERE sa.account_id = $1 \
          AND sa.revoked_at = 0 AND (sa.expires_at = 0 OR sa.expires_at > $2)",
+        account_id,
+        now,
     )
-    .bind(account_id)
-    .bind(now)
     .fetch_one(&mut *conn)
     .await?;
     let personal = AgentUsage {
@@ -389,30 +386,29 @@ pub async fn agent_usage(
     if limit == 0 {
         return Ok(personal);
     }
-    let orgs: Vec<String> = sqlx::query_scalar(
+    let orgs: Vec<String> = sqlx::query_scalar!(
         "SELECT org_id FROM org_members WHERE account_id = $1 AND status = 'confirmed' \
          AND role <> 'guest' ORDER BY org_id",
+        account_id,
     )
-    .bind(account_id)
     .fetch_all(&mut *conn)
     .await?;
     let mut best: Option<AgentUsage> = None;
     for org_id in orgs {
-        let members: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM org_members WHERE org_id = $1 AND status = 'confirmed' \
+        let members: i64 = sqlx::query_scalar!(
+            "SELECT COUNT(*) AS \"count!\" FROM org_members WHERE org_id = $1 AND status = 'confirmed' \
              AND role <> 'guest'",
+            &org_id,
         )
-        .bind(&org_id)
         .fetch_one(&mut *conn)
         .await?;
-        let used: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM service_accounts sa WHERE sa.revoked_at = 0 \
-             AND (sa.expires_at = 0 OR sa.expires_at > $2) AND sa.account_id IN \
-             (SELECT account_id FROM org_members WHERE org_id = $1 AND status = 'confirmed' \
-              AND role <> 'guest')",
+        // Other members' service accounts are not readable: a function
+        // counts them.
+        let used: i64 = sqlx::query_scalar!(
+            r#"SELECT passbox.org_service_account_count($1, $2) AS "count!""#,
+            &org_id,
+            now,
         )
-        .bind(&org_id)
-        .bind(now)
         .fetch_one(&mut *conn)
         .await?;
         let usage = AgentUsage {
@@ -435,7 +431,7 @@ pub async fn agent_usage(
 
 /// `GET /agent-limit`: the fair-use limit for agents and service accounts.
 pub async fn limit(State(state): State<AppState>, session: Session) -> ApiResult<Json<AgentUsage>> {
-    let mut conn = state.db.acquire().await?;
+    let mut conn = state.db.as_account(&session.account_id).await?;
     let limit = agent_limit_per_member(&state, &mut conn).await?;
     Ok(Json(
         agent_usage(&mut conn, limit, &session.account_id).await?,
@@ -447,12 +443,12 @@ pub async fn list(
     State(state): State<AppState>,
     session: Session,
 ) -> ApiResult<Json<Vec<ServiceAccountInfo>>> {
-    let mut conn = state.db.acquire().await?;
-    let rows: Vec<SaRow> = sqlx::query_as(
+    let mut conn = state.db.as_account(&session.account_id).await?;
+    let rows: Vec<SaRow> = sqlx::query!(
         "SELECT id, name, public_key, public_key_signature, expires_at, revoked_at, last_used_at, \
          last_used_ip, created_at FROM service_accounts WHERE account_id = $1 ORDER BY created_at DESC",
-    )
-    .bind(&session.account_id)
+        &session.account_id,
+    ).map(|row| (row.id, row.name, row.public_key, row.public_key_signature, row.expires_at, row.revoked_at, row.last_used_at, row.last_used_ip, row.created_at))
     .fetch_all(&mut *conn)
     .await?;
     let mut out = Vec::with_capacity(rows.len());
@@ -462,13 +458,26 @@ pub async fn list(
     Ok(Json(out))
 }
 
-async fn owned(conn: &mut AnyConnection, sa_id: &str, account_id: &str) -> ApiResult<SaRow> {
-    sqlx::query_as(
+async fn owned(conn: &mut PgConnection, sa_id: &str, account_id: &str) -> ApiResult<SaRow> {
+    sqlx::query!(
         "SELECT id, name, public_key, public_key_signature, expires_at, revoked_at, last_used_at, \
          last_used_ip, created_at FROM service_accounts WHERE id = $1 AND account_id = $2",
+        sa_id,
+        account_id,
     )
-    .bind(sa_id)
-    .bind(account_id)
+    .map(|row| {
+        (
+            row.id,
+            row.name,
+            row.public_key,
+            row.public_key_signature,
+            row.expires_at,
+            row.revoked_at,
+            row.last_used_at,
+            row.last_used_ip,
+            row.created_at,
+        )
+    })
     .fetch_optional(&mut *conn)
     .await?
     .ok_or(ApiError::NotFound)
@@ -498,7 +507,7 @@ pub async fn create(
     if req.grants.len() > 100 {
         return Err(ApiError::bad_request("too many vault grants"));
     }
-    let mut tx = db::begin_write(&state.db).await?;
+    let mut tx = state.db.as_account(&session.account_id).await?;
     let sig_pk = owner_sig_pk(&mut tx, &session.account_id).await?;
     let public = PublicKey::verify(&req.public_key, &req.public_key_signature, &sig_pk)
         .map_err(|_| ApiError::bad_request("the public key is not signed by your account key"))?;
@@ -536,20 +545,20 @@ pub async fn create(
         .await?;
     }
     let now = now_ms();
-    let inserted = sqlx::query(
+    let inserted = sqlx::query!(
         "INSERT INTO service_accounts (id, account_id, name, public_key, public_key_signature, \
          encrypted_private, auth_hash, expires_at, revoked_at, last_used_at, last_used_ip, created_at) \
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 0, 0, '', $9)",
+        &req.id,
+        &session.account_id,
+        &name,
+        &req.public_key,
+        &req.public_key_signature,
+        super::vaults::decode(&req.encrypted_private)?,
+        req.auth_hash.to_ascii_lowercase(),
+        req.expires_at,
+        now,
     )
-    .bind(&req.id)
-    .bind(&session.account_id)
-    .bind(&name)
-    .bind(&req.public_key)
-    .bind(&req.public_key_signature)
-    .bind(&req.encrypted_private)
-    .bind(req.auth_hash.to_ascii_lowercase())
-    .bind(req.expires_at)
-    .bind(now)
     .execute(&mut *tx)
     .await;
     if inserted.is_err() {
@@ -592,22 +601,26 @@ pub async fn update(
     Path(sa_id): Path<String>,
     Json(req): Json<UpdateRequest>,
 ) -> ApiResult<Json<ServiceAccountInfo>> {
-    let mut tx = db::begin_write(&state.db).await?;
+    let mut tx = state.db.as_account(&session.account_id).await?;
     owned(&mut tx, &sa_id, &session.account_id).await?;
     if let Some(name) = &req.name {
-        sqlx::query("UPDATE service_accounts SET name = $1 WHERE id = $2")
-            .bind(check_name(name)?)
-            .bind(&sa_id)
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query!(
+            "UPDATE service_accounts SET name = $1 WHERE id = $2",
+            check_name(name)?,
+            &sa_id,
+        )
+        .execute(&mut *tx)
+        .await?;
     }
     if let Some(expires_at) = req.expires_at {
         check_expiry(expires_at)?;
-        sqlx::query("UPDATE service_accounts SET expires_at = $1 WHERE id = $2")
-            .bind(expires_at)
-            .bind(&sa_id)
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query!(
+            "UPDATE service_accounts SET expires_at = $1 WHERE id = $2",
+            expires_at,
+            &sa_id,
+        )
+        .execute(&mut *tx)
+        .await?;
     }
     sa_event(&mut tx, &sa_id, "updated", "", &ip).await;
     let row = owned(&mut tx, &sa_id, &session.account_id).await?;
@@ -632,7 +645,7 @@ pub async fn put_grants(
     if req.grants.is_empty() || req.grants.len() > 100 {
         return Err(ApiError::bad_request("send 1 to 100 grants"));
     }
-    let mut tx = db::begin_write(&state.db).await?;
+    let mut tx = state.db.as_account(&session.account_id).await?;
     let row = owned(&mut tx, &sa_id, &session.account_id).await?;
     if row.5 != 0 {
         return Err(ApiError::bad_request(
@@ -646,10 +659,10 @@ pub async fn put_grants(
     for grant in &req.grants {
         insert_grant(&mut tx, &sa_id, grant).await?;
     }
-    let count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM service_account_grants WHERE service_account_id = $1",
+    let count: i64 = sqlx::query_scalar!(
+        "SELECT COUNT(*) AS \"count!\" FROM service_account_grants WHERE service_account_id = $1",
+        &sa_id,
     )
-    .bind(&sa_id)
     .fetch_one(&mut *tx)
     .await?;
     if count > MAX_GRANTS {
@@ -679,13 +692,13 @@ pub async fn delete_grant(
     session: Session,
     Path((sa_id, vault_id)): Path<(String, String)>,
 ) -> ApiResult<StatusCode> {
-    let mut tx = db::begin_write(&state.db).await?;
+    let mut tx = state.db.as_account(&session.account_id).await?;
     owned(&mut tx, &sa_id, &session.account_id).await?;
-    let deleted = sqlx::query(
+    let deleted = sqlx::query!(
         "DELETE FROM service_account_grants WHERE service_account_id = $1 AND vault_id = $2",
+        &sa_id,
+        &vault_id,
     )
-    .bind(&sa_id)
-    .bind(&vault_id)
     .execute(&mut *tx)
     .await?;
     if deleted.rows_affected() == 0 {
@@ -713,24 +726,28 @@ pub async fn revoke(
     session: Session,
     Path(sa_id): Path<String>,
 ) -> ApiResult<StatusCode> {
-    let mut tx = db::begin_write(&state.db).await?;
+    let mut tx = state.db.as_account(&session.account_id).await?;
     owned(&mut tx, &sa_id, &session.account_id).await?;
-    sqlx::query("UPDATE service_accounts SET revoked_at = $1 WHERE id = $2 AND revoked_at = 0")
-        .bind(now_ms())
-        .bind(&sa_id)
-        .execute(&mut *tx)
-        .await?;
+    sqlx::query!(
+        "UPDATE service_accounts SET revoked_at = $1 WHERE id = $2 AND revoked_at = 0",
+        now_ms(),
+        &sa_id,
+    )
+    .execute(&mut *tx)
+    .await?;
     // Sealed keys are useless without the token, but there is no reason to
     // keep them.
-    sqlx::query("DELETE FROM service_account_grants WHERE service_account_id = $1")
-        .bind(&sa_id)
-        .execute(&mut *tx)
-        .await?;
-    sqlx::query(
+    sqlx::query!(
+        "DELETE FROM service_account_grants WHERE service_account_id = $1",
+        &sa_id,
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query!(
         "UPDATE agent_grants SET status = 'revoked' WHERE principal_kind = 'service' \
          AND principal_id = $1 AND status IN ('pending', 'approved')",
+        &sa_id,
     )
-    .bind(&sa_id)
     .execute(&mut *tx)
     .await?;
     sa_event(&mut tx, &sa_id, "revoked", "", &ip).await;
@@ -755,7 +772,7 @@ pub async fn delete(
     session: Session,
     Path(sa_id): Path<String>,
 ) -> ApiResult<StatusCode> {
-    let mut tx = db::begin_write(&state.db).await?;
+    let mut tx = state.db.as_account(&session.account_id).await?;
     owned(&mut tx, &sa_id, &session.account_id).await?;
     for table in [
         "DELETE FROM service_account_grants WHERE service_account_id = $1",
@@ -764,11 +781,11 @@ pub async fn delete(
     ] {
         sqlx::query(table).bind(&sa_id).execute(&mut *tx).await?;
     }
-    sqlx::query(
+    sqlx::query!(
         "UPDATE agent_grants SET status = 'revoked' WHERE principal_kind = 'service' \
          AND principal_id = $1 AND status IN ('pending', 'approved')",
+        &sa_id,
     )
-    .bind(&sa_id)
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
@@ -807,14 +824,15 @@ pub async fn events(
     Path(sa_id): Path<String>,
     Query(query): Query<EventsQuery>,
 ) -> ApiResult<Json<Vec<ServiceAccountEvent>>> {
-    let mut conn = state.db.acquire().await?;
+    let mut conn = state.db.as_account(&session.account_id).await?;
     owned(&mut conn, &sa_id, &session.account_id).await?;
-    let rows: Vec<(String, String, String, String, i64)> = sqlx::query_as(
+    let rows: Vec<(String, String, String, String, i64)> = sqlx::query!(
         "SELECT id, kind, detail, ip, created_at FROM service_account_events \
          WHERE service_account_id = $1 ORDER BY created_at DESC LIMIT $2",
+        &sa_id,
+        query.limit.unwrap_or(50).clamp(1, 200),
     )
-    .bind(&sa_id)
-    .bind(query.limit.unwrap_or(50).clamp(1, 200))
+    .map(|row| (row.id, row.kind, row.detail, row.ip, row.created_at))
     .fetch_all(&mut *conn)
     .await?;
     Ok(Json(
@@ -871,13 +889,26 @@ impl FromRequestParts<AppState> for ServiceAuth {
             return Err(ApiError::RateLimited(wait));
         }
         let now = now_ms();
-        let row: Option<(String, String, String, i64, i64, i64)> = sqlx::query_as(
-            "SELECT s.account_id, s.name, s.auth_hash, s.expires_at, s.revoked_at, s.last_used_at \
-             FROM service_accounts s JOIN accounts a ON a.id = s.account_id \
-             WHERE s.id = $1 AND a.disabled_at = 0",
+        // Signed-out requests cannot read service accounts: the function
+        // resolves this one ID.
+        let row: Option<(String, String, String, i64, i64, i64)> = sqlx::query!(
+            r#"SELECT account_id AS "account_id!", name AS "name!", auth_hash AS "auth_hash!",
+                      expires_at AS "expires_at!", revoked_at AS "revoked_at!",
+                      last_used_at AS "last_used_at!"
+               FROM passbox.service_account_by_id($1)"#,
+            sa_id,
         )
-        .bind(sa_id)
-        .fetch_optional(&state.db)
+        .map(|row| {
+            (
+                row.account_id,
+                row.name,
+                row.auth_hash,
+                row.expires_at,
+                row.revoked_at,
+                row.last_used_at,
+            )
+        })
+        .fetch_optional(&mut *state.db.public(Public::Auth).await?)
         .await?;
         let (owner_id, name, auth_hash, expires_at, revoked_at, last_used_at) =
             row.ok_or(ApiError::Unauthorized)?;
@@ -897,14 +928,17 @@ impl FromRequestParts<AppState> for ServiceAuth {
             ));
         }
         if now - last_used_at > LAST_USED_RESOLUTION_MS {
-            sqlx::query(
+            // A service account acts with its owner's rights.
+            let mut tx = state.db.as_account(&owner_id).await?;
+            sqlx::query!(
                 "UPDATE service_accounts SET last_used_at = $1, last_used_ip = $2 WHERE id = $3",
+                now,
+                &ip,
+                sa_id,
             )
-            .bind(now)
-            .bind(&ip)
-            .bind(sa_id)
-            .execute(&state.db)
+            .execute(&mut *tx)
             .await?;
+            tx.commit().await?;
         }
         Ok(Self {
             id: sa_id.to_owned(),
@@ -918,16 +952,16 @@ impl FromRequestParts<AppState> for ServiceAuth {
 /// What the service account may currently do with a vault: the lower of
 /// its grant and the owner's live access. `None` without access.
 async fn effective(
-    conn: &mut AnyConnection,
+    conn: &mut PgConnection,
     auth: &ServiceAuth,
     vault_id: &str,
 ) -> ApiResult<Option<(Permission, i64)>> {
-    let permission: Option<String> = sqlx::query_scalar(
+    let permission: Option<String> = sqlx::query_scalar!(
         "SELECT permission FROM service_account_grants WHERE service_account_id = $1 \
          AND vault_id = $2 LIMIT 1",
+        &auth.id,
+        vault_id,
     )
-    .bind(&auth.id)
-    .bind(vault_id)
     .fetch_optional(&mut *conn)
     .await?;
     let Some(permission) = permission.and_then(|p| Permission::parse(&p).ok()) else {
@@ -1000,18 +1034,29 @@ pub struct SaState {
 
 /// `GET /service-account`: everything the service account can read.
 pub async fn state(State(state): State<AppState>, auth: ServiceAuth) -> ApiResult<Json<SaState>> {
-    let mut conn = state.db.acquire().await?;
-    let (public_key, encrypted_private, expires_at): (String, String, i64) = sqlx::query_as(
+    let mut conn = state.db.as_account(&auth.owner_id).await?;
+    let (public_key, encrypted_private, expires_at): (String, Vec<u8>, i64) = sqlx::query!(
         "SELECT public_key, encrypted_private, expires_at FROM service_accounts WHERE id = $1",
+        &auth.id,
     )
-    .bind(&auth.id)
+    .map(|row| (row.public_key, row.encrypted_private, row.expires_at))
     .fetch_one(&mut *conn)
     .await?;
-    let rows: Vec<(String, i64, String, String, String, String)> = sqlx::query_as(
+    let rows: Vec<(String, i64, String, Vec<u8>, String, String)> = sqlx::query!(
         "SELECT vault_id, key_epoch, permission, sealed_key, grant_data, grant_signature \
          FROM service_account_grants WHERE service_account_id = $1 ORDER BY vault_id, key_epoch",
+        &auth.id,
     )
-    .bind(&auth.id)
+    .map(|row| {
+        (
+            row.vault_id,
+            row.key_epoch,
+            row.permission,
+            row.sealed_key,
+            row.grant_data,
+            row.grant_signature,
+        )
+    })
     .fetch_all(&mut *conn)
     .await?;
     let mut grants = Vec::new();
@@ -1026,33 +1071,44 @@ pub async fn state(State(state): State<AppState>, auth: ServiceAuth) -> ApiResul
             vault_id: vault_id.clone(),
             key_epoch,
             permission,
-            sealed_key,
+            sealed_key: encoding::encode(&sealed_key),
             grant,
             grant_signature,
         });
         if !seen.insert(vault_id.clone()) {
             continue;
         }
-        let (encrypted_meta, epoch, revision, org_id): (String, i64, i64, Option<String>) =
-            sqlx::query_as(
+        let (encrypted_meta, epoch, revision, org_id): (Vec<u8>, i64, i64, Option<String>) =
+            sqlx::query!(
                 "SELECT encrypted_meta, key_epoch, revision, org_id FROM vaults WHERE id = $1",
+                &vault_id,
             )
-            .bind(&vault_id)
+            .map(|row| (row.encrypted_meta, row.key_epoch, row.revision, row.org_id))
             .fetch_one(&mut *conn)
             .await?;
         vaults.push(SaVault {
             id: vault_id.clone(),
-            encrypted_meta,
+            encrypted_meta: encoding::encode(&encrypted_meta),
             key_epoch: epoch,
             revision,
             permission: effective.as_str().to_owned(),
             org_id,
         });
-        let rows: Vec<(String, i64, Option<String>, i64, i64, i64)> = sqlx::query_as(
+        let rows = sqlx::query!(
             "SELECT id, revision, encrypted_data, key_epoch, updated_at, created_at FROM items \
-             WHERE vault_id = $1 AND deleted = 0",
+             WHERE vault_id = $1 AND deleted = false",
+            &vault_id,
         )
-        .bind(&vault_id)
+        .map(|row| {
+            (
+                row.id,
+                row.revision,
+                row.encrypted_data,
+                row.key_epoch,
+                row.updated_at,
+                row.created_at,
+            )
+        })
         .fetch_all(&mut *conn)
         .await?;
         items.extend(rows.into_iter().filter_map(
@@ -1061,7 +1117,7 @@ pub async fn state(State(state): State<AppState>, auth: ServiceAuth) -> ApiResul
                     id,
                     vault_id: vault_id.clone(),
                     revision,
-                    encrypted_data: data?,
+                    encrypted_data: encoding::encode(&data?),
                     key_epoch,
                     updated_at,
                     created_at,
@@ -1083,7 +1139,7 @@ pub async fn state(State(state): State<AppState>, auth: ServiceAuth) -> ApiResul
         owner_id: auth.owner_id,
         expires_at,
         public_key,
-        encrypted_private,
+        encrypted_private: encoding::encode(&encrypted_private),
         grants,
         vaults,
         items,
@@ -1101,7 +1157,7 @@ pub struct PutItemRequest {
 }
 
 async fn require_write(
-    conn: &mut AnyConnection,
+    conn: &mut PgConnection,
     auth: &ServiceAuth,
     vault_id: &str,
     key_epoch: i64,
@@ -1139,13 +1195,16 @@ pub async fn put_item(
     validate::id("vaultId", &req.vault_id)?;
     validate::revision(req.revision)?;
     validate::base64("encryptedData", &req.encrypted_data, validate::MAX_ITEM_LEN)?;
-    let mut tx = db::begin_write(&state.db).await?;
+    let encrypted_data = super::vaults::decode(&req.encrypted_data)?;
+    let mut tx = state.db.as_account(&auth.owner_id).await?;
     require_write(&mut tx, &auth, &req.vault_id, req.key_epoch).await?;
-    let current: Option<(String, i64)> =
-        sqlx::query_as("SELECT vault_id, revision FROM items WHERE id = $1")
-            .bind(&item_id)
-            .fetch_optional(&mut *tx)
-            .await?;
+    let current: Option<(String, i64)> = sqlx::query!(
+        "SELECT vault_id, revision FROM items WHERE id = $1",
+        &item_id,
+    )
+    .map(|row| (row.vault_id, row.revision))
+    .fetch_optional(&mut *tx)
+    .await?;
     let now = now_ms();
     let seq = match current {
         None => {
@@ -1153,17 +1212,17 @@ pub async fn put_item(
                 return Err(revision_conflict(0));
             }
             let seq = db::next_seq(&mut tx).await?;
-            sqlx::query(
+            sqlx::query!(
                 "INSERT INTO items (id, vault_id, encrypted_data, revision, deleted, seq, created_at, updated_at, \
-                 key_epoch) VALUES ($1, $2, $3, 1, 0, $4, $5, $6, $7)",
+                 key_epoch) VALUES ($1, $2, $3, 1, false, $4, $5, $6, $7)",
+                &item_id,
+                &req.vault_id,
+                &encrypted_data,
+                seq,
+                now,
+                now,
+                req.key_epoch,
             )
-            .bind(&item_id)
-            .bind(&req.vault_id)
-            .bind(&req.encrypted_data)
-            .bind(seq)
-            .bind(now)
-            .bind(now)
-            .bind(req.key_epoch)
             .execute(&mut *tx)
             .await?;
             seq
@@ -1176,16 +1235,16 @@ pub async fn put_item(
                 return Err(revision_conflict(current));
             }
             let seq = db::next_seq(&mut tx).await?;
-            sqlx::query(
-                "UPDATE items SET encrypted_data = $1, revision = $2, deleted = 0, seq = $3, updated_at = $4, \
+            sqlx::query!(
+                "UPDATE items SET encrypted_data = $1, revision = $2, deleted = false, seq = $3, updated_at = $4, \
                  key_epoch = $5 WHERE id = $6",
+                &encrypted_data,
+                req.revision,
+                seq,
+                now,
+                req.key_epoch,
+                &item_id,
             )
-            .bind(&req.encrypted_data)
-            .bind(req.revision)
-            .bind(seq)
-            .bind(now)
-            .bind(req.key_epoch)
-            .bind(&item_id)
             .execute(&mut *tx)
             .await?;
             seq
@@ -1213,13 +1272,15 @@ pub async fn delete_item(
 ) -> ApiResult<Json<WriteResponse>> {
     validate::id("item id", &item_id)?;
     validate::revision(query.revision)?;
-    let mut tx = db::begin_write(&state.db).await?;
-    let (vault_id, current): (String, i64) =
-        sqlx::query_as("SELECT vault_id, revision FROM items WHERE id = $1")
-            .bind(&item_id)
-            .fetch_optional(&mut *tx)
-            .await?
-            .ok_or(ApiError::NotFound)?;
+    let mut tx = state.db.as_account(&auth.owner_id).await?;
+    let (vault_id, current): (String, i64) = sqlx::query!(
+        "SELECT vault_id, revision FROM items WHERE id = $1",
+        &item_id,
+    )
+    .map(|row| (row.vault_id, row.revision))
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or(ApiError::NotFound)?;
     match effective(&mut tx, &auth, &vault_id).await? {
         None => return Err(ApiError::NotFound),
         Some((Permission::Read, _)) => {
@@ -1234,13 +1295,13 @@ pub async fn delete_item(
         return Err(revision_conflict(current));
     }
     let seq = db::next_seq(&mut tx).await?;
-    sqlx::query(
-        "UPDATE items SET encrypted_data = NULL, revision = $1, deleted = 1, seq = $2, updated_at = $3 WHERE id = $4",
+    sqlx::query!(
+        "UPDATE items SET encrypted_data = NULL, revision = $1, deleted = true, seq = $2, updated_at = $3 WHERE id = $4",
+        query.revision,
+        seq,
+        now_ms(),
+        &item_id,
     )
-    .bind(query.revision)
-    .bind(seq)
-    .bind(now_ms())
-    .bind(&item_id)
     .execute(&mut *tx)
     .await?;
     sa_event(&mut tx, &auth.id, "item_deleted", &item_id, &auth.ip).await;

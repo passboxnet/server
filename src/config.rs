@@ -1,24 +1,51 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-use clap::{Parser, ValueEnum};
+use clap::{Parser, Subcommand, ValueEnum};
 
 /// Passbox server configuration. Every option can also be set through an
 /// environment variable.
 #[derive(Clone, Parser)]
 #[command(name = "passbox-server", version, about)]
 pub struct Config {
+    /// What to do (default: `serve`).
+    #[command(subcommand)]
+    pub command: Option<Command>,
+
     /// Address to listen on.
     #[arg(long, env = "PASSBOX_BIND", default_value = "0.0.0.0:8080")]
     pub bind: SocketAddr,
 
-    /// Database URL: `sqlite://path/to/passbox.db?mode=rwc` or `postgres://user:pass@host/db`.
-    #[arg(
-        long,
-        env = "PASSBOX_DATABASE_URL",
-        default_value = "sqlite://passbox.db?mode=rwc"
-    )]
+    /// PostgreSQL URL of the application role (`passbox_app`), for example
+    /// `postgres://passbox_app:secret@db.internal/passbox?sslmode=verify-full&sslrootcert=/etc/passbox/db-ca.pem`.
+    #[arg(long, env = "PASSBOX_DATABASE_URL", hide_env_values = true)]
     pub database_url: String,
+
+    /// PostgreSQL URL of the role that owns the schema and runs migrations
+    /// (`passbox_migrator`). Defaults to `PASSBOX_DATABASE_URL`.
+    #[arg(long, env = "PASSBOX_MIGRATION_DATABASE_URL", hide_env_values = true)]
+    pub migration_database_url: Option<String>,
+
+    /// PostgreSQL URL of the role for background jobs (`passbox_worker`):
+    /// mail, webhooks, attachment cleanup, breach monitoring. Defaults to
+    /// `PASSBOX_DATABASE_URL`.
+    #[arg(long, env = "PASSBOX_WORKER_DATABASE_URL", hide_env_values = true)]
+    pub worker_database_url: Option<String>,
+
+    /// Database connections per pool.
+    #[arg(long, env = "PASSBOX_DATABASE_MAX_CONNECTIONS", default_value_t = 10)]
+    pub database_max_connections: u32,
+
+    /// Apply pending migrations at start (with the migration URL). Turn it
+    /// off where rollouts run `passbox-server migrate` once before starting
+    /// new servers.
+    #[arg(long, env = "PASSBOX_AUTO_MIGRATE", default_value_t = true, action = clap::ArgAction::Set)]
+    pub auto_migrate: bool,
+
+    /// Address for Prometheus metrics (`GET /metrics`), for example
+    /// `127.0.0.1:9090`. Off when unset. Keep it on a private network.
+    #[arg(long, env = "PASSBOX_METRICS_BIND")]
+    pub metrics_bind: Option<SocketAddr>,
 
     /// Directory with the built web client. When set, the server also serves the web app.
     #[arg(long, env = "PASSBOX_WEB_DIR")]
@@ -128,12 +155,55 @@ pub struct Config {
     pub hibp_api_url: String,
 }
 
+/// What the binary does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Subcommand)]
+pub enum Command {
+    /// Run the API server (the default).
+    Serve,
+    /// Apply pending database migrations and exit.
+    Migrate,
+}
+
+impl Config {
+    /// The URL migrations run with.
+    pub fn migration_url(&self) -> &str {
+        self.migration_database_url
+            .as_deref()
+            .filter(|url| !url.is_empty())
+            .unwrap_or(&self.database_url)
+    }
+
+    /// The database URLs of the pools.
+    pub fn database_urls(&self) -> crate::db::Urls {
+        crate::db::Urls {
+            app: self.database_url.clone(),
+            worker: self
+                .worker_database_url
+                .clone()
+                .filter(|url| !url.is_empty()),
+            max_connections: self.database_max_connections,
+        }
+    }
+}
+
 /// Hides the database and SMTP credentials.
 impl std::fmt::Debug for Config {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Config")
             .field("bind", &self.bind)
+            .field("command", &self.command)
             .field("database_url", &"<redacted>")
+            .field(
+                "migration_database_url",
+                &self.migration_database_url.as_ref().map(|_| "<redacted>"),
+            )
+            .field(
+                "worker_database_url",
+                &self.worker_database_url.as_ref().map(|_| "<redacted>"),
+            )
+            .field("database_max_connections", &self.database_max_connections)
+            .field("auto_migrate", &self.auto_migrate)
+            .field("metrics_bind", &self.metrics_bind)
             .field("web_dir", &self.web_dir)
             .field("trust_proxy", &self.trust_proxy)
             .field("auth_rate_limit", &self.auth_rate_limit)
@@ -177,8 +247,14 @@ pub enum LogFormat {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            command: None,
             bind: SocketAddr::from(([127, 0, 0, 1], 8080)),
-            database_url: "sqlite::memory:".to_owned(),
+            database_url: String::new(),
+            migration_database_url: None,
+            worker_database_url: None,
+            database_max_connections: 10,
+            auto_migrate: true,
+            metrics_bind: None,
             web_dir: None,
             trust_proxy: false,
             auth_rate_limit: 60,

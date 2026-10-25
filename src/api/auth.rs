@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::validate;
-use crate::db::{self, now_ms};
+use crate::db::{self, Conn, Public, now_ms};
 use crate::error::{ApiError, ApiResult};
 use crate::security::ClientIp;
 use crate::state::AppState;
@@ -108,7 +108,7 @@ pub(crate) fn record_failure(state: &AppState, limits: &[(String, u32)]) {
 /// with `email`. Unknown, expired or foreign tokens are ignored (the login
 /// counts as coming from an unknown device), never an error.
 async fn valid_device_token(
-    state: &AppState,
+    conn: &mut Conn,
     email: &str,
     token: Option<&str>,
 ) -> ApiResult<Option<String>> {
@@ -116,14 +116,14 @@ async fn valid_device_token(
         return Ok(None);
     };
     let token_hash = hash_token(token);
-    let found: Option<i64> = sqlx::query_scalar(
-        "SELECT 1 FROM device_tokens d JOIN accounts a ON a.id = d.account_id \
-         WHERE d.token_hash = $1 AND a.email = $2 AND d.expires_at > $3",
+    let found = sqlx::query_scalar!(
+        r#"SELECT 1 AS "found!" FROM device_tokens d JOIN accounts a ON a.id = d.account_id
+           WHERE d.token_hash = $1 AND a.email = $2 AND d.expires_at > $3"#,
+        token_hash,
+        email,
+        now_ms(),
     )
-    .bind(&token_hash)
-    .bind(email)
-    .bind(now_ms())
-    .fetch_optional(&state.db)
+    .fetch_optional(conn)
     .await?;
     Ok(found.map(|_| token_hash))
 }
@@ -142,46 +142,48 @@ async fn issue_device_token(
 ) -> ApiResult<(String, String)> {
     let token = encoding::encode(&random::bytes::<32>().map_err(|e| ApiError::Internal(e.into()))?);
     let token_hash = hash_token(&token);
-    let mut tx = crate::db::begin_write(&state.db).await?;
-    let carried: Option<(i64, i64)> = sqlx::query_as(
+    let previous_hash = previous_hash.unwrap_or("");
+    let mut tx = state.db.as_account(account_id).await?;
+    let carried = sqlx::query!(
         "SELECT two_factor_until, sso_until FROM device_tokens WHERE token_hash = $1 AND account_id = $2 \
          AND expires_at > $3",
+        previous_hash,
+        account_id,
+        now,
     )
-    .bind(previous_hash.unwrap_or(""))
-    .bind(account_id)
-    .bind(now)
     .fetch_optional(&mut *tx)
     .await?;
-    let (carried_two_factor, sso_until) = carried.unwrap_or((0, 0));
+    let (carried_two_factor, sso_until) = carried
+        .map(|row| (row.two_factor_until, row.sso_until))
+        .unwrap_or((0, 0));
     let two_factor_until = carried_two_factor.max(remember_until);
-    sqlx::query(
+    sqlx::query!(
         "DELETE FROM device_tokens WHERE account_id = $1 AND (expires_at <= $2 OR token_hash = $3)",
+        account_id,
+        now,
+        previous_hash,
     )
-    .bind(account_id)
-    .bind(now)
-    .bind(previous_hash.unwrap_or(""))
     .execute(&mut *tx)
     .await?;
-    sqlx::query(
+    sqlx::query!(
         "INSERT INTO device_tokens (token_hash, account_id, created_at, expires_at, two_factor_until, sso_until) \
          VALUES ($1, $2, $3, $4, $5, $6)",
+        token_hash,
+        account_id,
+        now,
+        now + DEVICE_TOKEN_TTL_MS,
+        two_factor_until,
+        sso_until,
     )
-    .bind(&token_hash)
-    .bind(account_id)
-    .bind(now)
-    .bind(now + DEVICE_TOKEN_TTL_MS)
-    .bind(two_factor_until)
-    .bind(sso_until)
     .execute(&mut *tx)
     .await?;
-    sqlx::query(
+    sqlx::query!(
         "DELETE FROM device_tokens WHERE account_id = $1 AND token_hash NOT IN \
-         (SELECT token_hash FROM device_tokens WHERE account_id = $2 \
-         ORDER BY created_at DESC, token_hash LIMIT $3)",
+         (SELECT token_hash FROM device_tokens WHERE account_id = $1 \
+         ORDER BY created_at DESC, token_hash LIMIT $2)",
+        account_id,
+        MAX_DEVICE_TOKENS_PER_ACCOUNT,
     )
-    .bind(account_id)
-    .bind(account_id)
-    .bind(MAX_DEVICE_TOKENS_PER_ACCOUNT)
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
@@ -197,19 +199,22 @@ pub async fn record_event(
     client_kind: &str,
     ip: &str,
 ) -> ApiResult<()> {
-    sqlx::query(
+    // The log belongs to the account, also for failed sign-ins of others.
+    let mut tx = state.db.as_account(account_id).await?;
+    sqlx::query!(
         "INSERT INTO account_events (id, account_id, kind, device_name, client_kind, ip, created_at) \
          VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        id::new_id().map_err(|e| ApiError::Internal(e.into()))?,
+        account_id,
+        kind,
+        device_name,
+        client_kind,
+        ip,
+        now_ms(),
     )
-    .bind(id::new_id().map_err(|e| ApiError::Internal(e.into()))?)
-    .bind(account_id)
-    .bind(kind)
-    .bind(device_name)
-    .bind(client_kind)
-    .bind(ip)
-    .bind(now_ms())
-    .execute(&state.db)
+    .execute(&mut *tx)
     .await?;
+    tx.commit().await?;
     // Organizations log their members' sign-ins and security changes (D3).
     super::org_audit::mirror_account_event(state, account_id, kind, device_name, client_kind, ip)
         .await;
@@ -245,21 +250,22 @@ pub async fn prelogin(
 ) -> ApiResult<Json<PreloginResponse>> {
     limit_ip(&state, &ip)?;
     let email = validate::email(&req.email)?;
-    let row: Option<(String, String, i64, i64, i64)> = sqlx::query_as(
+    let mut tx = state.db.public(Public::Auth).await?;
+    let row = sqlx::query!(
         "SELECT id, kdf_salt, kdf_memory_kib, kdf_iterations, kdf_parallelism FROM accounts WHERE email = $1",
+        email
     )
-    .bind(&email)
-    .fetch_optional(&state.db)
+    .fetch_optional(&mut *tx)
     .await?;
 
     let response = match row {
-        Some((account_id, kdf_salt, memory, iterations, parallelism)) => PreloginResponse {
-            account_id,
-            kdf_salt,
+        Some(row) => PreloginResponse {
+            account_id: row.id,
+            kdf_salt: encoding::encode(&row.kdf_salt),
             kdf_params: KdfParams {
-                memory_kib: to_u32(memory)?,
-                iterations: to_u32(iterations)?,
-                parallelism: to_u32(parallelism)?,
+                memory_kib: to_u32(row.kdf_memory_kib)?,
+                iterations: to_u32(row.kdf_iterations)?,
+                parallelism: to_u32(row.kdf_parallelism)?,
             },
         },
         None => PreloginResponse {
@@ -319,8 +325,11 @@ pub async fn register_start(
     limit_ip(&state, &ip)?;
     validate::id("accountId", &req.account_id)?;
     let email = validate::email(&req.email)?;
-    ensure_account_is_new(&state, &req.account_id, &email).await?;
-    crate::instance::check_registration(&state, &email, req.invite_token.as_deref()).await?;
+    let mut tx = state.db.public(Public::Auth).await?;
+    ensure_account_is_new(&mut tx, &req.account_id, &email).await?;
+    crate::instance::check_registration(&state, &mut tx, &email, req.invite_token.as_deref())
+        .await?;
+    drop(tx);
     let request = validate::base64(
         "registrationRequest",
         &req.registration_request,
@@ -335,13 +344,14 @@ pub async fn register_start(
     }))
 }
 
-async fn ensure_account_is_new(state: &AppState, account_id: &str, email: &str) -> ApiResult<()> {
-    let exists: Option<i64> =
-        sqlx::query_scalar("SELECT 1 FROM accounts WHERE id = $1 OR email = $2")
-            .bind(account_id)
-            .bind(email)
-            .fetch_optional(&state.db)
-            .await?;
+async fn ensure_account_is_new(conn: &mut Conn, account_id: &str, email: &str) -> ApiResult<()> {
+    let exists = sqlx::query_scalar!(
+        r#"SELECT 1 AS "exists!" FROM accounts WHERE id = $1 OR email = $2"#,
+        account_id,
+        email,
+    )
+    .fetch_optional(conn)
+    .await?;
     match exists {
         Some(_) => Err(ApiError::conflict(
             "an account with this email already exists",
@@ -406,26 +416,30 @@ pub async fn register_finish(
     )?;
     let record = opaque::registration_record(&upload)
         .map_err(|_| ApiError::bad_request("invalid registrationUpload"))?;
-    let grant =
-        crate::instance::check_registration(&state, &email, req.invite_token.as_deref()).await?;
     let locale = crate::mail::request_locale(req.locale.as_deref(), &headers);
 
     let now = now_ms();
-    let mut tx = crate::db::begin_write(&state.db).await?;
-    let inserted = sqlx::query(
+    let mut tx = state.db.public(Public::Auth).await?;
+    let grant =
+        crate::instance::check_registration(&state, &mut tx, &email, req.invite_token.as_deref())
+            .await?;
+    let kdf_salt = encoding::decode(&req.kdf_salt).map_err(|e| ApiError::Internal(e.into()))?;
+    let encrypted_account_key =
+        encoding::decode(&req.encrypted_account_key).map_err(|e| ApiError::Internal(e.into()))?;
+    let inserted = sqlx::query!(
         "INSERT INTO accounts (id, email, opaque_record, kdf_salt, kdf_memory_kib, kdf_iterations, \
          kdf_parallelism, encrypted_account_key, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
          ON CONFLICT DO NOTHING",
+        req.account_id,
+        email,
+        record,
+        kdf_salt,
+        i64::from(req.kdf_params.memory_kib),
+        i64::from(req.kdf_params.iterations),
+        i64::from(req.kdf_params.parallelism),
+        encrypted_account_key,
+        now,
     )
-    .bind(&req.account_id)
-    .bind(&email)
-    .bind(encoding::encode(&record))
-    .bind(&req.kdf_salt)
-    .bind(i64::from(req.kdf_params.memory_kib))
-    .bind(i64::from(req.kdf_params.iterations))
-    .bind(i64::from(req.kdf_params.parallelism))
-    .bind(&req.encrypted_account_key)
-    .bind(now)
     .execute(&mut *tx)
     .await?;
     if inserted.rows_affected() == 0 {
@@ -434,9 +448,10 @@ pub async fn register_finish(
             serde_json::Value::Null,
         ));
     }
-    super::vaults::insert_vault(&mut tx, &req.account_id, &req.vault, now).await?;
+    // From here on the transaction runs as the new account.
     let first_admin =
         crate::instance::on_account_created(&mut tx, &req.account_id, &grant, locale, now).await?;
+    super::vaults::insert_vault(&mut tx, &req.account_id, &req.vault, now).await?;
     tx.commit().await?;
 
     tracing::info!(account_id = %req.account_id, "account registered");
@@ -477,7 +492,9 @@ pub async fn login_start(
 ) -> ApiResult<Json<LoginStartResponse>> {
     limit_ip(&state, &ip)?;
     let email = validate::email(&req.email)?;
-    let device_token_hash = valid_device_token(&state, &email, req.device_token.as_deref()).await?;
+    let mut tx = state.db.public(Public::Auth).await?;
+    let device_token_hash =
+        valid_device_token(&mut tx, &email, req.device_token.as_deref()).await?;
     check_lockout(
         &state,
         &failure_limits(&email, &ip, device_token_hash.as_deref()),
@@ -487,17 +504,15 @@ pub async fn login_start(
         &req.credential_request,
         validate::MAX_SMALL_LEN,
     )?;
-    let account: Option<(String, String)> =
-        sqlx::query_as("SELECT id, opaque_record FROM accounts WHERE email = $1")
-            .bind(&email)
-            .fetch_optional(&state.db)
-            .await?;
+    let account = sqlx::query!(
+        "SELECT id, opaque_record FROM accounts WHERE email = $1",
+        email
+    )
+    .fetch_optional(&mut *tx)
+    .await?;
 
     let (account_id, record, credential_id) = match account {
-        Some((id, record)) => {
-            let record = encoding::decode(&record).map_err(|e| ApiError::Internal(e.into()))?;
-            (Some(id.clone()), Some(record), id)
-        }
+        Some(row) => (Some(row.id.clone()), Some(row.opaque_record), row.id),
         // Unknown emails run the protocol against a fake identity, so the
         // response looks like a real one.
         None => (None, None, fake_account_id(&state, &email)),
@@ -509,23 +524,23 @@ pub async fn login_start(
 
     let login_id = id::new_id().map_err(|e| ApiError::Internal(e.into()))?;
     let now = now_ms();
-    sqlx::query("DELETE FROM login_attempts WHERE expires_at < $1")
-        .bind(now)
-        .execute(&state.db)
+    sqlx::query!("DELETE FROM login_attempts WHERE expires_at < $1", now)
+        .execute(&mut *tx)
         .await?;
-    sqlx::query(
+    sqlx::query!(
         "INSERT INTO login_attempts (id, account_id, state, expires_at, ip, email, device_token_hash) \
          VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        login_id,
+        account_id,
+        login_state.as_slice(),
+        now + LOGIN_TTL_MS,
+        ip,
+        email,
+        device_token_hash.unwrap_or_default(),
     )
-    .bind(&login_id)
-    .bind(account_id)
-    .bind(encoding::encode(&login_state))
-    .bind(now + LOGIN_TTL_MS)
-    .bind(&ip)
-    .bind(&email)
-    .bind(device_token_hash.unwrap_or_default())
-    .execute(&state.db)
+    .execute(&mut *tx)
     .await?;
+    tx.commit().await?;
 
     Ok(Json(LoginStartResponse {
         login_id,
@@ -618,19 +633,27 @@ pub async fn login_finish(
     };
 
     // Each attempt can be finished once, successful or not.
-    let attempt: Option<(Option<String>, String, i64, String, String)> = sqlx::query_as(
+    let mut tx = state.db.public(Public::Auth).await?;
+    let attempt = sqlx::query!(
         "DELETE FROM login_attempts WHERE id = $1 \
          RETURNING account_id, state, expires_at, email, device_token_hash",
+        req.login_id
     )
-    .bind(&req.login_id)
-    .fetch_optional(&state.db)
+    .fetch_optional(&mut *tx)
     .await?;
-    let Some((account_id, login_state, expires_at, email, device_token_hash)) = attempt else {
+    tx.commit().await?;
+    let Some(attempt) = attempt else {
         return Err(ApiError::InvalidCredentials);
     };
+    let (account_id, login_state, expires_at, email, device_token_hash) = (
+        attempt.account_id,
+        attempt.state,
+        attempt.expires_at,
+        attempt.email,
+        attempt.device_token_hash,
+    );
     let device_token_hash = Some(device_token_hash.as_str()).filter(|h| !h.is_empty());
     let now = now_ms();
-    let login_state = encoding::decode(&login_state).map_err(|e| ApiError::Internal(e.into()))?;
     let verified = opaque::finish_login(&login_state, &finalization).is_ok();
     let account_id = match account_id {
         Some(id) if verified && expires_at >= now => id,
@@ -651,7 +674,10 @@ pub async fn login_finish(
             return Err(ApiError::InvalidCredentials);
         }
     };
-    crate::instance::ensure_active(&state, &account_id).await?;
+    {
+        let mut tx = state.db.as_account(&account_id).await?;
+        crate::instance::ensure_active(&mut tx, &account_id).await?;
+    }
     // Organizations can require single sign-on; a fresh or remembered SSO
     // sign-in also stands in for the second factor.
     let sso = super::sso::login::login_gate(
@@ -695,7 +721,13 @@ pub async fn login_finish(
         },
     )
     .await?;
-    super::sso::login::remember(&state, session.device_token(), sso.remember_until).await?;
+    super::sso::login::remember(
+        &state,
+        &account_id,
+        session.device_token(),
+        sso.remember_until,
+    )
+    .await?;
     Ok(Json(LoginFinishResponse::Session(session)))
 }
 
@@ -732,22 +764,23 @@ pub(crate) async fn start_session(
         now,
     )
     .await?;
-    sqlx::query(
+    let mut tx = state.db.as_account(account_id).await?;
+    sqlx::query!(
         "INSERT INTO sessions (token_hash, account_id, created_at, expires_at, id, device_name, client_kind, ip, \
-         last_used_at, device_token_hash) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+         last_used_at, device_token_hash) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $3, $9)",
+        hash_token(&token),
+        account_id,
+        now,
+        expires_at,
+        session_id,
+        new.device_name,
+        new.client_kind,
+        new.ip,
+        new_device_token_hash,
     )
-    .bind(hash_token(&token))
-    .bind(account_id)
-    .bind(now)
-    .bind(expires_at)
-    .bind(&session_id)
-    .bind(new.device_name)
-    .bind(new.client_kind)
-    .bind(new.ip)
-    .bind(now)
-    .bind(&new_device_token_hash)
-    .execute(&state.db)
+    .execute(&mut *tx)
     .await?;
+    tx.commit().await?;
     // The device that just recovered the account gets the recovery mail
     // instead of a new-device mail.
     if new.event != "login_recovered" {
@@ -787,10 +820,14 @@ pub async fn logout(
     ClientIp(ip): ClientIp,
     session: Session,
 ) -> ApiResult<StatusCode> {
-    sqlx::query("DELETE FROM sessions WHERE token_hash = $1")
-        .bind(&session.token_hash)
-        .execute(&state.db)
-        .await?;
+    let mut tx = state.db.as_account(&session.account_id).await?;
+    sqlx::query!(
+        "DELETE FROM sessions WHERE token_hash = $1",
+        session.token_hash
+    )
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
     record_event(
         &state,
         &session.account_id,
@@ -821,21 +858,23 @@ pub async fn account(
     State(state): State<AppState>,
     session: Session,
 ) -> ApiResult<Json<AccountResponse>> {
-    let (email, kdf_salt, memory, iterations, parallelism, encrypted_account_key): (
-        String,
-        String,
-        i64,
-        i64,
-        i64,
-        String,
-    ) = sqlx::query_as(
+    let mut tx = state.db.as_account(&session.account_id).await?;
+    let row = sqlx::query!(
         "SELECT email, kdf_salt, kdf_memory_kib, kdf_iterations, kdf_parallelism, encrypted_account_key \
          FROM accounts WHERE id = $1",
+        session.account_id
     )
-    .bind(&session.account_id)
-    .fetch_one(&state.db)
+    .fetch_one(&mut *tx)
     .await?;
-    let instance_admin = crate::instance::is_admin(&state, &session.account_id).await?;
+    let (email, memory, iterations, parallelism) = (
+        row.email,
+        row.kdf_memory_kib,
+        row.kdf_iterations,
+        row.kdf_parallelism,
+    );
+    let kdf_salt = encoding::encode(&row.kdf_salt);
+    let encrypted_account_key = encoding::encode(&row.encrypted_account_key);
+    let instance_admin = crate::instance::is_admin(&state, &mut tx, &session.account_id).await?;
     Ok(Json(AccountResponse {
         instance_admin,
         account_id: session.account_id,
@@ -899,24 +938,40 @@ impl FromRequestParts<AppState> for Session {
         let token_hash = hash_token(token);
         let now = db::now_ms();
         // Sessions of disabled accounts are deleted when the account is
-        // disabled; the join also covers a login finishing at that moment.
-        let row: Option<(String, String, String, String, i64, i64)> = sqlx::query_as(
-            "SELECT s.account_id, s.id, s.device_name, s.client_kind, s.created_at, s.last_used_at \
-             FROM sessions s JOIN accounts a ON a.id = s.account_id \
-             WHERE s.token_hash = $1 AND s.expires_at > $2 AND a.disabled_at = 0",
+        // disabled; the function's join also covers a login finishing at
+        // that moment. Signed-out requests cannot read sessions: the
+        // function resolves one token hash only.
+        let mut tx = state.db.public(Public::Auth).await?;
+        let row = sqlx::query!(
+            r#"SELECT account_id AS "account_id!", id AS "id!", device_name AS "device_name!",
+                      client_kind AS "client_kind!", created_at AS "created_at!",
+                      last_used_at AS "last_used_at!"
+               FROM passbox.session_by_token($1, $2)"#,
+            token_hash,
+            now,
         )
-        .bind(&token_hash)
-        .bind(now)
-        .fetch_optional(&state.db)
+        .fetch_optional(&mut *tx)
         .await?;
-        let (account_id, id, device_name, client_kind, created_at, last_used_at) =
-            row.ok_or(ApiError::Unauthorized)?;
+        drop(tx);
+        let row = row.ok_or(ApiError::Unauthorized)?;
+        let (account_id, id, device_name, client_kind, created_at, last_used_at) = (
+            row.account_id,
+            row.id,
+            row.device_name,
+            row.client_kind,
+            row.created_at,
+            row.last_used_at,
+        );
         if now - last_used_at > LAST_USED_RESOLUTION_MS {
-            sqlx::query("UPDATE sessions SET last_used_at = $1 WHERE token_hash = $2")
-                .bind(now)
-                .bind(&token_hash)
-                .execute(&state.db)
-                .await?;
+            let mut tx = state.db.as_account(&account_id).await?;
+            sqlx::query!(
+                "UPDATE sessions SET last_used_at = $1 WHERE token_hash = $2",
+                now,
+                token_hash,
+            )
+            .execute(&mut *tx)
+            .await?;
+            tx.commit().await?;
         }
         Ok(Session {
             account_id,

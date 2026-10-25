@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE trusted_device_requests SET status = 'denied' WHERE id = $1 AND account_id = $2 AND status = 'pending'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "3fcb32719ae0d612fb1a4eed53d0c0e68b45f87b3ebf795a157815bb75208b43"
+}

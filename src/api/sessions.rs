@@ -30,30 +30,27 @@ pub async fn list(
     State(state): State<AppState>,
     session: Session,
 ) -> ApiResult<Json<Vec<SessionInfo>>> {
-    let rows: Vec<(String, String, String, String, i64, i64, i64)> = sqlx::query_as(
+    let mut tx = state.db.as_account(&session.account_id).await?;
+    let rows = sqlx::query!(
         "SELECT id, device_name, client_kind, ip, created_at, last_used_at, expires_at FROM sessions \
          WHERE account_id = $1 AND expires_at > $2 ORDER BY last_used_at DESC",
+        session.account_id,
+        now_ms(),
     )
-    .bind(&session.account_id)
-    .bind(now_ms())
-    .fetch_all(&state.db)
+    .fetch_all(&mut *tx)
     .await?;
     Ok(Json(
         rows.into_iter()
-            .map(
-                |(id, device_name, client_kind, ip, created_at, last_used_at, expires_at)| {
-                    SessionInfo {
-                        current: id == session.id,
-                        id,
-                        device_name,
-                        client_kind,
-                        ip,
-                        created_at,
-                        last_used_at,
-                        expires_at,
-                    }
-                },
-            )
+            .map(|row| SessionInfo {
+                current: row.id == session.id,
+                id: row.id,
+                device_name: row.device_name,
+                client_kind: row.client_kind,
+                ip: row.ip,
+                created_at: row.created_at,
+                last_used_at: row.last_used_at,
+                expires_at: row.expires_at,
+            })
             .collect(),
     ))
 }
@@ -66,11 +63,15 @@ pub async fn revoke(
     Path(id): Path<String>,
 ) -> ApiResult<StatusCode> {
     validate::id("session id", &id)?;
-    let result = sqlx::query("DELETE FROM sessions WHERE id = $1 AND account_id = $2")
-        .bind(&id)
-        .bind(&session.account_id)
-        .execute(&state.db)
-        .await?;
+    let mut tx = state.db.as_account(&session.account_id).await?;
+    let result = sqlx::query!(
+        "DELETE FROM sessions WHERE id = $1 AND account_id = $2",
+        id,
+        session.account_id,
+    )
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
     if result.rows_affected() == 0 {
         return Err(ApiError::NotFound);
     }
@@ -92,11 +93,15 @@ pub async fn revoke_others(
     ClientIp(ip): ClientIp,
     session: Session,
 ) -> ApiResult<StatusCode> {
-    sqlx::query("DELETE FROM sessions WHERE account_id = $1 AND token_hash <> $2")
-        .bind(&session.account_id)
-        .bind(session.token_hash())
-        .execute(&state.db)
-        .await?;
+    let mut tx = state.db.as_account(&session.account_id).await?;
+    sqlx::query!(
+        "DELETE FROM sessions WHERE account_id = $1 AND token_hash <> $2",
+        session.account_id,
+        session.token_hash(),
+    )
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
     record_event(
         &state,
         &session.account_id,

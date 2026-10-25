@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO mail_outbox (id, recipient, template, locale, params, status, attempts, next_attempt_at, locked_until, last_error, created_at, sent_at) VALUES ($1, $2, $3, $4, $5, 'pending', 0, $6, 0, '', $6, 0)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Jsonb",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "7cf99333207d0e917c09f94bbebf81ab25c59615a628209239a7a27c20dce188"
+}
