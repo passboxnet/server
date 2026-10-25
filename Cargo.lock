@@ -3510,6 +3510,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "passbox-ai"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "ureq",
+]
+
+[[package]]
 name = "passbox-cli"
 version = "0.1.0"
 dependencies = [
@@ -3521,6 +3531,7 @@ dependencies = [
  "passbox-client",
  "passbox-core",
  "passbox-server",
+ "regex",
  "rpassword",
  "serde_json",
  "tempfile",
