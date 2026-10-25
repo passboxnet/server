@@ -193,3 +193,121 @@ fn report_dismissals_proxy_and_monitoring() {
             .breach_checked
     );
 }
+
+/// A breach catalogue upstream with one breach published tomorrow (after
+/// the test's items were saved).
+struct FakeCatalog;
+
+impl passbox_server::api::breach_catalog::CatalogUpstream for FakeCatalog {
+    fn fetch(
+        &self,
+        _etag: Option<&str>,
+    ) -> Result<passbox_server::api::breach_catalog::Fetched, String> {
+        let tomorrow = passbox_core::analysis::breaches::datetime_string(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as i64
+                + 24 * 60 * 60 * 1000,
+        );
+        Ok(passbox_server::api::breach_catalog::Fetched::Body {
+            body: format!(
+                r#"[{{"Name":"Netflix","Title":"Netflix","Domain":"netflix.com","BreachDate":"{date}",
+                     "AddedDate":"{tomorrow}","ModifiedDate":"{tomorrow}","PwnCount":5000,
+                     "DataClasses":["Email addresses","Passwords"],"IsVerified":true}}]"#,
+                date = &tomorrow[..10],
+            ),
+            etag: None,
+        })
+    }
+}
+
+#[test]
+fn breached_websites_from_the_server_catalogue() {
+    let url = passbox_server::testing::spawn_server(|state, _| {
+        let service = Arc::new(passbox_server::api::breach_catalog::CatalogService::new(
+            true,
+            Arc::new(FakeCatalog),
+        ));
+        state.breach_catalog = service;
+        let state = state.clone();
+        tokio::spawn(async move {
+            passbox_server::api::breach_catalog::refresh(&state, true)
+                .await
+                .unwrap();
+        });
+    });
+    let client = Client::new(&url, Arc::new(MemoryStore::default()));
+    client
+        .sign_up("catalog@example.com", "correct horse battery staple")
+        .unwrap();
+    let vault = client.vaults().unwrap()[0].id.clone();
+    let netflix = client
+        .create_item(
+            &vault,
+            &login(
+                "Netflix",
+                "x9$Lq!2vR#pW7zK@",
+                "https://www.netflix.com",
+                "me",
+            ),
+        )
+        .unwrap();
+
+    // Before the download: the bundled snapshot, nothing about the new breach.
+    let report = client.security_report(&ReportOptions::default()).unwrap();
+    assert!(report.breach_catalog.bundled);
+    let mut status = client.refresh_breach_catalog().unwrap();
+    for _ in 0..100 {
+        if status.changed {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        status = client.refresh_breach_catalog().unwrap();
+    }
+    assert!(
+        status.available && status.changed && !status.bundled,
+        "{status:?}"
+    );
+    assert_eq!(status.entries, 1);
+    // A second check finds nothing new.
+    assert!(!client.refresh_breach_catalog().unwrap().changed);
+
+    let report = client.security_report(&ReportOptions::default()).unwrap();
+    assert!(!report.breach_catalog.bundled);
+    let finding = report
+        .findings
+        .iter()
+        .find(|f| f.kind == FindingKind::BreachedSite)
+        .expect("a breached_site finding");
+    assert_eq!(finding.item_id, netflix);
+    assert_eq!(finding.breaches, ["Netflix"]);
+    assert_eq!(
+        report.breached_sites[0].affected,
+        std::slice::from_ref(&netflix)
+    );
+
+    // The alert is shown once.
+    let alerts = client.breach_alerts(&ReportOptions::default()).unwrap();
+    assert_eq!(alerts.len(), 1);
+    assert_eq!(alerts[0].name, "Netflix");
+    client.acknowledge_breach_alerts().unwrap();
+    assert!(
+        client
+            .breach_alerts(&ReportOptions::default())
+            .unwrap()
+            .is_empty()
+    );
+
+    // Dismissable like every other finding.
+    client
+        .dismiss_finding(&netflix, FindingKind::BreachedSite, true)
+        .unwrap();
+    let report = client.security_report(&ReportOptions::default()).unwrap();
+    assert!(
+        report
+            .findings
+            .iter()
+            .any(|f| f.kind == FindingKind::BreachedSite && f.dismissed)
+    );
+}
