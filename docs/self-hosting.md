@@ -5,10 +5,104 @@ Passbox is one binary (`passbox-server`) that serves the API and the web client.
 ## Quick start
 
 ```sh
-docker compose -f deploy/docker-compose.yml up -d
+cd deploy/compose
+cp .env.example .env    # set your domain and generate the passwords
+docker compose up -d
 ```
 
-The vault is then available at `http://localhost:8080`. Browsers only allow the cryptography and clipboard APIs Passbox needs on HTTPS (or `localhost`), so put a reverse proxy with TLS in front of it before you use it from other machines.
+The vault is then available at `https://<PASSBOX_DOMAIN>` with a certificate from Let's Encrypt. Details, backups and updates: [Docker Compose](#docker-compose).
+
+## Docker Compose
+
+[`deploy/compose`](../deploy/compose) runs a complete installation on one machine:
+
+| Service | Image | Purpose |
+| --- | --- | --- |
+| `caddy` | `caddy` (pinned by digest) | HTTPS with automatic certificates (Let's Encrypt or ZeroSSL), HTTP/3, compression; forwards to Passbox and checks `/ready` |
+| `passbox` | `ghcr.io/relationsoftware/passbox` | The server and the web vault. Read-only root filesystem, no capabilities, user 65532 |
+| `migrate` | same image, command `migrate` | Applies database migrations and exits. `docker compose up` runs it before Passbox starts, also after every update |
+| `postgres` | `postgres:17` (pinned by digest) | The database. Only on an internal network without internet access; not published on the host |
+| `backup` | built from `deploy/compose/backup` | Encrypted backups of the database and the attachments, see [Backups with Docker Compose](#backups-with-docker-compose) |
+
+**Requirements:** Docker Engine 24 or later with Compose v2, 1 vCPU and 2 GB RAM for a few hundred users, a host name whose DNS `A`/`AAAA` records point to the machine, and ports 80 and 443 reachable from the internet (for the certificate; port 443/udp for HTTP/3). The images are built for `linux/amd64` and `linux/arm64`.
+
+**Setup:**
+
+1. `cd deploy/compose && cp .env.example .env`.
+2. In `.env`, set `PASSBOX_DOMAIN` and `ACME_EMAIL`, and generate the four database passwords with `openssl rand -hex 32` (hex keeps them safe inside database URLs).
+3. Create a backup key pair on another machine with [age](https://age-encryption.org): `age-keygen -o passbox-backup-key.txt`. Put the public key (`age1…`) into `BACKUP_AGE_RECIPIENT` and keep the key file offline; you need it to restore.
+4. Create the backup directory for the backup user: `mkdir -p backups && sudo chown 65532:65532 backups`.
+5. `docker compose up -d`, then open `https://<PASSBOX_DOMAIN>` and create your account first (it becomes the instance admin, see [Administration](#administration)).
+
+Optional settings (mail, admins, Have I Been Pwned) are at the end of `.env.example`; every other variable from [Configuration](#configuration) can be added to the `passbox` service's `environment`.
+
+### Database roles
+
+On its first start, `initdb/10-passbox-roles.sh` creates the database `passbox` and three roles:
+
+| Role | Used for | Rights |
+| --- | --- | --- |
+| `passbox_migrator` | `PASSBOX_MIGRATION_DATABASE_URL`, the `migrate` service | Owns the schema and runs migrations |
+| `passbox_app` | `PASSBOX_DATABASE_URL`, the API | Reads and writes app tables; no `BYPASSRLS`, so row-level security applies |
+| `passbox_worker` | `PASSBOX_WORKER_DATABASE_URL`, background jobs | Narrow grants for mail, webhooks and other jobs |
+
+The migrations grant the table rights. The script only runs on an empty data volume; to change a password later, run `docker compose exec postgres psql -U postgres -c "ALTER ROLE passbox_app PASSWORD '…'"` and update `.env`.
+
+### Health checks
+
+The image has no shell (distroless), so it has no `HEALTHCHECK`. Orchestrators check it over HTTP instead:
+
+- `GET /health`: the process is alive (liveness).
+- `GET /ready`: the database is reachable and the migrations are at the version this release expects (readiness). Send traffic only to ready instances.
+
+Caddy checks `/ready` every 10 seconds and holds requests for up to 15 seconds while Passbox restarts. In Kubernetes, use `httpGet` probes on port 8080 with these paths; set `readOnlyRootFilesystem: true`, `runAsNonRoot: true` and an `emptyDir` for `/tmp`.
+
+### Updates
+
+```sh
+docker compose pull          # or pin a new version in PASSBOX_IMAGE first
+docker compose up -d         # runs migrate, then restarts Passbox
+```
+
+Pin a version for production, for example `PASSBOX_IMAGE=ghcr.io/relationsoftware/passbox:0.2.0@sha256:…`. Make a backup before updating (`docker compose run --rm backup once`). Migrations are not reversed; to go back to an older version, restore the backup made before the update.
+
+### Verifying images
+
+Release images are signed with [cosign](https://docs.sigstore.dev/) by the GitHub Actions workflow that built them, and carry an SBOM and build provenance:
+
+```sh
+cosign verify ghcr.io/relationsoftware/passbox:0.2.0 \
+  --certificate-identity-regexp '^https://github\.com/relationsoftware/passbox/\.github/workflows/images\.yml@refs/tags/v' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+docker buildx imagetools inspect ghcr.io/relationsoftware/passbox:0.2.0 --format '{{ json .SBOM }}'
+```
+
+To build the image yourself instead: `docker compose build` (or `docker build -t passbox .` in the repository root; `docker buildx build --platform linux/amd64,linux/arm64 .` for both architectures).
+
+### Backups with Docker Compose
+
+The `backup` service writes, every `BACKUP_INTERVAL_HOURS` (default 24):
+
+- `passbox-<time>.dump.age`: `pg_dump` of the database (custom format), encrypted to `BACKUP_AGE_RECIPIENT`,
+- `blobs-<time>.tar.age`: the encrypted attachment files, encrypted again,
+- `last-success`: the time of the last complete backup (monitor it),
+
+into `BACKUP_DIR` (default `deploy/compose/backups`) and deletes files older than `BACKUP_KEEP_DAYS` (default 14). The backups hold everything needed to recover, including the `server_secrets` table; without them all logins become invalid. **Copy them off the machine** (for example with `rclone`, `restic` or `rsync` to another location) — a backup on the same disk does not survive the loss of the machine. A backup on demand: `docker compose run --rm backup once`.
+
+### Restore
+
+1. Stop Passbox: `docker compose stop passbox backup`.
+2. Pick the backup time, for example `20261025T030000Z` from `backups/passbox-20261025T030000Z.dump.age`.
+3. Restore with the private key (this replaces the database and the attachments):
+
+   ```sh
+   BACKUP_AGE_KEY_FILE=/path/to/passbox-backup-key.txt \
+     docker compose --profile restore run --rm restore 20261025T030000Z
+   ```
+
+4. Start again: `docker compose up -d` (runs `migrate` first, so a backup from an older version is upgraded).
+
+Test a restore on another machine from time to time: copy `deploy/compose`, `.env` and a backup there, `docker compose up -d postgres`, then run steps 3 and 4.
 
 ## Configuration
 

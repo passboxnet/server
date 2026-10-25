@@ -79,10 +79,12 @@ cargo run -p passbox-cli -- totp JBSWY3DPEHPK3PXP
 ## Self-hosting
 
 ```sh
-docker compose -f deploy/docker-compose.yml up -d
+cd deploy/compose
+cp .env.example .env   # domain, passwords, backup key
+docker compose up -d
 ```
 
-The server listens on port 8080, serves the web client and stores its data in a SQLite database in the `passbox-data` volume. PostgreSQL is supported as well. See [docs/self-hosting.md](docs/self-hosting.md).
+This starts Passbox with PostgreSQL, Caddy for HTTPS and encrypted daily backups. The server image (`linux/amd64` and `linux/arm64`) serves the API and the web client. See [docs/self-hosting.md](docs/self-hosting.md#docker-compose).
 
 ## Pricing
 
