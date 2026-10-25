@@ -28,6 +28,8 @@ mod breach;
 mod comfort;
 #[path = "api/guests.rs"]
 mod guests;
+#[path = "api/icons.rs"]
+mod icons;
 #[path = "api/org_admin.rs"]
 mod org_admin;
 #[path = "api/recovery.rs"]
@@ -282,6 +284,8 @@ async fn run_all(database: &passbox_server::testing::TestDatabase) {
     known_devices_survive_email_lockout(&server).await;
     item_history(&server).await;
     website_icons(&server).await;
+    icons::shared_store(&server, database).await;
+    icons::icon_requests_are_not_logged(&server).await;
     breach::breach_proxy_and_monitoring(&server).await;
     breach::breach_catalog(&server, database).await;
     security_headers_are_set(&server).await;

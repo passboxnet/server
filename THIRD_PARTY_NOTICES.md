@@ -88,3 +88,34 @@ Refresh the icons with `node scripts/update-brand-icons.mjs` (all) or
 `node scripts/update-brand-icons.mjs okta github` (some); the service list is
 `packages/brand-icons/services.json`. The apps never load these icons from
 the services at run time.
+
+## Website icons of popular sites
+
+- **What:** the public website icons (apple-touch-icons, favicons or the
+  icon a homepage links) of the most popular sites, so the apps show them
+  without asking any server. Generated on 2026-10-25 from the top 5,000
+  domains of the ranking below; 3,516 had a usable icon.
+- **Ranking:** [Majestic Million](https://majestic.com/reports/majestic-million)
+  by Majestic-12 Ltd, downloaded 2026-10-25 from
+  `https://downloads.majestic.com/majestic_million.csv`, licensed under
+  [Creative Commons Attribution 3.0 Unported](https://creativecommons.org/licenses/by/3.0/).
+  Only the domain names and their order are used. The default
+  [Tranco](https://tranco-list.eu/) list was not used: it includes Cloudflare
+  Radar data under CC BY-NC 4.0, which does not allow commercial use.
+- **Bundled as:** `packages/site-icons/packs/web-32.pbia` (32 px, all
+  3,516 sites) and `web-64.pbia` (64 px, the 1,000 most popular) for the web
+  app, desktop app and extension; `packages/site-icons/mobile/site-icons-64.pbic`
+  (64 px, the 1,000 most popular) for iOS and Android. WebP, scaled from the
+  originals. `packages/site-icons/manifest.json` lists every domain with its
+  rank and the URL its icon came from.
+- **Source:** each site's own website, fetched with the Passbox server's
+  icon fetcher.
+- **Rights:** the icons are trademarks or other marks of their respective
+  owners and are not covered by Passbox's MIT license. Passbox shows them
+  only to identify the website a saved login belongs to, as a browser does
+  next to a bookmark; this implies no endorsement by, or affiliation with,
+  their owners. Owners who want an icon removed or replaced can open an
+  issue.
+
+Regenerate with `node scripts/update-site-icons.mjs` (see the script for
+options) and update the dates above.

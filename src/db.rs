@@ -110,6 +110,11 @@ pub enum Job {
     Breach,
     /// Deleting organization audit entries past their retention.
     AuditRetention,
+    /// The shared website icon store from request handlers (`site_icons`
+    /// only; no account is named, so the store never learns who asked).
+    Icons,
+    /// The background refresh of the shared website icon store.
+    IconRefresh,
     /// Refreshing the public breach catalogue from Have I Been Pwned.
     BreachCatalog,
 }
@@ -125,12 +130,17 @@ impl Job {
             Self::Attachments => "worker:attachments",
             Self::Breach => "worker:breach",
             Self::AuditRetention => "worker:audit_retention",
+            Self::Icons => "icons",
+            Self::IconRefresh => "worker:icons",
             Self::BreachCatalog => "worker:breach_catalog",
         }
     }
 
     fn on_worker_pool(self) -> bool {
-        !matches!(self, Self::Secrets | Self::Outbox | Self::Metrics)
+        !matches!(
+            self,
+            Self::Secrets | Self::Outbox | Self::Metrics | Self::Icons
+        )
     }
 }
 

@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT image, content_type FROM site_icons WHERE domain = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "image",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "site_icons",
+            "name": "image"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "content_type",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "site_icons",
+            "name": "content_type"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      true,
+      true
+    ]
+  },
+  "hash": "c5fdfaa30d222ef43c0ac26323ccc915a897f71415572164a8b8bc15e2d99403"
+}
