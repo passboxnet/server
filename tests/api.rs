@@ -1641,10 +1641,26 @@ async fn api_on_sqlite() {
     run_all("sqlite::memory:").await;
 }
 
+/// Other test binaries (the client's integration tests) may have used the same
+/// database already; the admin tests need it empty.
+async fn reset_postgres(url: &str) {
+    use sqlx::Connection;
+    let mut conn = sqlx::PgConnection::connect(url)
+        .await
+        .expect("connect to the test database");
+    sqlx::raw_sql("DROP SCHEMA public CASCADE; CREATE SCHEMA public;")
+        .execute(&mut conn)
+        .await
+        .expect("reset the test database");
+}
+
 #[tokio::test]
 async fn api_on_postgres() {
     match std::env::var("PASSBOX_TEST_DATABASE_URL") {
-        Ok(url) => run_all(&url).await,
+        Ok(url) => {
+            reset_postgres(&url).await;
+            run_all(&url).await
+        }
         Err(_) => eprintln!("PASSBOX_TEST_DATABASE_URL not set, skipping PostgreSQL tests"),
     }
 }
