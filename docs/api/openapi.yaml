@@ -1540,6 +1540,9 @@ paths:
                   role: { type: string }
                   expiresAt: { type: integer }
                   inviterEmail: { type: string, description: Email of the inviting admin. }
+                  recovery:
+                    type: boolean
+                    description: The organization's admins will be able to restore the invitee's access (recovery set up and required by the policy). Never true for guests. Apps show this before accepting.
         "404": { description: Invalid invitation. }
         "429": { $ref: "#/components/responses/RateLimited" }
   /api/v1/invitations/accept:
@@ -2115,6 +2118,19 @@ paths:
       responses:
         "204": { description: Cancelled. }
   /api/v1/orgs/{orgId}/recovery:
+    delete:
+      summary: Turn organization recovery off for everyone
+      description: |
+        Owners and admins. Deletes the recovery key, every admin's copy and every member's escrow and cancels
+        open requests. Refused with 403 `recovery_required` while the organization's policy requires recovery.
+      operationId: orgRecoveryTurnOff
+      tags: [recovery]
+      parameters:
+        - { name: orgId, in: path, required: true, schema: { $ref: "#/components/schemas/Id" } }
+      responses:
+        "204": { description: Recovery is off. }
+        "403": { description: "`forbidden` (not an admin) or `recovery_required`." }
+        "404": { description: Recovery is not set up, or not a member. }
     get:
       summary: Organization recovery key, grants and the caller's escrow
       description: Admins also see the enrolled members and the number of pending requests.
@@ -2912,6 +2928,30 @@ paths:
             content: { application/scim+json: { schema: { type: object } } },
           }
   # --- Service accounts (F2), see docs/architecture/service-accounts.md -----------------
+  /api/v1/agent-limit:
+    get:
+      summary: The fair-use limit for AI agents and service accounts
+      description: |
+        Agents and service accounts are free and never count as members. Active service accounts are limited by
+        `PASSBOX_AGENT_LIMIT_PER_MEMBER` (or the instance setting `agentLimitPerMember`); members of an
+        organization share a pool of the limit times its members who are not guests. Creating one more answers
+        403 `agent_limit_reached`.
+      operationId: agentLimit
+      tags: [service-accounts]
+      responses:
+        "200":
+          description: The pool that applies to the account.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  limitPerMember: { type: integer, description: 0 = unlimited. }
+                  used: { type: integer }
+                  allowed: { type: integer, description: 0 = unlimited. }
+                  pool: { type: string, enum: [personal, organization] }
+                  orgId: { $ref: "#/components/schemas/Id" }
+                  members: { type: integer }
   /api/v1/service-accounts:
     get:
       summary: The account's service accounts, newest first
@@ -3146,13 +3186,18 @@ paths:
               required: [tool, result]
               properties:
                 grantId: { type: string }
-                tool: { type: string, enum: [search, request_access, run, inject, create, generate] }
+                tool: { type: string, enum: [search, request_access, run, inject, create, generate, reveal] }
                 itemIds: { type: array, items: { type: string } }
                 target: { type: string, maxLength: 200 }
                 result: { type: string, enum: [ok, failed, denied, expired, blocked] }
                 clientName: { type: string, maxLength: 100 }
       responses:
         "204": { description: Recorded. }
+        "403":
+          description: |
+            `agent_reveal_not_allowed`: a successful `reveal` needs an approved, unexpired grant whose signed
+            decision allows revealing those items, and organization policies that allow it. The broker hands
+            out the value only after this endpoint accepted the event.
   /api/v1/service-account/agent-grants:
     post:
       summary: Ask the owner for a grant (pbx mcp with a service account token)

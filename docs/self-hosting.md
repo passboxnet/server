@@ -36,6 +36,7 @@ Every option can be set as a command-line flag or an environment variable.
 | `PASSBOX_ATTACHMENT_MAX_MB` | `100` | Largest attachment in MiB |
 | `PASSBOX_ATTACHMENT_QUOTA_MB` | `0` | Attachment storage per account (personal vaults) in MiB; `0` = unlimited |
 | `PASSBOX_ORG_ATTACHMENT_QUOTA_MB` | `0` | Attachment storage per organization (shared vaults) in MiB; `0` = unlimited |
+| `PASSBOX_AGENT_LIMIT_PER_MEMBER` | `0` | Fair-use limit for AI agents and service accounts (which never count as members): active service accounts per account, pooled per organization as this number × members who are not guests. `0` = unlimited (the self-hosting default; the hosted service uses `10`). Instance admins can override it in the admin console |
 | `PASSBOX_LOG_FORMAT` | `pretty` | `pretty` or `json` |
 | `RUST_LOG` | `info` | Log level, for example `debug` or `passbox_server=debug` |
 
