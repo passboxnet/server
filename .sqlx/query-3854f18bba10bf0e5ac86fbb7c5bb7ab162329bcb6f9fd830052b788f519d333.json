@@ -1,0 +1,74 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT version, etag, checked_at, fetched_at, error FROM site_breach_catalog WHERE id = 1 FOR UPDATE",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "version",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "site_breach_catalog",
+            "name": "version"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "etag",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "site_breach_catalog",
+            "name": "etag"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "checked_at",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "site_breach_catalog",
+            "name": "checked_at"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "fetched_at",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "site_breach_catalog",
+            "name": "fetched_at"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "error",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "site_breach_catalog",
+            "name": "error"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "3854f18bba10bf0e5ac86fbb7c5bb7ab162329bcb6f9fd830052b788f519d333"
+}

@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO org_security_reports (org_id, account_id, score, total, weak, reused, unsecured, password_policy, reported_at, site_breaches) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) ON CONFLICT (org_id, account_id) DO UPDATE SET score = excluded.score, total = excluded.total, weak = excluded.weak, reused = excluded.reused, unsecured = excluded.unsecured, password_policy = excluded.password_policy, reported_at = excluded.reported_at, site_breaches = excluded.site_breaches",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Jsonb"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "9526454f7c9e61b03e3211a13487874f6e2e00d802d9507ba39218143b5fedab"
+}

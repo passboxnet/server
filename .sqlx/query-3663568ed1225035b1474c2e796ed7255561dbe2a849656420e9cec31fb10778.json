@@ -1,0 +1,134 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT name, title, domain, breach_date, added_date, modified_date, pwn_count, data_classes, is_verified, is_sensitive FROM site_breaches WHERE domain <> '' AND NOT is_fabricated AND NOT is_spam_list AND NOT is_retired ORDER BY name",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "site_breaches",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "title",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "site_breaches",
+            "name": "title"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "domain",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "site_breaches",
+            "name": "domain"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "breach_date",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "site_breaches",
+            "name": "breach_date"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "added_date",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "site_breaches",
+            "name": "added_date"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "modified_date",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "site_breaches",
+            "name": "modified_date"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "pwn_count",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "site_breaches",
+            "name": "pwn_count"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "data_classes",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "site_breaches",
+            "name": "data_classes"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "is_verified",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "site_breaches",
+            "name": "is_verified"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "is_sensitive",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "site_breaches",
+            "name": "is_sensitive"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "3663568ed1225035b1474c2e796ed7255561dbe2a849656420e9cec31fb10778"
+}

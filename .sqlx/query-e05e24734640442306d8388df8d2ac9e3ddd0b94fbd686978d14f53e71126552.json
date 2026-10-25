@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE site_breach_catalog SET fetched_at = $1, error = '' WHERE id = 1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e05e24734640442306d8388df8d2ac9e3ddd0b94fbd686978d14f53e71126552"
+}

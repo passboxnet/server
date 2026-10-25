@@ -418,7 +418,42 @@ pub(super) async fn organization_administration(server: &TestServer) {
             server,
             Method::PUT,
             &format!("/api/v1/orgs/{org_id}/security-report"),
-            Some(json!({ "score": 72, "total": 10, "weak": 2, "reused": 1, "unsecured": 0, "passwordMeetsPolicy": true })),
+            Some(json!({ "score": 72, "total": 10, "weak": 2, "reused": 1, "unsecured": 0, "passwordMeetsPolicy": true,
+                "siteBreaches": [
+                    { "name": "Adobe", "title": "Adobe", "open": 1, "fixed": 0 },
+                    { "name": "Netflix", "title": "Netflix", "open": 0, "fixed": 2 }
+                ] })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _) = bob
+        .call(
+            server,
+            Method::PUT,
+            &format!("/api/v1/orgs/{org_id}/security-report"),
+            Some(
+                json!({ "score": 72, "total": 10, "weak": 2, "reused": 1, "unsecured": 0,
+                "siteBreaches": [
+                    { "name": "Adobe", "open": 1, "fixed": 0 },
+                    { "name": "Adobe", "open": 0, "fixed": 1 }
+                ] }),
+            ),
+        )
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "duplicate breaches are refused"
+    );
+    let (status, _) = dave
+        .call(
+            server,
+            Method::PUT,
+            &format!("/api/v1/orgs/{org_id}/security-report"),
+            Some(
+                json!({ "score": 90, "total": 3, "weak": 0, "reused": 0, "unsecured": 0,
+                "siteBreaches": [{ "name": "Adobe", "title": "Adobe", "open": 0, "fixed": 1 }] }),
+            ),
         )
         .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
@@ -443,6 +478,14 @@ pub(super) async fn organization_administration(server: &TestServer) {
     assert_eq!(member(bob.id())["twoFactor"], false);
     assert_eq!(member(dave.id())["twoFactor"], true);
     assert_eq!(member(bob.id())["security"]["score"], 72);
+    // Breached websites: members per breach, never item details.
+    assert_eq!(
+        report["siteBreaches"],
+        json!([
+            { "name": "Adobe", "title": "Adobe", "affectedMembers": 1, "fixedMembers": 1 },
+            { "name": "Netflix", "title": "Netflix", "affectedMembers": 0, "fixedMembers": 1 }
+        ])
+    );
     assert_eq!(member(bob.id())["vaultCount"], 1);
     let vault = report["vaults"]
         .as_array()

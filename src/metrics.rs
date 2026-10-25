@@ -33,6 +33,7 @@ const API_CLASSES: &[&str] = &[
     "attachments",
     "auth",
     "breach",
+    "breaches",
     "device-links",
     "emergency",
     "icons",

@@ -3635,6 +3635,7 @@ dependencies = [
  "axum",
  "clap",
  "data-encoding",
+ "flate2",
  "hmac 0.13.0",
  "http-body-util",
  "lettre",

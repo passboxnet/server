@@ -54,6 +54,8 @@ pub enum Public {
     Meta,
     /// The share-link viewer: share links only, by ID.
     ShareLink,
+    /// The public breach catalogue (global data, no tenant rows).
+    BreachCatalog,
 }
 
 impl Public {
@@ -62,6 +64,7 @@ impl Public {
             Self::Auth => "auth",
             Self::Meta => "meta",
             Self::ShareLink => "share_link",
+            Self::BreachCatalog => "breach_catalog",
         }
     }
 }
@@ -107,6 +110,8 @@ pub enum Job {
     Breach,
     /// Deleting organization audit entries past their retention.
     AuditRetention,
+    /// Refreshing the public breach catalogue from Have I Been Pwned.
+    BreachCatalog,
 }
 
 impl Job {
@@ -120,6 +125,7 @@ impl Job {
             Self::Attachments => "worker:attachments",
             Self::Breach => "worker:breach",
             Self::AuditRetention => "worker:audit_retention",
+            Self::BreachCatalog => "worker:breach_catalog",
         }
     }
 

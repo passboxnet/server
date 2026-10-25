@@ -119,6 +119,71 @@ pub struct OrgReport {
     /// unlimited).
     pub service_account_count: i64,
     pub agent_limit_per_member: u32,
+    /// Breached websites (Have I Been Pwned) that concern logins in this
+    /// organization's vaults, from the members' reports: how many members
+    /// still have affected logins and how many changed all of them.
+    pub site_breaches: Vec<OrgSiteBreach>,
+}
+
+/// One breached website across the members' reports.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OrgSiteBreach {
+    pub name: String,
+    pub title: String,
+    /// Members whose report has affected logins of this breach.
+    pub affected_members: i64,
+    /// Members who reported logins of this breach and changed all of them.
+    pub fixed_members: i64,
+}
+
+/// Per-breach numbers of one member's report (no item details).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SiteBreachCount {
+    name: String,
+    #[serde(default)]
+    title: String,
+    /// Logins still affected (or possibly affected).
+    open: i64,
+    /// Logins whose password was changed after the breach.
+    fixed: i64,
+}
+
+/// Adds the members' per-breach numbers up.
+fn org_site_breaches(reports: &[serde_json::Value]) -> Vec<OrgSiteBreach> {
+    let mut by_name: BTreeMap<String, OrgSiteBreach> = BTreeMap::new();
+    for report in reports {
+        let counts: Vec<SiteBreachCount> =
+            serde_json::from_value(report.clone()).unwrap_or_default();
+        for count in counts {
+            let entry = by_name
+                .entry(count.name.clone())
+                .or_insert_with(|| OrgSiteBreach {
+                    title: if count.title.is_empty() {
+                        count.name.clone()
+                    } else {
+                        count.title.clone()
+                    },
+                    name: count.name.clone(),
+                    affected_members: 0,
+                    fixed_members: 0,
+                });
+            if count.open > 0 {
+                entry.affected_members += 1;
+            } else if count.fixed > 0 {
+                entry.fixed_members += 1;
+            }
+        }
+    }
+    let mut list: Vec<OrgSiteBreach> = by_name.into_values().collect();
+    list.sort_by(|a, b| {
+        (b.affected_members + b.fixed_members)
+            .cmp(&(a.affected_members + a.fixed_members))
+            .then(b.affected_members.cmp(&a.affected_members))
+            .then(a.title.cmp(&b.title))
+    });
+    list
 }
 
 fn role_rank(role: &str) -> u8 {
@@ -427,6 +492,12 @@ pub async fn reports(
     let guest_count = count_role(true);
     let agent_limit_per_member =
         super::service_accounts::agent_limit_per_member(&state, &mut conn).await?;
+    let breach_reports: Vec<serde_json::Value> = sqlx::query_scalar!(
+        "SELECT site_breaches FROM org_security_reports WHERE org_id = $1",
+        &org_id,
+    )
+    .fetch_all(&mut *conn)
+    .await?;
     let service_account_count: i64 = sqlx::query_scalar!(
         "SELECT COUNT(*) AS \"count!\" FROM service_accounts sa WHERE sa.revoked_at = 0 \
          AND (sa.expires_at = 0 OR sa.expires_at > $2) AND sa.account_id IN \
@@ -442,6 +513,7 @@ pub async fn reports(
         guest_count,
         service_account_count,
         agent_limit_per_member,
+        site_breaches: org_site_breaches(&breach_reports),
         generated_at: now,
         unused_after_days: UNUSED_AFTER_DAYS,
         members,
@@ -467,6 +539,9 @@ pub struct SecurityReportRequest {
     /// `true`/`false` if known whether the master password met the policy.
     #[serde(default)]
     password_meets_policy: Option<bool>,
+    /// Breached websites that concern logins in this organization's vaults.
+    #[serde(default)]
+    site_breaches: Vec<SiteBreachCount>,
 }
 
 /// `PUT /orgs/{id}/security-report`: a member's app reports its security
@@ -489,6 +564,21 @@ pub async fn put_security_report(
     {
         return Err(ApiError::bad_request("the report numbers are out of range"));
     }
+    let mut breach_names = BTreeSet::new();
+    if req.site_breaches.len() > 500
+        || req.site_breaches.iter().any(|b| {
+            b.name.is_empty()
+                || b.name.len() > 200
+                || b.title.len() > 300
+                || !(0..=max).contains(&b.open)
+                || !(0..=max).contains(&b.fixed)
+                || !breach_names.insert(b.name.clone())
+        })
+    {
+        return Err(ApiError::bad_request(
+            "the breached-site numbers are out of range",
+        ));
+    }
     if let Some(wait) = state.limiter.hit(
         &format!("security-report:{}", session.account_id),
         30,
@@ -502,10 +592,11 @@ pub async fn put_security_report(
     // devices at once.
     sqlx::query!(
         "INSERT INTO org_security_reports (org_id, account_id, score, total, weak, reused, unsecured, \
-         password_policy, reported_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
+         password_policy, reported_at, site_breaches) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) \
          ON CONFLICT (org_id, account_id) DO UPDATE SET score = excluded.score, total = excluded.total, \
          weak = excluded.weak, reused = excluded.reused, unsecured = excluded.unsecured, \
-         password_policy = excluded.password_policy, reported_at = excluded.reported_at",
+         password_policy = excluded.password_policy, reported_at = excluded.reported_at, \
+         site_breaches = excluded.site_breaches",
         &org_id,
         &session.account_id,
         req.score,
@@ -519,6 +610,7 @@ pub async fn put_security_report(
         None => -1,
     },
         now_ms(),
+        serde_json::to_value(&req.site_breaches).map_err(|e| ApiError::Internal(e.into()))?,
     )
     .execute(&mut *tx)
     .await?;
