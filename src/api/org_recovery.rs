@@ -317,16 +317,11 @@ async fn insert_grant(
     granted_by: &str,
 ) -> ApiResult<()> {
     sqlx::query!(
-        "DELETE FROM org_recovery_grants WHERE org_id = $1 AND key_version = $2 AND account_id = $3",
-        org_id,
-        i64::from(upload.key_version),
-        &upload.account_id,
-    )
-        .execute(&mut **tx)
-        .await?;
-    sqlx::query!(
         "INSERT INTO org_recovery_grants (org_id, key_version, account_id, sealed_key, grant_data, \
-         grant_signature, granted_by, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+         grant_signature, granted_by, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
+         ON CONFLICT (org_id, key_version, account_id) DO UPDATE SET sealed_key = excluded.sealed_key, \
+         grant_data = excluded.grant_data, grant_signature = excluded.grant_signature, \
+         granted_by = excluded.granted_by, created_at = excluded.created_at",
         org_id,
         i64::from(upload.key_version),
         &upload.account_id,
@@ -437,16 +432,14 @@ pub async fn put_escrow(
     {
         return Err(bad("the escrow does not match the request"));
     }
-    sqlx::query!(
-        "DELETE FROM org_recovery_escrows WHERE org_id = $1 AND account_id = $2",
-        &org_id,
-        &session.account_id,
-    )
-    .execute(&mut *tx)
-    .await?;
+    // One statement, so two enrollments at the same time (the app enrolls
+    // on its own when a policy requires it) do not collide.
     sqlx::query!(
         "INSERT INTO org_recovery_escrows (org_id, account_id, key_version, escrow, escrow_signature, \
-         sealed_key, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+         sealed_key, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7) \
+         ON CONFLICT (org_id, account_id) DO UPDATE SET key_version = excluded.key_version, \
+         escrow = excluded.escrow, escrow_signature = excluded.escrow_signature, \
+         sealed_key = excluded.sealed_key, created_at = excluded.created_at",
         &org_id,
         &session.account_id,
         key_version,

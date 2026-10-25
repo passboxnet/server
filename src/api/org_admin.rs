@@ -498,16 +498,14 @@ pub async fn put_security_report(
     }
     let mut tx = state.db.as_account(&session.account_id).await?;
     access::require_confirmed(&mut tx, &org_id, &session.account_id).await?;
-    sqlx::query!(
-        "DELETE FROM org_security_reports WHERE org_id = $1 AND account_id = $2",
-        &org_id,
-        &session.account_id,
-    )
-    .execute(&mut *tx)
-    .await?;
+    // One statement: clients report on their own, possibly from two
+    // devices at once.
     sqlx::query!(
         "INSERT INTO org_security_reports (org_id, account_id, score, total, weak, reused, unsecured, \
-         password_policy, reported_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+         password_policy, reported_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
+         ON CONFLICT (org_id, account_id) DO UPDATE SET score = excluded.score, total = excluded.total, \
+         weak = excluded.weak, reused = excluded.reused, unsecured = excluded.unsecured, \
+         password_policy = excluded.password_policy, reported_at = excluded.reported_at",
         &org_id,
         &session.account_id,
         req.score,
