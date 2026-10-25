@@ -1286,6 +1286,43 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/MonitoredEmail" }
         "429": { description: "`rate_limited`." }
+  /api/v1/breaches/catalog:
+    get:
+      summary: The breach catalogue (breached websites)
+      description: >-
+        Have I Been Pwned's public list of breached websites, refreshed by the server every
+        `PASSBOX_BREACH_CATALOG_HOURS`, with only the fields clients need. Entries without a domain,
+        fabricated entries, spam lists and retired breaches are left out; sensitive breaches are flagged.
+        The same document for everyone and no session needed: clients match it against their own
+        logins on the device, so the server never learns which sites a user has. Before the first
+        successful fetch the server serves the snapshot bundled with it. Send `If-None-Match` with the
+        `ETag` for a `304`; `Accept-Encoding: gzip` gets a compressed body. Data: Have I Been Pwned,
+        CC BY 4.0 (name the source wherever it is shown).
+      operationId: breachCatalog
+      security: []
+      parameters:
+        - { name: If-None-Match, in: header, required: false, schema: { type: string } }
+      responses:
+        "200":
+          description: "The catalogue. Headers `ETag` (the quoted version) and `Cache-Control: public, no-cache`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BreachCatalog" }
+        "304": { description: Unchanged since the given `ETag`. }
+        "404": { description: "`PASSBOX_BREACH_CATALOG=off`: clients use their bundled snapshot." }
+  /api/v1/breaches/catalog/version:
+    get:
+      summary: Version of the breach catalogue
+      description: For clients that check often (at unlock, every few hours); download the catalogue only when the version changed.
+      operationId: breachCatalogVersion
+      security: []
+      responses:
+        "200":
+          description: Version and date.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BreachCatalogVersion" }
+        "404": { description: "`PASSBOX_BREACH_CATALOG=off`." }
   /api/v1/account/keys:
     get:
       summary: The account's own key pairs
@@ -3444,6 +3481,47 @@ components:
           }
         emailMonitoring:
           { type: boolean, description: "Whether email breach monitoring is available (`PASSBOX_HIBP_API_KEY` set)." }
+        breachCatalog:
+          {
+            type: boolean,
+            description: "Whether `/api/v1/breaches/catalog` serves the breach catalogue (`PASSBOX_BREACH_CATALOG`).",
+          }
+    SiteBreach:
+      type: object
+      description: One breached website of the catalogue (Have I Been Pwned's breach model, compacted).
+      required: [name, title, domain, breachDate, addedDate, modifiedDate, pwnCount, dataClasses, verified, sensitive]
+      properties:
+        name: { type: string, description: Have I Been Pwned's stable name. }
+        title: { type: string }
+        domain: { type: string, description: The breached site, lower case. }
+        breachDate: { type: string, description: "`YYYY-MM-DD` (often approximate)." }
+        addedDate: { type: string, description: "When it was published (ISO 8601). Passwords set before it count as affected." }
+        modifiedDate: { type: string }
+        pwnCount: { type: integer }
+        dataClasses: { type: array, items: { type: string }, description: "`Passwords`, `Email addresses`, …" }
+        verified: { type: boolean }
+        sensitive: { type: boolean, description: Keep the name off lock screens and notifications. }
+    BreachCatalog:
+      type: object
+      required: [version, updatedAt, source, sourceUrl, license, breaches]
+      properties:
+        version: { type: string, description: Changes with the content; the `ETag` is this value quoted. }
+        updatedAt: { type: integer, description: Newest added or modified date of the entries (Unix ms). }
+        source: { type: string, example: Have I Been Pwned }
+        sourceUrl: { type: string, example: "https://haveibeenpwned.com/" }
+        license: { type: string, example: CC BY 4.0 }
+        breaches: { type: array, items: { $ref: "#/components/schemas/SiteBreach" } }
+    BreachCatalogVersion:
+      type: object
+      required: [version, updatedAt, entries, bundled, source, sourceUrl, license]
+      properties:
+        version: { type: string }
+        updatedAt: { type: integer }
+        entries: { type: integer }
+        bundled: { type: boolean, description: No fetch succeeded yet; the server serves its bundled snapshot. }
+        source: { type: string }
+        sourceUrl: { type: string }
+        license: { type: string }
     EmailBreach:
       type: object
       description: A breach from Have I Been Pwned's breach model.
