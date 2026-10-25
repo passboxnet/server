@@ -146,6 +146,23 @@ pub struct Config {
     #[arg(long, env = "PASSBOX_HIBP_RPM", default_value_t = 10)]
     pub hibp_rpm: u32,
 
+    /// The breach catalogue ("compromised websites"): `on` fetches Have I
+    /// Been Pwned's public breach list (no API key) every
+    /// `PASSBOX_BREACH_CATALOG_HOURS` and serves it at
+    /// `/api/v1/breaches/catalog`; clients match it locally. `off` (for
+    /// air-gapped servers) disables the job and the endpoints; clients then
+    /// use the snapshot bundled with them.
+    #[arg(long, env = "PASSBOX_BREACH_CATALOG", value_enum, default_value_t = Switch::On)]
+    pub breach_catalog: Switch,
+
+    /// Hours between fetches of the breach catalogue (at least 1).
+    #[arg(long, env = "PASSBOX_BREACH_CATALOG_HOURS", default_value_t = 6)]
+    pub breach_catalog_hours: u64,
+
+    /// Breach catalogue source (for mirrors and tests).
+    #[arg(long, env = "PASSBOX_BREACH_CATALOG_URL", default_value = crate::api::breach_catalog::DEFAULT_CATALOG_URL, hide = true)]
+    pub breach_catalog_url: String,
+
     /// Pwned Passwords range endpoint (for mirrors and tests).
     #[arg(long, env = "PASSBOX_PWNED_PASSWORDS_URL", default_value = crate::api::breach::DEFAULT_RANGE_URL, hide = true)]
     pub pwned_passwords_url: String,
@@ -228,6 +245,9 @@ impl std::fmt::Debug for Config {
             .field("hibp_rpm", &self.hibp_rpm)
             .field("pwned_passwords_url", &self.pwned_passwords_url)
             .field("hibp_api_url", &self.hibp_api_url)
+            .field("breach_catalog", &self.breach_catalog)
+            .field("breach_catalog_hours", &self.breach_catalog_hours)
+            .field("breach_catalog_url", &self.breach_catalog_url)
             .finish()
     }
 }
@@ -276,6 +296,9 @@ impl Default for Config {
             hibp_rpm: 10,
             pwned_passwords_url: crate::api::breach::DEFAULT_RANGE_URL.to_owned(),
             hibp_api_url: crate::api::breach::DEFAULT_API_URL.to_owned(),
+            breach_catalog: Switch::On,
+            breach_catalog_hours: 6,
+            breach_catalog_url: crate::api::breach_catalog::DEFAULT_CATALOG_URL.to_owned(),
         }
     }
 }

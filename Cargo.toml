@@ -35,6 +35,8 @@ tracing-subscriber.workspace = true
 # HTTP for website icons and webhook delivery (D5).
 ureq.workspace = true
 url = "2"
+# gzip of the breach catalogue document (already in the tree through ureq).
+flate2 = "1"
 
 [dev-dependencies]
 tower = { workspace = true, features = ["util"] }

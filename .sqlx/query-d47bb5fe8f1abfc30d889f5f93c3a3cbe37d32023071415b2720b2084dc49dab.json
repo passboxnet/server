@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE site_breach_catalog SET version = $1, updated_at = $2, entries = $3, etag = $4, fetched_at = $5, error = '' WHERE id = 1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8",
+        "Int8",
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d47bb5fe8f1abfc30d889f5f93c3a3cbe37d32023071415b2720b2084dc49dab"
+}

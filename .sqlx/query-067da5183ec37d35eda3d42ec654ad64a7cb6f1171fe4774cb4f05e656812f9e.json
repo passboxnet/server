@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT site_breaches FROM org_security_reports WHERE org_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "site_breaches",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "org_security_reports",
+            "name": "site_breaches"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "067da5183ec37d35eda3d42ec654ad64a7cb6f1171fe4774cb4f05e656812f9e"
+}

@@ -1,0 +1,27 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO site_breaches (name, title, domain, breach_date, added_date, modified_date, pwn_count, data_classes, is_verified, is_sensitive, is_spam_list, is_fabricated, is_retired, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) ON CONFLICT (name) DO UPDATE SET title = excluded.title, domain = excluded.domain, breach_date = excluded.breach_date, added_date = excluded.added_date, modified_date = excluded.modified_date, pwn_count = excluded.pwn_count, data_classes = excluded.data_classes, is_verified = excluded.is_verified, is_sensitive = excluded.is_sensitive, is_spam_list = excluded.is_spam_list, is_fabricated = excluded.is_fabricated, is_retired = excluded.is_retired, updated_at = excluded.updated_at WHERE (site_breaches.title, site_breaches.domain, site_breaches.breach_date, site_breaches.added_date, site_breaches.modified_date, site_breaches.pwn_count, site_breaches.data_classes, site_breaches.is_verified, site_breaches.is_sensitive, site_breaches.is_spam_list, site_breaches.is_fabricated, site_breaches.is_retired) IS DISTINCT FROM (excluded.title, excluded.domain, excluded.breach_date, excluded.added_date, excluded.modified_date, excluded.pwn_count, excluded.data_classes, excluded.is_verified, excluded.is_sensitive, excluded.is_spam_list, excluded.is_fabricated, excluded.is_retired)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Jsonb",
+        "Bool",
+        "Bool",
+        "Bool",
+        "Bool",
+        "Bool",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "453187a6a48a6e6201d5cff7e23aea799a20206add99cee69a006e67ce1597cb"
+}

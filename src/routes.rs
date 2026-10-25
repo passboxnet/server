@@ -75,7 +75,12 @@ fn cors() -> CorsLayer {
     CorsLayer::new()
         .allow_origin(Any)
         .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE])
-        .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE])
+        .allow_headers([
+            header::AUTHORIZATION,
+            header::CONTENT_TYPE,
+            header::IF_NONE_MATCH,
+        ])
+        .expose_headers([header::ETAG])
         .max_age(Duration::from_secs(60 * 60))
 }
 
@@ -154,6 +159,8 @@ struct Meta {
     breach_proxy: bool,
     /// Whether email breach monitoring is available (`/api/v1/breach/emails`).
     email_monitoring: bool,
+    /// Whether `/api/v1/breaches/catalog` serves the breach catalogue.
+    breach_catalog: bool,
 }
 
 async fn meta(State(state): State<AppState>) -> ApiResult<Json<Meta>> {
@@ -176,6 +183,7 @@ async fn meta(State(state): State<AppState>) -> ApiResult<Json<Meta>> {
         icons: state.icons.enabled,
         breach_proxy: state.breach.proxy,
         email_monitoring: state.breach.monitoring,
+        breach_catalog: state.breach_catalog.enabled,
     }))
 }
 

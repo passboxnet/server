@@ -8,6 +8,7 @@ use passbox_core::random;
 
 use crate::api::attachments::AttachmentLimits;
 use crate::api::breach::BreachService;
+use crate::api::breach_catalog::CatalogService;
 use crate::api::icons::IconService;
 use crate::blobs::{BlobStore, DiskBlobStore};
 use crate::db::{Db, Job};
@@ -46,6 +47,8 @@ pub struct AppState {
     /// Have I Been Pwned proxy and email monitoring (`PASSBOX_BREACH_PROXY`,
     /// `PASSBOX_HIBP_API_KEY`).
     pub breach: Arc<BreachService>,
+    /// The public breach catalogue (`PASSBOX_BREACH_CATALOG`).
+    pub breach_catalog: Arc<CatalogService>,
     /// `PASSBOX_AGENT_LIMIT_PER_MEMBER` (0 = unlimited); the instance
     /// setting `agentLimitPerMember` overrides it.
     pub agent_limit_per_member: u32,
@@ -99,6 +102,7 @@ impl AppState {
             blobs: Arc::new(DiskBlobStore::temporary()),
             attachment_limits: AttachmentLimits::default(),
             breach: Arc::new(BreachService::http()),
+            breach_catalog: Arc::new(CatalogService::http()),
             agent_limit_per_member: 0,
             metrics: Arc::default(),
             db,

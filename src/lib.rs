@@ -90,6 +90,20 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
         }
         state.breach = std::sync::Arc::new(breach);
     }
+    {
+        let mut catalog = api::breach_catalog::CatalogService::new(
+            config.breach_catalog == config::Switch::On,
+            std::sync::Arc::new(api::breach_catalog::HttpCatalogUpstream::new(
+                &config.breach_catalog_url,
+            )),
+        );
+        catalog.interval =
+            std::time::Duration::from_secs(config.breach_catalog_hours.max(1) * 60 * 60);
+        if !catalog.enabled {
+            info!("the breach catalogue is off (PASSBOX_BREACH_CATALOG=off)");
+        }
+        state.breach_catalog = std::sync::Arc::new(catalog);
+    }
     state.mailer = mail::Mailer::new(
         state.db.clone(),
         &mail::MailConfig {
@@ -111,6 +125,7 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
     api::attachments::spawn_sweeper(state.clone());
     api::breach::spawn_worker(state.clone());
     api::icons::spawn_refresher(state.clone());
+    api::breach_catalog::spawn_worker(state.clone());
     if let Some(bind) = config.metrics_bind {
         let metrics_app = metrics::router(state.metrics.clone(), state.db.clone());
         let listener = TcpListener::bind(bind)

@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO site_breach_catalog (id, version, updated_at, entries, etag, fetched_at, checked_at, error) VALUES (1, '', 0, 0, '', 0, 0, '') ON CONFLICT (id) DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "71e7460dfe08b54d1192e9c73536618efcb7719f2a278e4db9d126fb46ca8266"
+}

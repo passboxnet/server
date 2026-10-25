@@ -40,6 +40,25 @@ for its data, so it is not bundled.
 Refresh both lists with `python3 scripts/update-site-directories.py` and
 update the snapshot dates above.
 
+## Have I Been Pwned breach catalogue
+
+- **What:** the list of breached websites (name, title, domain, breach and
+  publication dates, number of accounts, kinds of exposed data, verified
+  and sensitive flags) used for the "Website mit Datenleck" (breached
+  website) check of the security analysis.
+- **Source:** Have I Been Pwned by Troy Hunt, <https://haveibeenpwned.com/>,
+  API `https://haveibeenpwned.com/api/v3/breaches`.
+- **License:** [Creative Commons Attribution 4.0 International
+  (CC BY 4.0)](https://creativecommons.org/licenses/by/4.0/). Passbox names
+  Have I Been Pwned as the source, with a link, wherever it shows breach
+  data (web and desktop security check, extension, iOS and Android
+  Sicherheits-Check, organization reports). The data is compacted (fields
+  left out, entries without a domain, fabricated entries, spam lists and
+  retired breaches removed); it is not otherwise changed.
+- **Bundled as:** `crates/core/data/site-breaches.tsv`, snapshot of
+  2026-10-25 (979 entries), written by `scripts/update-breach-catalog.py`.
+  Servers fetch the current list themselves (`PASSBOX_BREACH_CATALOG`).
+
 ## Brand icons of third-party services
 
 - **What:** the public website icons (favicons, apple-touch-icons or app

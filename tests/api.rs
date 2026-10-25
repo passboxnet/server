@@ -287,6 +287,7 @@ async fn run_all(database: &passbox_server::testing::TestDatabase) {
     icons::shared_store(&server, database).await;
     icons::icon_requests_are_not_logged(&server).await;
     breach::breach_proxy_and_monitoring(&server).await;
+    breach::breach_catalog(&server, database).await;
     security_headers_are_set(&server).await;
     two_factor_totp_and_recovery_codes(&server).await;
     two_factor_remember_device(&server).await;

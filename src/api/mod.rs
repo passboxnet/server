@@ -8,6 +8,7 @@ pub mod agents;
 pub mod attachments;
 pub mod auth;
 pub mod breach;
+pub mod breach_catalog;
 pub mod device_links;
 pub mod emergency;
 pub mod groups;
@@ -343,6 +344,9 @@ fn breach_routes() -> Router<AppState> {
         .route("/breach/emails/{id}", delete(breach::delete_email))
         .route("/breach/emails/{id}/verify", post(breach::verify_email))
         .route("/breach/emails/{id}/check", post(breach::check_now))
+        // The public breach catalogue (the same for everyone; matched on the device).
+        .route("/breaches/catalog", get(breach_catalog::catalog))
+        .route("/breaches/catalog/version", get(breach_catalog::version))
 }
 
 /// Single sign-on, trusted devices and SCIM provisioning (wave E).
