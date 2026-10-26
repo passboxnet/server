@@ -1,5 +1,6 @@
 # Lints the deployment code: Terraform (fmt, validate, tflint, offline
-# tests with mocked providers), Ansible (ansible-lint, production profile),
+# tests with mocked providers; environments staging, production and single),
+# Ansible (ansible-lint, production profile; site.yml and single.yml),
 # Dockerfiles (hadolint) and shell scripts (shellcheck). Never talks to the
 # Hetzner API.
 #
@@ -58,16 +59,20 @@ jobs:
           tflint_version: ${{ env.TFLINT_VERSION }}
       - name: terraform fmt
         run: terraform fmt -check -recursive -diff deploy/hetzner/terraform
-      - name: terraform validate (both environments, no backend)
+      - name: terraform validate (all environments, no backend)
         run: |
-          for env in staging production; do
+          for env in staging production single; do
             terraform -chdir="deploy/hetzner/terraform/envs/$env" init -backend=false -input=false -lockfile=readonly
             terraform -chdir="deploy/hetzner/terraform/envs/$env" validate
           done
       - name: terraform test (mocked providers)
         run: |
-          terraform -chdir=deploy/hetzner/terraform/modules/platform init -input=false
-          terraform -chdir=deploy/hetzner/terraform/modules/platform test
+          # single: asserts the public firewall (80/443 only, never 22) and
+          # renders cloud-init (valid YAML, SSH only on NetBird's wt0).
+          for module in platform single; do
+            terraform -chdir="deploy/hetzner/terraform/modules/$module" init -input=false
+            terraform -chdir="deploy/hetzner/terraform/modules/$module" test
+          done
       - name: tflint
         working-directory: deploy/hetzner/terraform
         run: |
@@ -98,6 +103,9 @@ jobs:
         run: |
           for playbook in site.yml rollout-app.yml rollout-website.yml backup-check.yml restore-test.yml restore-drill.yml; do
             ansible-playbook --syntax-check -i localhost, "$playbook"
+          done
+          for playbook in single.yml single-rollout.yml; do
+            ansible-playbook --syntax-check -i inventory/single "$playbook"
           done
 
   containers:
