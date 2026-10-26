@@ -36,17 +36,18 @@ pub const LOGO_DARK_PATH: &str = "/assets/mail/logo-dark.png";
 const FONT_LATIN_PATH: &str = "/assets/brand/plus-jakarta-sans-latin.woff2";
 const FONT_LATIN_EXT_PATH: &str = "/assets/brand/plus-jakarta-sans-latin-ext.woff2";
 
-/// The keyhole mark (packages/ui/brand/mark.svg) for inline use.
+/// The keyhole mark (packages/ui/brand/mark.svg) for inline use: the Solar
+/// keyhole on the Marina signature gradient with a soft Sky glow.
 pub const MARK_SVG: &str = concat!(
     r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" aria-hidden="true">"##,
-    r##"<defs><linearGradient id="pb" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#5EA8F9"/>"##,
-    r##"<stop offset="0.5" stop-color="#2061F5"/><stop offset="1" stop-color="#1A2C94"/></linearGradient>"##,
-    r##"<radialGradient id="pb-glow" cx="0.22" cy="0.12" r="0.75"><stop offset="0" stop-color="#fff" stop-opacity="0.24"/>"##,
-    r##"<stop offset="1" stop-color="#fff" stop-opacity="0"/></radialGradient></defs>"##,
+    r##"<defs><linearGradient id="pb" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#36596A"/>"##,
+    r##"<stop offset="0.5" stop-color="#243E4B"/><stop offset="1" stop-color="#12232B"/></linearGradient>"##,
+    r##"<radialGradient id="pb-glow" cx="0.22" cy="0.12" r="0.75"><stop offset="0" stop-color="#6EABC7" stop-opacity="0.38"/>"##,
+    r##"<stop offset="1" stop-color="#6EABC7" stop-opacity="0"/></radialGradient></defs>"##,
     r##"<rect width="32" height="32" rx="9" fill="url(#pb)"/><rect width="32" height="32" rx="9" fill="url(#pb-glow)"/>"##,
-    r##"<rect x="0.5" y="0.5" width="31" height="31" rx="8.5" fill="none" stroke="#fff" stroke-opacity="0.18"/>"##,
-    r##"<circle cx="16" cy="13.4" r="4.2" fill="#fff"/>"##,
-    r##"<path d="M14.2 16.2h3.6l1.1 6.9a.8.8 0 0 1-.8.9h-4.2a.8.8 0 0 1-.8-.9z" fill="#fff"/></svg>"##
+    r##"<rect x="0.5" y="0.5" width="31" height="31" rx="8.5" fill="none" stroke="#fff" stroke-opacity="0.14"/>"##,
+    r##"<circle cx="16" cy="13.4" r="4.2" fill="#FFE26D"/>"##,
+    r##"<path d="M14.2 16.2h3.6l1.1 6.9a.8.8 0 0 1-.8.9h-4.2a.8.8 0 0 1-.8-.9z" fill="#FFE26D"/></svg>"##
 );
 
 /// Routes for the brand assets. They are public and long-cacheable.
@@ -200,7 +201,8 @@ fn favicon_data_url() -> String {
 fn theme_vars(t: &tokens::Theme) -> String {
     format!(
         "--canvas:{};--surface:{};--sunken:{};--border:{};--border-strong:{};--text:{};\
-         --muted:{};--subtle:{};--accent:{};--accent-hover:{};--accent-contrast:{};--focus:{};",
+         --muted:{};--subtle:{};--accent:{};--accent-hover:{};--accent-pressed:{};--accent-edge:{};\
+         --accent-contrast:{};--focus:{};",
         t.canvas,
         t.surface,
         t.surface_sunken,
@@ -211,13 +213,15 @@ fn theme_vars(t: &tokens::Theme) -> String {
         t.text_subtle,
         t.accent,
         t.accent_hover,
+        t.accent_pressed,
+        t.accent_edge,
         t.accent_contrast,
         t.focus,
     )
 }
 
 fn page_css() -> String {
-    use tokens::{DARK, FONT_MONO, FONT_SANS, GRADIENT_BACKDROP, LIGHT, radius};
+    use tokens::{DARK, FONT_MONO, FONT_SANS, GRADIENT_BACKDROP, LIGHT, palette, radius};
     // Same film grain as the `grain` utility in packages/ui/src/tokens.css.
     const GRAIN: &str = "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0.05 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E\")";
     format!(
@@ -228,10 +232,10 @@ fn page_css() -> String {
 @media (prefers-color-scheme:dark){{:root{{{dark}}}}}
 *{{box-sizing:border-box}}
 html,body{{margin:0;min-height:100%}}
-body{{min-height:100vh;font-family:{sans};font-size:15px;line-height:1.55;color:var(--text);background:radial-gradient(120% 70% at 50% 115%,rgba(76,105,240,.8),transparent 60%),{backdrop};background-color:#040713;-webkit-font-smoothing:antialiased}}
+body{{min-height:100vh;font-family:{sans};font-size:15px;line-height:1.55;color:var(--text);background:radial-gradient(90% 50% at 50% -5%,{glow_sky},transparent 70%),radial-gradient(50% 40% at 90% 100%,{glow_solar},transparent 70%),{backdrop};background-color:{marina_lip};-webkit-font-smoothing:antialiased}}
 body::after{{content:"";position:fixed;inset:0;pointer-events:none;background-image:{grain}}}
 .stage{{position:relative;z-index:1;display:flex;min-height:100vh;align-items:center;justify-content:center;padding:48px 16px}}
-.bezel{{width:100%;max-width:560px;padding:10px;border-radius:{bezel_radius}px;background:rgba(170,180,205,.22);box-shadow:inset 0 0 0 1px rgba(255,255,255,.18),0 30px 80px -20px rgba(0,0,0,.6)}}
+.bezel{{width:100%;max-width:560px;padding:10px;border-radius:{bezel_radius}px;background:rgba(219,239,249,.14);box-shadow:inset 0 0 0 1px rgba(255,255,255,.16),0 30px 80px -20px rgba(0,0,0,.6)}}
 .panel{{border-radius:{panel}px;background:var(--canvas);overflow:hidden}}
 .frame{{position:relative;margin:0 28px;padding:40px 28px 36px;background:radial-gradient(circle,var(--border-strong) .6px,transparent .9px) 0 0/1px 4px repeat-y,radial-gradient(circle,var(--border-strong) .6px,transparent .9px) 100% 0/1px 4px repeat-y}}
 .rule{{position:absolute;left:-28px;right:-28px;height:1px;background:radial-gradient(circle,var(--border-strong) .6px,transparent .9px) 0 0/4px 1px repeat-x}}
@@ -246,8 +250,9 @@ p{{margin:0 0 14px;color:var(--muted)}}
 .well{{margin:18px 0;padding:12px 16px;border-radius:{control}px;background:var(--sunken);box-shadow:inset 0 0 0 1px var(--border)}}
 .well code{{font-family:{mono};font-size:13px;color:var(--text);word-break:break-all}}
 .actions{{margin:24px 0 8px}}
-.pill{{display:inline-flex;align-items:center;min-height:44px;padding:0 22px;border-radius:{pill}px;background:var(--accent);color:var(--accent-contrast);font-weight:600;font-size:14px;text-decoration:none}}
-.pill:hover{{background:var(--accent-hover);box-shadow:0 8px 24px -8px var(--accent)}}
+.pill{{display:inline-flex;align-items:center;min-height:44px;padding:0 22px;border-radius:{pill}px;background:var(--accent);color:var(--accent-contrast);font-weight:600;font-size:14px;text-decoration:none;box-shadow:0 2px 0 0 var(--accent-edge)}}
+.pill:hover{{background:var(--accent-hover);box-shadow:0 2px 0 0 var(--accent-edge),0 10px 24px -10px var(--accent-edge)}}
+.pill:active{{background:var(--accent-pressed);box-shadow:none;transform:translateY(1px)}}
 .pill:focus-visible{{outline:2px solid var(--focus);outline-offset:2px}}
 footer{{padding:16px 56px 22px;font-size:12px;color:var(--subtle)}}
 @media (max-width:480px){{.frame{{margin:0 16px;padding:36px 18px 28px}}.rule{{left:-16px;right:-16px}}.rule::before{{left:13px}}.rule::after{{right:13px}}footer{{padding:14px 34px 18px}}h1{{font-size:24px}}}}
@@ -259,6 +264,9 @@ footer{{padding:16px 56px 22px;font-size:12px;color:var(--subtle)}}
         sans = FONT_SANS,
         mono = FONT_MONO,
         backdrop = GRADIENT_BACKDROP,
+        glow_sky = palette::GLOW_SKY,
+        glow_solar = palette::GLOW_SOLAR,
+        marina_lip = palette::MARINA_LIP,
         grain = GRAIN,
         bezel_radius = radius::PANEL + 10,
         panel = radius::PANEL,

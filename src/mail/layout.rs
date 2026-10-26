@@ -1,4 +1,4 @@
-//! The HTML layout every mail shares ("Passbox Night", docs/design/brand.md).
+//! The HTML layout every mail shares ("Passbox Marina", docs/design/brand.md).
 //!
 //! Email clients are not browsers: the layout uses nested tables and inline
 //! styles, so it renders the same in Outlook, Gmail and Apple Mail. The light
@@ -9,14 +9,14 @@
 //! - the logo (mark and wordmark) as inline images (`cid:`), a light and a
 //!   dark version, so no remote image has to be loaded; the alt text keeps
 //!   the wordmark readable when images are off;
-//! - a slim band in the signature gradient on top of the panel;
+//! - a slim band in the Marina signature gradient with a Solar line on top of the panel;
 //! - the panel (24 px radius) with dotted guides and corner dots;
-//! - a pill-shaped primary button;
+//! - a pill-shaped Solar primary button with Marina text and the lip;
 //! - a footer with the instance and why the mail was sent.
 
 use super::templates::{Block, Context, Locale, escape_html};
 use crate::brand::tokens::{
-    DARK, FONT_SANS, GRADIENT_SIGNATURE, GRADIENT_SIGNATURE_FALLBACK, LIGHT, Theme, radius,
+    DARK, FONT_SANS, GRADIENT_SIGNATURE, GRADIENT_SIGNATURE_FALLBACK, LIGHT, Theme, palette, radius,
 };
 
 /// An image attached to every mail and referenced as `cid:{content_id}`.
@@ -67,7 +67,7 @@ fn dark_css(d: &Theme) -> String {
          .pb-rule{{border-color:{rule}!important}}\
          .pb-guide{{border-color:{rule}!important}}\
          .pb-dot{{background:{dot}!important}}\
-         .pb-button{{background:{accent}!important}}\
+         .pb-button{{background:{accent}!important;border-bottom-color:{edge}!important}}\
          .pb-logo-light{{display:none!important}}\
          .pb-logo-dark{{display:block!important;max-height:none!important;overflow:visible!important}}",
         canvas = d.canvas,
@@ -81,6 +81,7 @@ fn dark_css(d: &Theme) -> String {
         rule = d.border_strong,
         dot = d.text_subtle,
         accent = d.accent,
+        edge = d.accent_edge,
     );
     // Outlook.com marks its dark mode with data-ogsc / data-ogsb.
     let outlook = rules
@@ -154,13 +155,14 @@ pub(super) fn render(subject: &str, blocks: &[Block], locale: Locale, ctx: &Cont
                 if url.starts_with("https://") || url.starts_with("http://") {
                     content.push_str(&format!(
                         "<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\" style=\"margin:28px 0 12px;border-collapse:separate\">\
-                         <tr><td class=\"pb-button\" align=\"center\" bgcolor=\"{accent}\" style=\"border-radius:{pill}px;background:{accent}\">\
+                         <tr><td class=\"pb-button\" align=\"center\" bgcolor=\"{accent}\" style=\"border-radius:{pill}px;background:{accent};border-bottom:2px solid {edge}\">\
                          <a href=\"{href}\" target=\"_blank\" style=\"display:inline-block;padding:13px 26px;border-radius:{pill}px;\
                          font-family:{font};font-size:15px;font-weight:600;line-height:20px;color:{contrast};text-decoration:none\">{label}</a>\
                          </td></tr></table>\n\
                          <p class=\"pb-subtle\" style=\"margin:0 0 16px;font-size:12px;line-height:1.5;color:{subtle};word-break:break-all\">\
                          <a class=\"pb-link\" href=\"{href}\" target=\"_blank\" style=\"color:{link};text-decoration:none\">{url_text}</a></p>\n",
                         accent = t.accent,
+                        edge = t.accent_edge,
                         pill = radius::PILL,
                         font = escape_html(FONT_SANS),
                         contrast = t.accent_contrast,
@@ -274,6 +276,7 @@ pub(super) fn render(subject: &str, blocks: &[Block], locale: Locale, ctx: &Cont
          <table role=\"presentation\" class=\"pb-card\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\" bgcolor=\"{surface}\" \
          style=\"border-collapse:separate;background:{surface};border:1px solid {border};border-radius:{panel}px;overflow:hidden\">\n\
          <tr><td bgcolor=\"{band_fallback}\" style=\"height:6px;font-size:0;line-height:0;background:{band_fallback};background-image:{band};border-radius:{panel}px {panel}px 0 0\">&nbsp;</td></tr>\n\
+         <tr><td bgcolor=\"{solar}\" style=\"height:2px;font-size:0;line-height:0;background:{solar}\">&nbsp;</td></tr>\n\
          <tr><td class=\"pb-pad\" style=\"padding:26px {gutter}px 22px\">{logos}</td></tr>\n\
          {rule}\
          <tr><td style=\"padding:0 {inset}px\"><table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\" style=\"border-collapse:collapse\"><tr>\
@@ -301,6 +304,7 @@ pub(super) fn render(subject: &str, blocks: &[Block], locale: Locale, ctx: &Cont
         panel = radius::PANEL,
         band = GRADIENT_SIGNATURE,
         band_fallback = GRADIENT_SIGNATURE_FALLBACK,
+        solar = palette::SOLAR,
         gutter = GUTTER,
         inset = GUTTER,
     )

@@ -221,7 +221,7 @@ pub mod palette {
     /// Soft Sky glow on the backdrop (top)
     pub const GLOW_SKY: &str = "rgba(110, 171, 199, 0.45)";
     /// Very soft Solar glow accent on the backdrop
-    pub const GLOW_SOLAR: &str = "rgba(255, 226, 109, 0.18)";
+    pub const GLOW_SOLAR: &str = "rgba(255, 226, 109, 0.1)";
 }
 
 /// The Passbox gradient: logo tile, app icons, brand panels. Lighter Marina top-left into Nocturnal Marina into deep Marina (#36596A → #243E4B → #12232B).
