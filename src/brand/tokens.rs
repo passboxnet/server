@@ -6,13 +6,13 @@
 /// The colors of one theme.
 #[derive(Debug, Clone, Copy)]
 pub struct Theme {
-    /// App and page background
+    /// App and page background (light: warm paper; dark: deep Marina)
     pub canvas: &'static str,
     /// Surface 1: cards, panels, list columns
     pub surface: &'static str,
     /// Surface 2: hover rows, nested cards, dialog footers
     pub surface_raised: &'static str,
-    /// Surface 3: menus, popovers, dialogs, sheets
+    /// Surface 3: menus, popovers, dialogs, sheets (dark: Nocturnal Marina)
     pub surface_overlay: &'static str,
     /// Text field and search background
     pub field: &'static str,
@@ -26,7 +26,9 @@ pub struct Theme {
     pub border: &'static str,
     /// Input borders, emphasized outlines
     pub border_strong: &'static str,
-    /// Primary text
+    /// The lip under stacked cards: 3 px bottom edge of stat tiles and category cards
+    pub card_edge: &'static str,
+    /// Primary text (light: Marina ink)
     pub text: &'static str,
     /// Secondary text (alias: text-secondary)
     pub text_muted: &'static str,
@@ -34,20 +36,30 @@ pub struct Theme {
     pub text_subtle: &'static str,
     /// Text on surface-inverse
     pub text_inverse: &'static str,
-    /// Electric blue fill: primary buttons, selected rows, switches
+    /// Solar Silk fill: primary buttons, the raised “+”, key highlights (always with accent-contrast ink)
     pub accent: &'static str,
     /// Hover on accent fills
     pub accent_hover: &'static str,
-    /// Pressed accent fills
+    /// Pressed accent fills (the Solar lip)
     pub accent_pressed: &'static str,
-    /// Tinted backgrounds: badges, selected chips, icon tiles
+    /// The lip under accent fills: 2 px bottom edge of primary pills and the “+”
+    pub accent_edge: &'static str,
+    /// Sky-tinted backgrounds: badges, chips, icon tiles
     pub accent_soft: &'static str,
-    /// Text and icons on accent
+    /// Text and icons on accent (Marina ink, never white)
     pub accent_contrast: &'static str,
-    /// Links and accent text on canvas and surfaces (Tailwind `text-accent`)
+    /// Links and accent text on canvas and surfaces (Tailwind `text-accent`; light: deep Sky, dark: Solar)
     pub accent_text: &'static str,
-    /// Focus ring
+    /// Focus ring (light: Marina, dark: Solar)
     pub focus: &'static str,
+    /// Selected list rows, active navigation, selected tabs (Sky tint)
+    pub selection: &'static str,
+    /// Marker bar and icon of the selected row or nav item
+    pub selection_marker: &'static str,
+    /// Checked controls: switch tracks, checkboxes, radios, progress
+    pub control: &'static str,
+    /// Thumb and check mark on control
+    pub control_contrast: &'static str,
     /// Success icons, bars, fills
     pub success: &'static str,
     /// Success text
@@ -56,7 +68,7 @@ pub struct Theme {
     pub success_soft: &'static str,
     /// Text on success fills
     pub success_contrast: &'static str,
-    /// Warning icons, bars, the orange update banner
+    /// Warning icons, bars, the orange update banner (orange, never Solar yellow)
     pub warning: &'static str,
     /// Warning text
     pub warning_text: &'static str,
@@ -72,7 +84,7 @@ pub struct Theme {
     pub danger_soft: &'static str,
     /// Text on danger fills
     pub danger_contrast: &'static str,
-    /// Info icons
+    /// Info icons (Sky Horizon)
     pub info: &'static str,
     /// Info text
     pub info_text: &'static str,
@@ -92,105 +104,137 @@ pub struct Theme {
 
 /// The light theme.
 pub const LIGHT: Theme = Theme {
-    canvas: "#F5F7FA",
+    canvas: "#F8F6F3",
     surface: "#FFFFFF",
-    surface_raised: "#F2F4F9",
+    surface_raised: "#EFF3F6",
     surface_overlay: "#FFFFFF",
     field: "#FFFFFF",
-    surface_sunken: "#EEF0F5",
-    surface_inverse: "#101624",
-    hairline: "rgba(16, 22, 36, 0.08)",
-    border: "#E0E3E8",
-    border_strong: "#CCCFD7",
-    text: "#0D1321",
-    text_muted: "#4F5564",
-    text_subtle: "#626773",
-    text_inverse: "#F3F5F9",
-    accent: "#1F5FEE",
-    accent_hover: "#1550D7",
-    accent_pressed: "#1046C1",
-    accent_soft: "#E4EDFF",
-    accent_contrast: "#FFFFFF",
-    accent_text: "#1C59E4",
-    focus: "#1F5FEE",
+    surface_sunken: "#E9EFF2",
+    surface_inverse: "#11262F",
+    hairline: "rgba(17, 38, 47, 0.09)",
+    border: "#D9E1E5",
+    border_strong: "#C5D0D5",
+    card_edge: "#CBD6DC",
+    text: "#11262F",
+    text_muted: "#455963",
+    text_subtle: "#596B74",
+    text_inverse: "#F1F6F8",
+    accent: "#FFE26D",
+    accent_hover: "#FDD554",
+    accent_pressed: "#F5C443",
+    accent_edge: "#BA7F14",
+    accent_soft: "#E0F0F8",
+    accent_contrast: "#11262F",
+    accent_text: "#1E5F7D",
+    focus: "#243E4B",
+    selection: "#CFE7F3",
+    selection_marker: "#243E4B",
+    control: "#243E4B",
+    control_contrast: "#FFFFFF",
     success: "#13804A",
     success_text: "#0A693C",
     success_soft: "#DFF8E6",
     success_contrast: "#FFFFFF",
-    warning: "#EF861B",
-    warning_text: "#924A03",
-    warning_soft: "#FFF1E0",
-    warning_contrast: "#270E01",
+    warning: "#EF7926",
+    warning_text: "#9C470D",
+    warning_soft: "#FEF1E2",
+    warning_contrast: "#280D02",
     danger: "#D02B31",
     danger_text: "#BE222A",
     danger_soft: "#FFEDEB",
     danger_contrast: "#FFFFFF",
-    info: "#3383AD",
-    info_text: "#1C6589",
-    info_soft: "#E6F4FE",
-    scrim: "rgba(16, 22, 36, 0.45)",
+    info: "#397D9E",
+    info_text: "#216280",
+    info_soft: "#E2F3FC",
+    scrim: "rgba(17, 38, 47, 0.45)",
     glass: "rgba(255, 255, 255, 0.72)",
     glass_border: "rgba(255, 255, 255, 0.7)",
     icon_tile: "#FFFFFF",
-    icon_tile_ring: "rgba(13, 19, 33, 0.08)",
+    icon_tile_ring: "rgba(17, 38, 47, 0.08)",
 };
 
 /// The dark theme.
 pub const DARK: Theme = Theme {
-    canvas: "#060A13",
-    surface: "#0F1521",
-    surface_raised: "#181E2B",
-    surface_overlay: "#1F2635",
-    field: "#090E19",
-    surface_sunken: "#04060E",
-    surface_inverse: "#F0F2F6",
+    canvas: "#0C1920",
+    surface: "#14252E",
+    surface_raised: "#1B303A",
+    surface_overlay: "#243E4B",
+    field: "#101F27",
+    surface_sunken: "#081318",
+    surface_inverse: "#EEF3F5",
     hairline: "rgba(255, 255, 255, 0.08)",
-    border: "#272E3D",
-    border_strong: "#3A4254",
-    text: "#F3F5F9",
-    text_muted: "#B4BBC8",
-    text_subtle: "#989EAD",
-    text_inverse: "#0D1321",
-    accent: "#276CF3",
-    accent_hover: "#185FEA",
-    accent_pressed: "#1256D8",
-    accent_soft: "#162B58",
-    accent_contrast: "#FFFFFF",
-    accent_text: "#80B3FD",
-    focus: "#6FA4FC",
-    success: "#3BB974",
-    success_text: "#6AD895",
-    success_soft: "#0B2E1A",
+    border: "#2A414C",
+    border_strong: "#3B5765",
+    card_edge: "#040D12",
+    text: "#F1F6F8",
+    text_muted: "#BBCAD2",
+    text_subtle: "#A2B4BE",
+    text_inverse: "#11262F",
+    accent: "#FFE26D",
+    accent_hover: "#FDEA97",
+    accent_pressed: "#F5C443",
+    accent_edge: "#E7AC2A",
+    accent_soft: "#214858",
+    accent_contrast: "#11262F",
+    accent_text: "#FFE26D",
+    focus: "#FFE26D",
+    selection: "#1F4353",
+    selection_marker: "#FFE26D",
+    control: "#FFE26D",
+    control_contrast: "#11262F",
+    success: "#43C07A",
+    success_text: "#79DD9F",
+    success_soft: "#123927",
     success_contrast: "#031108",
-    warning: "#F6922E",
-    warning_text: "#FBB961",
-    warning_soft: "#412307",
-    warning_contrast: "#270E01",
+    warning: "#F88A3D",
+    warning_text: "#FEB073",
+    warning_soft: "#4B2915",
+    warning_contrast: "#280D02",
     danger: "#D73337",
-    danger_text: "#FE8A88",
-    danger_soft: "#471715",
+    danger_text: "#F8A4A1",
+    danger_soft: "#512320",
     danger_contrast: "#FFFFFF",
-    info: "#50B1DC",
-    info_text: "#85CFF3",
-    info_soft: "#0A2C3E",
-    scrim: "rgba(1, 2, 5, 0.7)",
-    glass: "rgba(16, 22, 36, 0.68)",
+    info: "#6EABC7",
+    info_text: "#A9D6EA",
+    info_soft: "#1A3A48",
+    scrim: "rgba(1, 7, 12, 0.72)",
+    glass: "rgba(19, 36, 45, 0.7)",
     glass_border: "rgba(255, 255, 255, 0.1)",
-    icon_tile: "#EDEEF1",
+    icon_tile: "#ECEFF1",
     icon_tile_ring: "rgba(255, 255, 255, 0.06)",
 };
 
-/// The Passbox gradient: logo tile, app icons, primary hero accents. Sky blue top-left into electric blue into deep indigo.
-pub const GRADIENT_SIGNATURE: &str =
-    "linear-gradient(135deg, #5EA8F9 0%, #2061F5 50%, #1A2C94 100%)";
-/// The middle stop of the signature gradient, for clients without CSS gradients.
-pub const GRADIENT_SIGNATURE_FALLBACK: &str = "#2061F5";
+/// Named brand colors (theme independent).
+pub mod palette {
+    /// Nocturnal Marina #243E4B: brand base, logo tile, app icon background, ink on Solar
+    pub const MARINA: &str = "#243E4B";
+    /// Lip under Marina cards and tiles (#0B1A21)
+    pub const MARINA_LIP: &str = "#0B1A21";
+    /// Solar Silk #FFE26D: the signature accent, logo glyph
+    pub const SOLAR: &str = "#FFE26D";
+    /// Lip under Solar fills (#F5C443)
+    pub const SOLAR_LIP: &str = "#F5C443";
+    /// Sky Horizon #6EABC7: secondary, info, selection tints, illustrations
+    pub const SKY: &str = "#6EABC7";
+    /// Lip under Sky cards (#44739A)
+    pub const SKY_LIP: &str = "#44739A";
+    /// Soft Sky glow on the backdrop (top)
+    pub const GLOW_SKY: &str = "rgba(110, 171, 199, 0.45)";
+    /// Very soft Solar glow accent on the backdrop
+    pub const GLOW_SOLAR: &str = "rgba(255, 226, 109, 0.18)";
+}
 
-/// Website and onboarding backdrop behind panels: deep navy into electric blue (add grain).
+/// The Passbox gradient: logo tile, app icons, brand panels. Lighter Marina top-left into Nocturnal Marina into deep Marina (#36596A → #243E4B → #12232B).
+pub const GRADIENT_SIGNATURE: &str =
+    "linear-gradient(135deg, #36596A 0%, #243E4B 50%, #12232B 100%)";
+/// The middle stop of the signature gradient, for clients without CSS gradients.
+pub const GRADIENT_SIGNATURE_FALLBACK: &str = "#243E4B";
+
+/// Website and onboarding backdrop behind panels: deep Marina, lighter towards the top; add the Sky glow (top), the soft Solar glow and grain.
 pub const GRADIENT_BACKDROP: &str =
-    "linear-gradient(180deg, #040713 0%, #061348 45%, #2D54D3 100%)";
+    "linear-gradient(180deg, #123847 0%, #0D1D25 42%, #061016 100%)";
 /// The middle stop of the backdrop gradient, for clients without CSS gradients.
-pub const GRADIENT_BACKDROP_FALLBACK: &str = "#061348";
+pub const GRADIENT_BACKDROP_FALLBACK: &str = "#0D1D25";
 
 /// Plus Jakarta Sans with its fallbacks (SIL Open Font License 1.1). Pages serve the font; emails do not embed it.
 pub const FONT_SANS: &str = "\"Plus Jakarta Sans\", ui-sans-serif, system-ui, -apple-system, \"Segoe UI\", Roboto, sans-serif";
