@@ -126,7 +126,7 @@ jobs:
             VERSION=${{ steps.meta.outputs.version }}
             REVISION=${{ github.sha }}
             CREATED=${{ steps.name.outputs.created }}
-            NEXT_PUBLIC_SITE_URL=${{ vars.WEBSITE_URL || 'https://passbox.example' }}
+            NEXT_PUBLIC_SITE_URL=${{ vars.WEBSITE_URL || 'https://passbox.net' }}
           outputs: ${{ env.PUSH == 'true' && format('type=image,name={0},push-by-digest=true,name-canonical=true,push=true', steps.name.outputs.ref) || 'type=cacheonly' }}
           sbom: true
           provenance: mode=max
