@@ -50,6 +50,7 @@ jobs:
       packages: write # push to GHCR
       id-token: write # cosign keyless signing, provenance
       security-events: write # Trivy SARIF upload
+      actions: read # the SARIF upload reads the run in private repositories
     strategy:
       fail-fast: false
       matrix:
@@ -159,7 +160,10 @@ jobs:
           ignore-unfixed: true
           exit-code: "0"
 
+      # Code scanning needs GitHub Advanced Security in a private repository,
+      # so the upload may fail there; the gate below still blocks the release.
       - if: steps.gate.outputs.run == 'true' && always()
+        continue-on-error: true
         uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           sarif_file: trivy.sarif
