@@ -7,7 +7,7 @@
 # provenance (mode=max) to every image.
 #
 # Verify a published image:
-#   cosign verify ghcr.io/<owner>/passbox-server@sha256:<digest> \
+#   cosign verify ghcr.io/<owner>/server@sha256:<digest> \
 #     --certificate-identity-regexp '^https://github.com/<owner>/<repo>/\.github/workflows/images\.yml@refs/' \
 #     --certificate-oidc-issuer https://token.actions.githubusercontent.com
 #
@@ -54,7 +54,7 @@ jobs:
       matrix:
         include:
           - name: server
-            image: passbox-server
+            image: server
             dockerfile: Dockerfile
             title: Passbox server
     env:

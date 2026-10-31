@@ -17,7 +17,7 @@ use crate::mail::Locale;
 use crate::mail::templates::escape_html;
 
 /// The email logo (mark and wordmark, 164 × 48 at 2×) for light backgrounds.
-/// Copies of packages/ui/brand/png in passbox-core.
+/// Copies of packages/ui/brand/png in passboxnet/core.
 pub const LOGO_LIGHT_PNG: &[u8] = include_bytes!("../../assets/brand/email-logo@2x.png");
 /// The email logo for dark backgrounds.
 pub const LOGO_DARK_PNG: &[u8] = include_bytes!("../../assets/brand/email-logo-dark@2x.png");

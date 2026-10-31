@@ -19,7 +19,7 @@ The vault is then available at `https://<PASSBOX_DOMAIN>` with a certificate fro
 | Service | Image | Purpose |
 | --- | --- | --- |
 | `caddy` | `caddy` (pinned by digest) | HTTPS with automatic certificates (Let's Encrypt or ZeroSSL), HTTP/3, compression; forwards to Passbox and checks `/ready` |
-| `passbox` | `ghcr.io/passboxnet/passbox-server` | The server and the web vault. Read-only root filesystem, no capabilities, user 65532 |
+| `passbox` | `ghcr.io/passboxnet/server` | The server and the web vault. Read-only root filesystem, no capabilities, user 65532 |
 | `migrate` | same image, command `migrate` | Applies database migrations and exits. `docker compose up` runs it before Passbox starts, also after every update |
 | `postgres` | `postgres:17` (pinned by digest) | The database. Only on an internal network without internet access; not published on the host |
 | `backup` | built from `deploy/compose/backup` | Encrypted backups of the database and the attachments, see [Backups with Docker Compose](#backups-with-docker-compose) |
@@ -64,17 +64,17 @@ docker compose pull          # or pin a new version in PASSBOX_IMAGE first
 docker compose up -d         # runs migrate, then restarts Passbox
 ```
 
-Pin a version for production, for example `PASSBOX_IMAGE=ghcr.io/passboxnet/passbox-server:0.2.0@sha256:…`. Make a backup before updating (`docker compose run --rm backup once`). Migrations are not reversed; to go back to an older version, restore the backup made before the update.
+Pin a version for production, for example `PASSBOX_IMAGE=ghcr.io/passboxnet/server:0.2.0@sha256:…`. Make a backup before updating (`docker compose run --rm backup once`). Migrations are not reversed; to go back to an older version, restore the backup made before the update.
 
 ### Verifying images
 
 Release images are signed with [cosign](https://docs.sigstore.dev/) by the GitHub Actions workflow that built them, and carry an SBOM and build provenance:
 
 ```sh
-cosign verify ghcr.io/passboxnet/passbox-server:0.2.0 \
-  --certificate-identity-regexp '^https://github\.com/passboxnet/passbox-server/\.github/workflows/images\.yml@refs/tags/v' \
+cosign verify ghcr.io/passboxnet/server:0.2.0 \
+  --certificate-identity-regexp '^https://github\.com/passboxnet/server/\.github/workflows/images\.yml@refs/tags/v' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
-docker buildx imagetools inspect ghcr.io/passboxnet/passbox-server:0.2.0 --format '{{ json .SBOM }}'
+docker buildx imagetools inspect ghcr.io/passboxnet/server:0.2.0 --format '{{ json .SBOM }}'
 ```
 
 To build the image yourself instead: `docker compose build` (or `docker build -t passbox .` in the repository root; `docker buildx build --platform linux/amd64,linux/arm64 .` for both architectures).
@@ -132,8 +132,8 @@ Every option can be set as a command-line flag or an environment variable.
 | `PASSBOX_HIBP_RPM` | `10` | Breached-account requests per minute your subscription allows; the server paces its checks to it |
 | `PASSBOX_BREACH_CATALOG` | `on` | Breached websites: `on` fetches Have I Been Pwned's public breach list (no key) every `PASSBOX_BREACH_CATALOG_HOURS` and serves it at `/api/v1/breaches/catalog`; apps match it against their logins on the device. `off` for air-gapped servers: apps then use the snapshot bundled with them. See [Breached websites](#breached-websites) |
 | `PASSBOX_BREACH_CATALOG_HOURS` | `6` | Hours between fetches of the breach catalogue (at least 1) |
-| `PASSBOX_WEBHOOK_ALLOW_PRIVATE` | `false` | Allow organization webhooks to private and loopback addresses (and plain HTTP), for a SIEM in the same network. See [Administration](https://github.com/passboxnet/passbox-core/blob/main/docs/architecture/administration.md) |
-| `PASSBOX_BLOB_DIR` | `blobs` (Docker image: `/data/blobs`) | Directory for encrypted file attachments. Back it up together with the database. See [Attachments](https://github.com/passboxnet/passbox-core/blob/main/docs/architecture/attachments.md) |
+| `PASSBOX_WEBHOOK_ALLOW_PRIVATE` | `false` | Allow organization webhooks to private and loopback addresses (and plain HTTP), for a SIEM in the same network. See [Administration](https://github.com/passboxnet/core/blob/main/docs/architecture/administration.md) |
+| `PASSBOX_BLOB_DIR` | `blobs` (Docker image: `/data/blobs`) | Directory for encrypted file attachments. Back it up together with the database. See [Attachments](https://github.com/passboxnet/core/blob/main/docs/architecture/attachments.md) |
 | `PASSBOX_ATTACHMENT_MAX_MB` | `100` | Largest attachment in MiB |
 | `PASSBOX_ATTACHMENT_QUOTA_MB` | `0` | Attachment storage per account (personal vaults) in MiB; `0` = unlimited |
 | `PASSBOX_ORG_ATTACHMENT_QUOTA_MB` | `0` | Attachment storage per organization (shared vaults) in MiB; `0` = unlimited |
@@ -143,7 +143,7 @@ Every option can be set as a command-line flag or an environment variable.
 
 ## Database
 
-Passbox needs PostgreSQL 15 or newer ([ADR 0007](https://github.com/passboxnet/passbox-core/blob/main/docs/adr/0007-postgresql-only.md)). It separates tenants with row level security in the database as well as in the application; how that works and what it protects: [database-security.md](https://github.com/passboxnet/passbox-core/blob/main/docs/architecture/database-security.md).
+Passbox needs PostgreSQL 15 or newer ([ADR 0007](https://github.com/passboxnet/core/blob/main/docs/adr/0007-postgresql-only.md)). It separates tenants with row level security in the database as well as in the application; how that works and what it protects: [database-security.md](https://github.com/passboxnet/core/blob/main/docs/architecture/database-security.md).
 
 **Roles.** Create the database, then run [`sql/roles.sql`](../sql/roles.sql) once as a superuser, connected to it. It creates three roles and is safe to run again:
 
@@ -224,7 +224,7 @@ Mails go through a queue in the database (`mail_outbox`): requests never wait fo
 
 ## Cross-origin requests (CORS)
 
-The API answers cross-origin requests from any origin, so the [desktop app](https://github.com/passboxnet/passbox-desktop/blob/main/docs/desktop.md) (origins such as `tauri://localhost` and `http://tauri.localhost`) and web clients hosted elsewhere can use your server. This is safe because Passbox authenticates every request with a bearer token in the `Authorization` header and never uses cookies: a foreign page cannot act on behalf of a user without already holding their session token.
+The API answers cross-origin requests from any origin, so the [desktop app](https://github.com/passboxnet/desktop/blob/main/docs/desktop.md) (origins such as `tauri://localhost` and `http://tauri.localhost`) and web clients hosted elsewhere can use your server. This is safe because Passbox authenticates every request with a bearer token in the `Authorization` header and never uses cookies: a foreign page cannot act on behalf of a user without already holding their session token.
 
 The server sends:
 
@@ -266,7 +266,7 @@ Losing the `server_secrets` table invalidates all logins: users cannot sign in a
   So someone who knows a user's email cannot lock the user out of their signed-in devices; at most new devices have to wait. Limits are kept in memory per server process and answered with `429`, `Retry-After` and `details.retryAfterSeconds` (the remaining time of the window).
 - **Device tokens:** every successful login issues a new random device token and invalidates the one the login was started with. The server stores only SHA-256 hashes. A device token grants no access by itself; it only lifts the per-email lockout. It survives logout, locking and signing out a session from the device list, expires after a year, and at most 50 are kept per account. Changing the master password invalidates the device tokens of all other devices. Clients delete their token when the user signs out of the account.
 - **Two-factor sign-in:** users can add an authenticator app (TOTP, RFC 6238, ±1 step of 30 seconds, each code accepted once), security keys or passkeys (WebAuthn, ES256 and Ed25519) and get 10 one-time recovery codes. With a second factor, a login stops after the password with a 5-minute challenge; wrong factors are limited to 5 per challenge, 10 per account and 100 per IP in 15 minutes. "Remember this device" skips the step for 30 days on that device (stored with its device token; a master password change or turning two-factor sign-in off forgets it). Adding factors needs a login in the last 10 minutes, turning it off needs a second factor or recovery code. TOTP secrets are encrypted with a server key (`two_factor_key` in `server_secrets`), recovery codes are stored as SHA-256 hashes. Security keys are bound to the host name the web vault is served from (the WebAuthn RP ID): moving the vault to another domain makes them unusable, so users should keep their recovery codes. They need https (or `localhost`).
-- **Account recovery:** see [recovery.md](https://github.com/passboxnet/passbox-core/blob/main/docs/architecture/recovery.md). A recovery (by recovery code or through an organization) sets a new master password and a new Secret Key, signs out every device, deletes all device tokens and mails the account. Recovery-code logins share the per-IP authentication limit and are refused after 10 failures per email and IP, 20 per email and 100 per IP in 15 minutes; with two-factor sign-in the second factor is required too. Organization recovery requests are limited to 10 per IP and 3 per email per hour and expire after 48 hours; unknown emails get the same answer as known ones. Recovery tokens are single use and valid for 15 minutes.
+- **Account recovery:** see [recovery.md](https://github.com/passboxnet/core/blob/main/docs/architecture/recovery.md). A recovery (by recovery code or through an organization) sets a new master password and a new Secret Key, signs out every device, deletes all device tokens and mails the account. Recovery-code logins share the per-IP authentication limit and are refused after 10 failures per email and IP, 20 per email and 100 per IP in 15 minutes; with two-factor sign-in the second factor is required too. Organization recovery requests are limited to 10 per IP and 3 per email per hour and expire after 48 hours; unknown emails get the same answer as known ones. Recovery tokens are single use and valid for 15 minutes.
 - **Emergency access:** the server releases the sealed vault keys only after the waiting period the owner chose (1–30 days, default 7) or the owner's approval; the owner can deny until then. A server operator who changes the clock or the database can shorten the waiting period, but cannot read the vaults without the trusted person's private key. At most 20 contacts and 20 invitations per hour per account.
 - **Device codes:** adding a device with a code needs approval on the signed-in device; codes are valid for 10 minutes, claims are limited to 10 per IP and minute and 5 open codes per account. Only the email and the Secret Key move; the master password is never transferred.
 - **Item history:** every change of an item keeps the previous encrypted version on the server (the newest 20 per item); a permanent deletion removes them. They are encrypted like the item itself.
@@ -276,7 +276,7 @@ Losing the `server_secrets` table invalidates all logins: users cannot sign in a
 
 ## Single sign-on (SSO)
 
-Team organizations can sign in their members through an OpenID Connect identity provider and provision them with SCIM 2.0. Everything is included in every installation. How it works and what it protects: [docs/architecture/sso.md](https://github.com/passboxnet/passbox-core/blob/main/docs/architecture/sso.md). SAML is not supported ([ADR 0005](https://github.com/passboxnet/passbox-core/blob/main/docs/adr/0005-saml-deferred.md)); use your provider's OpenID Connect support (ADFS 2016 and later have it).
+Team organizations can sign in their members through an OpenID Connect identity provider and provision them with SCIM 2.0. Everything is included in every installation. How it works and what it protects: [docs/architecture/sso.md](https://github.com/passboxnet/core/blob/main/docs/architecture/sso.md). SAML is not supported ([ADR 0005](https://github.com/passboxnet/core/blob/main/docs/adr/0005-saml-deferred.md)); use your provider's OpenID Connect support (ADFS 2016 and later have it).
 
 **Before you start:** set `PASSBOX_PUBLIC_URL` to the address users open Passbox at (`https://passbox.example.com`). The identity provider sends users back to `{PASSBOX_PUBLIC_URL}/api/v1/sso/callback`, and SCIM is served at `{PASSBOX_PUBLIC_URL}/api/v1/scim/v2`. The server must reach the provider over https (outbound). For a development provider on the same machine over plain http, set `PASSBOX_SSO_ALLOW_HTTP_LOOPBACK=1` (only `localhost`, `127.0.0.1` and `[::1]`; never in production).
 
@@ -285,7 +285,7 @@ Team organizations can sign in their members through an OpenID Connect identity 
 1. Choose the provider, enter a name for the sign-in button, the **issuer URL**, the **client ID** and the **client secret**, and the **email domains** of your organization (one per line). Copy the **redirect URI** into the provider's app registration.
 2. **Check connection** reads the provider's discovery document and keys. Save with **Single sign-on is on**.
 3. **Test sign-in** opens the provider in a popup and shows the claims it sent and whether a real sign-in would work, without signing you in.
-4. Optional: **Require single sign-on** (members must sign in through the provider; owners and admins keep the master password as a fallback) and **Allow unlocking with single sign-on** (members can trust their devices and unlock without the master password; read the trade-off in [sso.md](https://github.com/passboxnet/passbox-core/blob/main/docs/architecture/sso.md#threat-model-of-sso-unlock) first).
+4. Optional: **Require single sign-on** (members must sign in through the provider; owners and admins keep the master password as a fallback) and **Allow unlocking with single sign-on** (members can trust their devices and unlock without the master password; read the trade-off in [sso.md](https://github.com/passboxnet/core/blob/main/docs/architecture/sso.md#threat-model-of-sso-unlock) first).
 
 Members still need their master password and, on a new device, the Secret Key, unless the device is trusted. Users sign in with **Use single sign-on (SSO)** on the sign-in page, or the option appears when they type an email of a configured domain.
 
@@ -336,7 +336,7 @@ What provisioning does: new people get an invitation mail (or join on their firs
 
 ## Breach checks and email monitoring
 
-Passbox's security check (see [security-analysis.md](https://github.com/passboxnet/passbox-core/blob/main/docs/architecture/security-analysis.md)) can use Have I Been Pwned in two ways; both go through your server.
+Passbox's security check (see [security-analysis.md](https://github.com/passboxnet/core/blob/main/docs/architecture/security-analysis.md)) can use Have I Been Pwned in two ways; both go through your server.
 
 **Leaked passwords** (`PASSBOX_BREACH_PROXY`, on by default). Apps send the first 5 characters of a password's SHA-1 hash to `GET /api/v1/breach/range/{prefix}`; the server fetches the padded range from `api.pwnedpasswords.com` (free, no key) and returns it, and the app compares locally. Have I Been Pwned sees your server's IP address, never the user's; your server sees hash prefixes, each shared by hundreds of passwords, never a password. Responses are cached in memory for a day; each account may fetch 3000 prefixes per hour. With the proxy off, apps fall back to asking Have I Been Pwned directly (users can also choose "Direkt" or "Über Passbox-Server" in the settings of the security check).
 
@@ -344,6 +344,6 @@ Passbox's security check (see [security-analysis.md](https://github.com/passboxn
 
 ### Breached websites
 
-(`PASSBOX_BREACH_CATALOG`, on by default, no key needed.) A background job fetches `https://haveibeenpwned.com/api/v3/breaches` every `PASSBOX_BREACH_CATALOG_HOURS` (sending `If-None-Match` when Have I Been Pwned sent an `ETag`; on several server instances only one fetches per interval) and stores every entry with its flags in the global table `site_breaches` (readable in every context, written only by the `worker:breach_catalog` job; see [database-security.md](https://github.com/passboxnet/passbox-core/blob/main/docs/architecture/database-security.md)). `GET /api/v1/breaches/catalog` serves the entries apps need (with a domain, not fabricated, not a spam list, not retired) as one document with an `ETag`, gzip and `Cache-Control: public, no-cache`; `/api/v1/breaches/catalog/version` tells apps whether to download. Every user gets the same document, without a session: the server never learns which websites anyone has logins for. Apps compare it with their logins on the device and show "Website mit Datenleck" in the security check, with a notification when a newly published breach concerns saved logins.
+(`PASSBOX_BREACH_CATALOG`, on by default, no key needed.) A background job fetches `https://haveibeenpwned.com/api/v3/breaches` every `PASSBOX_BREACH_CATALOG_HOURS` (sending `If-None-Match` when Have I Been Pwned sent an `ETag`; on several server instances only one fetches per interval) and stores every entry with its flags in the global table `site_breaches` (readable in every context, written only by the `worker:breach_catalog` job; see [database-security.md](https://github.com/passboxnet/core/blob/main/docs/architecture/database-security.md)). `GET /api/v1/breaches/catalog` serves the entries apps need (with a domain, not fabricated, not a spam list, not retired) as one document with an `ETag`, gzip and `Cache-Control: public, no-cache`; `/api/v1/breaches/catalog/version` tells apps whether to download. Every user gets the same document, without a session: the server never learns which websites anyone has logins for. Apps compare it with their logins on the device and show "Website mit Datenleck" in the security check, with a notification when a newly published breach concerns saved logins.
 
 The server needs outbound HTTPS to `haveibeenpwned.com` for this. Until the first fetch succeeds it serves the snapshot bundled with the server, and failed fetches are retried every 30 minutes (the reason is in `site_breach_catalog.error`). On an air-gapped server set `PASSBOX_BREACH_CATALOG=off`: the endpoints answer 404 and apps use the snapshot bundled with them (refreshed with each release, `scripts/update-breach-catalog.py`). The breach data is licensed CC BY 4.0 by Have I Been Pwned; the apps name it as the source wherever they show it.

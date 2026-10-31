@@ -1765,7 +1765,7 @@ dependencies = [
 [[package]]
 name = "passbox-client"
 version = "0.1.0"
-source = "git+https://github.com/passboxnet/passbox-core?tag=v0.1.0#3221491caa09a2d2bf2427d7a04d7b1dc2f41d71"
+source = "git+https://github.com/passboxnet/core?tag=v0.1.0#3221491caa09a2d2bf2427d7a04d7b1dc2f41d71"
 dependencies = [
  "data-encoding",
  "passbox-core",
@@ -1779,7 +1779,7 @@ dependencies = [
 [[package]]
 name = "passbox-core"
 version = "0.1.0"
-source = "git+https://github.com/passboxnet/passbox-core?tag=v0.1.0#3221491caa09a2d2bf2427d7a04d7b1dc2f41d71"
+source = "git+https://github.com/passboxnet/core?tag=v0.1.0#3221491caa09a2d2bf2427d7a04d7b1dc2f41d71"
 dependencies = [
  "argon2",
  "chacha20poly1305",

@@ -2,7 +2,7 @@
 
 # Passbox server image: the API server with the web vault embedded as static
 # files. PostgreSQL only; there is no bundled database. The web vault is the
-# released archive of passbox-web at WEB_VERSION, checked against WEB_SHA256.
+# released archive of passboxnet/web at WEB_VERSION, checked against WEB_SHA256.
 #
 #   docker build -t passbox .
 #   docker buildx build --platform linux/amd64,linux/arm64 -t passbox .
@@ -27,12 +27,12 @@ ARG RUST_IMAGE=docker.io/library/rust:1.97.0-bookworm@sha256:8fa55b2f3ddf97471ab
 ARG RUNTIME_IMAGE=gcr.io/distroless/cc-debian12:nonroot@sha256:9dac0a79194e45a7da0158a9c6da57b217585af0786db3845d1f0ec1a0dd182f
 
 # ---------------------------------------------------------------------------
-# Web vault: the released archive of passbox-web (architecture independent).
+# Web vault: the released archive of passboxnet/web (architecture independent).
 FROM --platform=$BUILDPLATFORM ${RUST_IMAGE} AS web
 ARG WEB_VERSION=0.1.0
 ARG WEB_SHA256=d32379044a4a225b022c6813ccaadc7fe290783880312868ba1347a0f81f0a74
 ADD --checksum=sha256:${WEB_SHA256} \
-    https://github.com/passboxnet/passbox-web/releases/download/v${WEB_VERSION}/passbox-web-${WEB_VERSION}.tar.gz \
+    https://github.com/passboxnet/web/releases/download/v${WEB_VERSION}/passbox-web-${WEB_VERSION}.tar.gz \
     /web.tar.gz
 RUN mkdir -p /web && tar -xzf /web.tar.gz -C /web
 
@@ -82,8 +82,8 @@ LABEL org.opencontainers.image.title="Passbox server" \
       org.opencontainers.image.description="End-to-end encrypted password manager: API server and web vault" \
       org.opencontainers.image.licenses="MIT" \
       org.opencontainers.image.vendor="Passbox" \
-      org.opencontainers.image.source="https://github.com/passboxnet/passbox-server" \
-      org.opencontainers.image.documentation="https://github.com/passboxnet/passbox-server/blob/main/docs/self-hosting.md" \
+      org.opencontainers.image.source="https://github.com/passboxnet/server" \
+      org.opencontainers.image.documentation="https://github.com/passboxnet/server/blob/main/docs/self-hosting.md" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${REVISION}" \
       org.opencontainers.image.created="${CREATED}"
