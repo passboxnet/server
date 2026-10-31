@@ -17,11 +17,10 @@ use crate::mail::Locale;
 use crate::mail::templates::escape_html;
 
 /// The email logo (mark and wordmark, 164 × 48 at 2×) for light backgrounds.
-pub const LOGO_LIGHT_PNG: &[u8] =
-    include_bytes!("../../../../packages/ui/brand/png/email-logo@2x.png");
+/// Copies of packages/ui/brand/png in passbox-core.
+pub const LOGO_LIGHT_PNG: &[u8] = include_bytes!("../../assets/brand/email-logo@2x.png");
 /// The email logo for dark backgrounds.
-pub const LOGO_DARK_PNG: &[u8] =
-    include_bytes!("../../../../packages/ui/brand/png/email-logo-dark@2x.png");
+pub const LOGO_DARK_PNG: &[u8] = include_bytes!("../../assets/brand/email-logo-dark@2x.png");
 /// Plus Jakarta Sans (variable, 200–800), Latin subset (OFL 1.1, see
 /// assets/fonts/PlusJakartaSans-OFL.txt).
 const FONT_LATIN: &[u8] =
