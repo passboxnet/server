@@ -1,4 +1,4 @@
-//! File attachments (G2). Clients encrypt files on the device
+//! File attachments. Clients encrypt files on the device
 //! (`passbox_core::file_crypto`) and upload the blob for an item; the
 //! file's key, name and type are stored in the encrypted item. The server
 //! checks access through the item's vault and enforces size limits and

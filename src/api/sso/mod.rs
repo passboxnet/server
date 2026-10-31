@@ -1,5 +1,5 @@
-//! Single sign-on with OpenID Connect (wave E1) and unlocking with SSO on
-//! trusted devices (wave E2).
+//! Single sign-on with OpenID Connect and unlocking with SSO on trusted
+//! devices.
 //!
 //! - [`config`] (this module): an organization's OIDC configuration
 //!   (owners and admins), connection checks.
@@ -92,7 +92,7 @@ pub struct SsoSettings {
     /// Members (other than owners and admins) must sign in with SSO.
     #[serde(default)]
     pub required: bool,
-    /// Members may unlock with SSO on trusted devices (E2).
+    /// Members may unlock with SSO on trusted devices.
     #[serde(default)]
     pub allow_device_unlock: bool,
     #[serde(default = "default_provider")]

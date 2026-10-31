@@ -1,5 +1,5 @@
-//! Trusted devices: unlocking with SSO instead of the master password
-//! (wave E2). The cryptography is in `passbox_core::trusted_device`; the
+//! Trusted devices: unlocking with SSO instead of the master password.
+//! The cryptography is in `passbox_core::trusted_device`; the
 //! server stores the account key sealed to each device and hands it out
 //! only after an SSO sign-in of that account.
 //!

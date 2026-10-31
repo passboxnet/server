@@ -1,5 +1,5 @@
-//! Moving items between vaults (B5), attachments (G2), share links (B7)
-//! and access requests (B9).
+//! Moving items between vaults, attachments, share links and access
+//! requests.
 
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode};

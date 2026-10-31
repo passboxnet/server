@@ -1,4 +1,4 @@
-//! Service accounts (F2): machine identities owned by an account.
+//! Service accounts: machine identities owned by an account.
 //!
 //! The owner's client creates the key pair and token, seals vault keys to
 //! the service account and signs each grant (`passbox_core::service_account`).
@@ -135,7 +135,7 @@ async fn check_grant(
         VaultAccess::Shared {
             key_epoch, org_id, ..
         } => {
-            // Guests are view-only (B8): no machine access to the vaults
+            // Guests are view-only: no machine access to the vaults
             // shared with them.
             if access::is_guest(conn, org_id, owner_id).await? {
                 return Err(access::guest_view_only());

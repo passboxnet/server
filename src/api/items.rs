@@ -148,7 +148,7 @@ pub async fn put(
                 return Err(revision_conflict(0));
             }
             if audit_org.is_none() {
-                // Policy D2: no new items in personal vaults if an
+                // Organization policy: no new items in personal vaults if an
                 // organization turned them off.
                 super::org_policy::ensure_personal_vaults_allowed(&mut tx, &session.account_id)
                     .await?;

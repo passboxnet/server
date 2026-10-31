@@ -1,4 +1,4 @@
-//! Access requests (B9): a member of an organization asks the managers of
+//! Access requests: a member of an organization asks the managers of
 //! one of its shared vaults for access. Approving is a normal share (the
 //! manager's client signs the next manifest version and seals the vault
 //! key); this module only keeps the requests and their status.

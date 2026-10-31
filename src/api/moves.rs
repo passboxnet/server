@@ -1,4 +1,4 @@
-//! Moving items between vaults (B5).
+//! Moving items between vaults.
 //!
 //! The client re-encrypts each item (and the versions of its history it can
 //! read) with the target vault's key, bound to the target vault, and sends

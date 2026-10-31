@@ -32,7 +32,7 @@ http-body-util = "0.1"
 tower-http = { version = "0.7", features = ["fs", "trace", "cors"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
-# HTTP for website icons and webhook delivery (D5).
+# HTTP for website icons and webhook delivery.
 ureq = { version = "3.5", features = ["platform-verifier"] }
 url = "2"
 # gzip of the breach catalogue document (already in the tree through ureq).

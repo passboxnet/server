@@ -1,4 +1,4 @@
-//! Share links for people without an account (B7).
+//! Share links for people without an account.
 //!
 //! The sender's device encrypts a snapshot with a random key that only
 //! travels in the link's fragment (`passbox_core::share_link`). The server
@@ -7,7 +7,7 @@
 //! and, if set, the passphrase), so knowing a link ID alone neither reveals
 //! anything nor uses up views. Links are deleted when they expire, after
 //! the last allowed view, after too many wrong passphrases, or by their
-//! creator. Organization policies (D2) can forbid or limit links for items
+//! creator. Organization policies can forbid or limit links for items
 //! of their vaults; the server enforces that for the vault the client names.
 
 use std::time::Duration;

@@ -2,7 +2,7 @@
 
 ## Status
 
-Passbox is in early development. The cryptographic design in [docs/architecture/cryptography.md](docs/architecture/cryptography.md) is a draft and has not been independently reviewed or audited. Do not use Passbox for real secrets yet.
+Passbox is in early development. The cryptographic design in [docs/architecture/cryptography.md](https://github.com/passboxnet/core/blob/main/docs/architecture/cryptography.md) in passboxnet/core is a draft and has not been independently reviewed or audited. Do not use Passbox for real secrets yet.
 
 ## Reporting a vulnerability
 
@@ -18,6 +18,6 @@ We will acknowledge your report within three working days and keep you informed 
 
 ## Scope
 
-In scope: everything in this repository, including the cryptographic core, the server, the web client, the browser extension and the build pipeline.
+In scope: everything in this repository, including the server (API, sync, background jobs, web vault hosting), the container image, the Docker Compose setup and the build pipeline. Report problems in the cryptographic core or the Rust client to [passboxnet/core](https://github.com/passboxnet/core/security/advisories/new). If you are not sure where a problem belongs, report it here; we will move it.
 
 Especially welcome are findings where a malicious or compromised server can read, modify, swap or roll back vault data. Passbox is designed to resist that.

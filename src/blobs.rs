@@ -1,4 +1,4 @@
-//! Storage for encrypted attachment blobs (G2).
+//! Storage for encrypted attachment blobs.
 //!
 //! Blobs are opaque ciphertext (see `passbox_core::file_crypto`); the
 //! database only keeps their size and owner. [`BlobStore`] is the seam for

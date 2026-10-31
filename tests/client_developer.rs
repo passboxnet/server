@@ -1,4 +1,4 @@
-//! Service accounts (F2) and the agent broker (F7) against a real,
+//! Service accounts and the agent broker against a real,
 //! in-process server. Needs `PASSBOX_TEST_DATABASE_URL` (a PostgreSQL
 //! superuser).
 

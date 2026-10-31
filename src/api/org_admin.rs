@@ -1,6 +1,6 @@
-//! Organization administration that is not cryptographic (waves D1, D4,
-//! D6): reports for admins, security aggregates members' apps report,
-//! server-side settings and ending a member's sessions during offboarding.
+//! Organization administration that is not cryptographic: reports for
+//! admins, security aggregates members' apps report, server-side settings
+//! and ending a member's sessions during offboarding.
 //!
 //! The server only knows metadata: who belongs to which vault with which
 //! role, when items changed, whether accounts have two-factor sign-in.

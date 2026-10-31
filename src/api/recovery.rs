@@ -1,6 +1,5 @@
-//! Account recovery (wave C): the personal recovery code (C2), the device
-//! side of organization recovery (C1) and setting new credentials after
-//! either.
+//! Account recovery: the personal recovery code, the device side of
+//! organization recovery and setting new credentials after either.
 //!
 //! - A recovery code is the password of a second OPAQUE record
 //!   (credential identifier `recovery|{account_id}`). The wrapped copy of

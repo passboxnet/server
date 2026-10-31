@@ -1,4 +1,4 @@
-//! Organization policies (wave D2).
+//! Organization policies.
 //!
 //! An owner or admin signs each policy version with their account key
 //! (`passbox_core::policy`); members' clients verify and enforce it. The

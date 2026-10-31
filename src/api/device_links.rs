@@ -1,4 +1,4 @@
-//! Adding a device with a code (wave C4).
+//! Adding a device with a code.
 //!
 //! 1. A signed-in device opens a link (`POST /device-links`) and shows the
 //!    server's 4-character short ID plus a secret the server never sees.

@@ -1,4 +1,4 @@
-//! The audit log of an organization (wave D3).
+//! The audit log of an organization.
 //!
 //! The server appends what it sees (sign-ins of members, membership,
 //! groups, vault access, writes to shared vaults, recovery, policies,

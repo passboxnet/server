@@ -823,7 +823,8 @@ pub struct InvitationPreview {
     /// Email of the admin who invited (also named in the invitation mail).
     inviter_email: String,
     /// The organization's admins can restore the invitee's access once they
-    /// joined (C1): recovery is set up and its policy requires enrollment.
+    /// joined: organization recovery is set up and its policy requires
+    /// enrollment.
     /// Never for guests. The app says so before the invitee accepts.
     recovery: bool,
 }

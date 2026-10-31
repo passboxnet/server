@@ -113,7 +113,7 @@ impl VaultAccess {
     }
 }
 
-/// Error code for anything a guest tries beyond viewing (B8).
+/// Error code for anything a guest tries beyond viewing (guests are view-only).
 pub const GUEST_VIEW_ONLY: &str = "guest_view_only";
 
 /// The 403 a guest gets for creating or changing anything.

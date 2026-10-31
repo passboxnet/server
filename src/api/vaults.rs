@@ -77,7 +77,7 @@ pub async fn create(
 ) -> ApiResult<(StatusCode, Json<WriteResponse>)> {
     validate_new_vault(&req)?;
     let mut tx = state.db.as_account(&session.account_id).await?;
-    // Policy D2: organizations can turn personal vaults off.
+    // Organization policy: organizations can turn personal vaults off.
     super::org_policy::ensure_personal_vaults_allowed(&mut tx, &session.account_id).await?;
     let seq = insert_vault(&mut tx, &session.account_id, &req, now_ms()).await?;
     tx.commit().await?;

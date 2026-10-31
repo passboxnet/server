@@ -1,4 +1,4 @@
-//! Events API and webhooks for SIEM systems (wave D5).
+//! Events API and webhooks for SIEM systems.
 //!
 //! - **Pull:** an admin creates a token for the organization; a SIEM
 //!   collector calls `GET /api/v1/org-events?after={seq}` with

@@ -4,7 +4,7 @@
 # initializes an empty data directory, and so before the `migrate` service
 # applies the first migration.
 #
-# The roles come from crates/server/sql/roles.sql (mounted at
+# The roles come from sql/roles.sql (mounted at
 # /passbox/roles.sql), the same script every other installation and the
 # tests run:
 #
@@ -18,7 +18,7 @@ set -eu
 
 roles=/passbox/roles.sql
 if [ ! -r "$roles" ]; then
-  echo "10-passbox-roles.sh: $roles is missing (mount crates/server/sql/roles.sql there)" >&2
+  echo "10-passbox-roles.sh: $roles is missing (mount sql/roles.sql of the server repository there)" >&2
   exit 1
 fi
 for var in PASSBOX_MIGRATOR_DB_PASSWORD PASSBOX_APP_DB_PASSWORD PASSBOX_WORKER_DB_PASSWORD; do

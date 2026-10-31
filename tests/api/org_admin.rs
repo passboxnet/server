@@ -1,4 +1,4 @@
-//! Organization administration (wave D): signed policies and their
+//! Organization administration: signed policies and their
 //! server-side enforcement, the hash-chained audit log with client events,
 //! export and retention, reports, settings, offboarding and the events API.
 

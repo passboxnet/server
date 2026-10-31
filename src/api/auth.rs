@@ -215,7 +215,8 @@ pub async fn record_event(
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
-    // Organizations log their members' sign-ins and security changes (D3).
+    // Organizations log their members' sign-ins and security changes in
+    // their audit log.
     super::org_audit::mirror_account_event(state, account_id, kind, device_name, client_kind, ip)
         .await;
     Ok(())

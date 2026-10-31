@@ -886,7 +886,7 @@ paths:
         "404": { description: Unknown or deleted item, or no access. }
   /api/v1/items/move:
     post:
-      summary: Move items into another vault (B5)
+      summary: Move items into another vault
       description: |
         The client re-encrypts each item and the versions of its history it
         can read for the target vault (bound to the target vault ID, the
@@ -947,7 +947,7 @@ paths:
         "409": { description: "`details.itemId` and `details.currentRevision`, or `details.currentKeyEpoch`." }
   /api/v1/attachments/{id}:
     put:
-      summary: Upload an encrypted attachment blob (G2)
+      summary: Upload an encrypted attachment blob
       description: |
         The raw body is the blob from `passbox_core::file_crypto` (the file
         key, name and type are in the encrypted item). IDs come from the
@@ -997,7 +997,7 @@ paths:
           description: '`{ maxFileSize, usage: [{ owner: "account" | orgId, used, quota (0 = unlimited) }] }`'
   /api/v1/share-links:
     get:
-      summary: The account's share links that have not expired (B7)
+      summary: The account's share links that have not expired
       operationId: shareLinks
       responses:
         "200":
@@ -1069,7 +1069,7 @@ paths:
         "404": { description: Unknown, expired or used up. }
   /api/v1/vaults/{id}/access-request:
     get:
-      summary: Whether this account can open a vault, and its own request (B9)
+      summary: Whether this account can open a vault, and its own request
       operationId: vaultAccessRequest
       parameters:
         - { name: id, in: path, required: true, schema: { $ref: "#/components/schemas/Id" } }
@@ -2594,7 +2594,7 @@ paths:
                 properties:
                   status: { type: string }
                   sealedPayload: { type: string }
-  # --- Single sign-on, trusted devices and SCIM (wave E, docs/architecture/sso.md) ---
+  # --- Single sign-on, trusted devices and SCIM (passboxnet/core: docs/architecture/sso.md) ---
   /api/v1/orgs/{orgId}/sso:
     parameters:
       - { name: orgId, in: path, required: true, schema: { type: string } }
@@ -2967,7 +2967,7 @@ paths:
             description: Missing or invalid SCIM token.,
             content: { application/scim+json: { schema: { type: object } } },
           }
-  # --- Service accounts (F2), see docs/architecture/service-accounts.md -----------------
+  # --- Service accounts, see passboxnet/core: docs/architecture/service-accounts.md ----
   /api/v1/agent-limit:
     get:
       summary: The fair-use limit for AI agents and service accounts
@@ -3141,7 +3141,7 @@ paths:
         - { name: revision, in: query, required: true, schema: { type: integer } }
       responses:
         "200": { description: Deleted. }
-  # --- AI agents (F7), see docs/architecture/ai-agents.md ----------------------------------
+  # --- AI agents, see passboxnet/core: docs/architecture/ai-agents.md ----------------------
   /api/v1/agent-grants:
     get:
       summary: Agent grant requests for this account (pending by default, `status=all` for 30 days)

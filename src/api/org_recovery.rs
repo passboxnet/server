@@ -1,4 +1,4 @@
-//! Organization recovery (wave C1), organization side: the recovery key,
+//! Organization recovery, organization side: the recovery key,
 //! which admins hold it, members' escrows (opt-in) and approving requests.
 //!
 //! The server checks that uploads parse, name the right IDs and are signed

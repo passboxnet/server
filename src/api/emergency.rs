@@ -1,4 +1,4 @@
-//! Emergency access (wave C3).
+//! Emergency access.
 //!
 //! 1. The grantor adds a trusted person by email (`invited`); the server
 //!    mails them.

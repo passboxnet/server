@@ -1,15 +1,20 @@
 # Third-party data
 
 Passbox is MIT-licensed. It bundles the following third-party data, which
-keeps its own license. Software dependencies are listed in `Cargo.lock` and
-`pnpm-lock.yaml` with their licenses in their packages.
+keeps its own license. Software dependencies are listed in `Cargo.lock` (and
+in the lockfiles of the other repositories) with their licenses in their
+packages.
+
+Most of this data lives in [passboxnet/core](https://github.com/passboxnet/core)
+and reaches this server through the core crate and the web vault the image
+embeds. Paths below name the repository they are in.
 
 ## 2fa.directory
 
 - **What:** which websites support two-factor authentication and how, with
-  links to their instructions. Used by the security analysis ("Zwei-Faktor-
-  Anmeldung möglich").
-- **Bundled as:** `crates/core/data/twofactor-sites.tsv` (domain, methods,
+  links to their instructions. Used by the security analysis ("Two-factor sign-in
+  available").
+- **Bundled as:** `crates/core/data/twofactor-sites.tsv` in passboxnet/core (domain, methods,
   documentation URL; sites without 2FA are left out).
 - **Source:** <https://2fa.directory/>, API `https://api.2fa.directory/v4/all.json`,
   repository <https://github.com/2factorauth/twofactorauth>.
@@ -21,8 +26,8 @@ keeps its own license. Software dependencies are listed in `Cargo.lock` and
 
 - **What:** which websites support passkeys, for sign-in and as a second
   factor, with links to their instructions. Used by the security analysis
-  ("Passkey möglich").
-- **Bundled as:** `crates/core/data/passkey-sites.tsv` (domain, flags,
+  ("Passkey available").
+- **Bundled as:** `crates/core/data/passkey-sites.tsv` in passboxnet/core (domain, flags,
   documentation URL; sites without passkey support are left out).
 - **Source:** <https://passkeys.2fa.directory/>, API
   `https://passkeys-api.2fa.directory/v1/all.json`, repository
@@ -37,26 +42,26 @@ keeps its own license. Software dependencies are listed in `Cargo.lock` and
 The site "passkeys.directory" was considered too; we found no open license
 for its data, so it is not bundled.
 
-Refresh both lists with `python3 scripts/update-site-directories.py` and
-update the snapshot dates above.
+Refresh both lists with `python3 scripts/update-site-directories.py` in
+passboxnet/core and update the snapshot dates above.
 
 ## Have I Been Pwned breach catalogue
 
 - **What:** the list of breached websites (name, title, domain, breach and
   publication dates, number of accounts, kinds of exposed data, verified
-  and sensitive flags) used for the "Website mit Datenleck" (breached
-  website) check of the security analysis.
+  and sensitive flags) used for the "Breached website" check of the security analysis.
 - **Source:** Have I Been Pwned by Troy Hunt, <https://haveibeenpwned.com/>,
   API `https://haveibeenpwned.com/api/v3/breaches`.
 - **License:** [Creative Commons Attribution 4.0 International
   (CC BY 4.0)](https://creativecommons.org/licenses/by/4.0/). Passbox names
   Have I Been Pwned as the source, with a link, wherever it shows breach
-  data (web and desktop security check, extension, iOS and Android
-  Sicherheits-Check, organization reports). The data is compacted (fields
+  data (the security check of the web, desktop, iOS and Android apps,
+  the extension and organization reports). The data is compacted (fields
   left out, entries without a domain, fabricated entries, spam lists and
   retired breaches removed); it is not otherwise changed.
-- **Bundled as:** `crates/core/data/site-breaches.tsv`, snapshot of
-  2026-10-25 (979 entries), written by `scripts/update-breach-catalog.py`.
+- **Bundled as:** `crates/core/data/site-breaches.tsv` in passboxnet/core,
+  snapshot of 2026-10-25 (979 entries), written by
+  `scripts/update-breach-catalog.py`.
   Servers fetch the current list themselves (`PASSBOX_BREACH_CATALOG`).
 
 ## Brand icons of third-party services
@@ -73,8 +78,8 @@ update the snapshot dates above.
   agent clients and providers (Claude, Anthropic, Cursor, Visual Studio Code,
   OpenAI, GitHub, Langdock, Mistral AI, IONOS, STACKIT, Scaleway, Ollama),
   Have I Been Pwned and 2fa.directory.
-- **Bundled as:** `packages/brand-icons/icons/<id>.png` (scaled to 64×64
-  pixels), with `packages/brand-icons/manifest.json` naming each icon's
+- **Bundled as:** `packages/brand-icons/icons/<id>.png` in passboxnet/core
+  (scaled to 64×64 pixels), with `packages/brand-icons/manifest.json` naming each icon's
   domain, source URL and the date it was fetched.
 - **Source:** each service's own website, as listed in the manifest.
 - **Rights:** the names, logos and icons are trademarks or other marks of
@@ -84,21 +89,21 @@ update the snapshot dates above.
   with, their owners. Owners who want an icon removed or replaced can open an
   issue.
 
-Refresh the icons with `node scripts/update-brand-icons.mjs` (all) or
-`node scripts/update-brand-icons.mjs okta github` (some); the service list is
-`packages/brand-icons/services.json`. The apps never load these icons from
+Refresh the icons in passboxnet/core with `node scripts/update-brand-icons.mjs`
+(all) or `node scripts/update-brand-icons.mjs okta github` (some); the service
+list is `packages/brand-icons/services.json`. The apps never load these icons from
 the services at run time.
 
 ## Plus Jakarta Sans and JetBrains Mono (fonts)
 
-- **What:** the Passbox typefaces (docs/design/system.md).
-- **Bundled as:** web, extension, desktop and website through the npm
+- **What:** the Passbox typefaces ([docs/design/system.md](https://github.com/passboxnet/core/blob/main/docs/design/system.md) in passboxnet/core).
+- **Bundled as:** the web vault, extension and desktop app through the npm
   packages `@fontsource-variable/plus-jakarta-sans` and
   `@fontsource-variable/jetbrains-mono` (each ships its license); iOS
-  `apps/ios/Shared/Fonts/PlusJakartaSans-*.ttf` (with
+  `Shared/Fonts/PlusJakartaSans-*.ttf` in passboxnet/ios (with
   `PlusJakartaSans-OFL.txt`); Android
-  `apps/android/app/src/main/res/font/plus_jakarta_sans_*.ttf`; the server's
-  own pages `crates/server/assets/fonts/plus-jakarta-sans-*.woff2` (copied
+  `app/src/main/res/font/plus_jakarta_sans_*.ttf` in passboxnet/android; the
+  server's own pages `assets/fonts/plus-jakarta-sans-*.woff2` here (copied
   from the npm package, with `PlusJakartaSans-OFL.txt`). The static
   TTFs are unmodified weight instances of the variable font; their name
   tables keep the copyright and license notice.
@@ -109,11 +114,12 @@ the services at run time.
 
 ## Lucide icons
 
-- **What:** the Passbox outline icon family (docs/design/brand.md).
+- **What:** the Passbox outline icon family ([docs/design/brand.md](https://github.com/passboxnet/core/blob/main/docs/design/brand.md) in passboxnet/core).
 - **Bundled as:** the npm package `lucide-react` on the web; on iOS
-  `apps/ios/Shared/Icons.xcassets` and on Android
-  `apps/android/app/src/main/res/drawable/pb_icon_*.xml`, exported from it by
-  `scripts/generate-brand-assets.mjs` (list: `packages/ui/brand/icons.json`).
+  `Shared/Icons.xcassets` in passboxnet/ios and on Android
+  `app/src/main/res/drawable/pb_icon_*.xml` in passboxnet/android, exported
+  from it by `scripts/generate-brand-assets.mjs` in passboxnet/core (list:
+  `packages/ui/brand/icons.json`).
 - **Source:** <https://lucide.dev>, <https://github.com/lucide-icons/lucide>.
 - **License:** ISC License, Copyright (c) Lucide Icons and Contributors;
   icons derived from Feather: MIT License, Copyright (c) 2013-present Cole
@@ -132,7 +138,7 @@ the services at run time.
   Only the domain names and their order are used. The default
   [Tranco](https://tranco-list.eu/) list was not used: it includes Cloudflare
   Radar data under CC BY-NC 4.0, which does not allow commercial use.
-- **Bundled as:** `packages/site-icons/packs/web-32.pbia` (32 px, all
+- **Bundled as:** `packages/site-icons/packs/web-32.pbia` in passboxnet/core (32 px, all
   3,516 sites) and `web-64.pbia` (64 px, the 1,000 most popular) for the web
   app, desktop app and extension; `packages/site-icons/mobile/site-icons-64.pbic`
   (64 px, the 1,000 most popular) for iOS and Android. WebP, scaled from the
@@ -147,5 +153,5 @@ the services at run time.
   their owners. Owners who want an icon removed or replaced can open an
   issue.
 
-Regenerate with `node scripts/update-site-icons.mjs` (see the script for
-options) and update the dates above.
+Regenerate in passboxnet/core with `node scripts/update-site-icons.mjs` (see
+the script for options) and update the dates above.

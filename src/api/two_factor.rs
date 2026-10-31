@@ -1365,7 +1365,7 @@ pub async fn disable(
         ));
     }
     {
-        // Policy D2: an organization can require two-factor sign-in.
+        // Organization policy: an organization can require two-factor sign-in.
         let mut conn = state.db.as_account(&session.account_id).await?;
         super::org_policy::ensure_two_factor_optional(&mut conn, &session.account_id).await?;
     }

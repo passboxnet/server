@@ -87,7 +87,7 @@ The `backup` service writes, every `BACKUP_INTERVAL_HOURS` (default 24):
 - `blobs-<time>.tar.age`: the encrypted attachment files, encrypted again,
 - `last-success`: the time of the last complete backup (monitor it),
 
-into `BACKUP_DIR` (default `deploy/compose/backups`) and deletes files older than `BACKUP_KEEP_DAYS` (default 14). The backups hold everything needed to recover, including the `server_secrets` table; without them all logins become invalid. **Copy them off the machine** (for example with `rclone`, `restic` or `rsync` to another location) — a backup on the same disk does not survive the loss of the machine. A backup on demand: `docker compose run --rm backup once`.
+into `BACKUP_DIR` (default `deploy/compose/backups`) and deletes files older than `BACKUP_KEEP_DAYS` (default 14). The backups hold everything needed to recover, including the `server_secrets` table; without them all logins become invalid. **Copy them off the machine** (for example with `rclone`, `restic` or `rsync` to another location). A backup on the same disk does not survive the loss of the machine. A backup on demand: `docker compose run --rm backup once`.
 
 ### Restore
 
@@ -127,7 +127,7 @@ Every option can be set as a command-line flag or an environment variable.
 | `PASSBOX_ADMIN_EMAILS` | unset | Comma-separated emails of accounts that are always instance admins, see [Administration](#administration) |
 | `PASSBOX_ICONS` | `on` | `on` lets signed-in apps load website icons through the server, `off` turns this off. See [Website icons](#website-icons) |
 | `PASSBOX_BREACH_PROXY` | `on` | `on` lets signed-in apps check passwords against Have I Been Pwned through the server (k-anonymity: only 5-character hash prefixes), so Have I Been Pwned never sees users' IP addresses; `off` turns the endpoint off. See [Breach checks and email monitoring](#breach-checks-and-email-monitoring) |
-| `PASSBOX_HIBP_API_KEY` | – | Have I Been Pwned API key ([subscription](https://haveibeenpwned.com/API/Key)). Turns on email breach monitoring: users confirm addresses by code, the server checks them and mails new breaches |
+| `PASSBOX_HIBP_API_KEY` | unset | Have I Been Pwned API key ([subscription](https://haveibeenpwned.com/API/Key)). Turns on email breach monitoring: users confirm addresses by code, the server checks them and mails new breaches |
 | `PASSBOX_HIBP_CHECK_HOURS` | `24` | Hours between checks of each monitored address |
 | `PASSBOX_HIBP_RPM` | `10` | Breached-account requests per minute your subscription allows; the server paces its checks to it |
 | `PASSBOX_BREACH_CATALOG` | `on` | Breached websites: `on` fetches Have I Been Pwned's public breach list (no key) every `PASSBOX_BREACH_CATALOG_HOURS` and serves it at `/api/v1/breaches/catalog`; apps match it against their logins on the device. `off` for air-gapped servers: apps then use the snapshot bundled with them. See [Breached websites](#breached-websites) |
@@ -155,7 +155,7 @@ Passbox needs PostgreSQL 15 or newer ([ADR 0007](https://github.com/passboxnet/c
 
 ```sh
 createdb passbox
-psql -d passbox -v ON_ERROR_STOP=1 -f crates/server/sql/roles.sql
+psql -d passbox -v ON_ERROR_STOP=1 -f sql/roles.sql
 psql -d passbox -c "ALTER ROLE passbox_migrator PASSWORD '…'" \
   -c "ALTER ROLE passbox_app PASSWORD '…'" -c "ALTER ROLE passbox_worker PASSWORD '…'"
 ```
@@ -344,6 +344,6 @@ Passbox's security check (see [security-analysis.md](https://github.com/passboxn
 
 ### Breached websites
 
-(`PASSBOX_BREACH_CATALOG`, on by default, no key needed.) A background job fetches `https://haveibeenpwned.com/api/v3/breaches` every `PASSBOX_BREACH_CATALOG_HOURS` (sending `If-None-Match` when Have I Been Pwned sent an `ETag`; on several server instances only one fetches per interval) and stores every entry with its flags in the global table `site_breaches` (readable in every context, written only by the `worker:breach_catalog` job; see [database-security.md](https://github.com/passboxnet/core/blob/main/docs/architecture/database-security.md)). `GET /api/v1/breaches/catalog` serves the entries apps need (with a domain, not fabricated, not a spam list, not retired) as one document with an `ETag`, gzip and `Cache-Control: public, no-cache`; `/api/v1/breaches/catalog/version` tells apps whether to download. Every user gets the same document, without a session: the server never learns which websites anyone has logins for. Apps compare it with their logins on the device and show "Website mit Datenleck" in the security check, with a notification when a newly published breach concerns saved logins.
+(`PASSBOX_BREACH_CATALOG`, on by default, no key needed.) A background job fetches `https://haveibeenpwned.com/api/v3/breaches` every `PASSBOX_BREACH_CATALOG_HOURS` (sending `If-None-Match` when Have I Been Pwned sent an `ETag`; on several server instances only one fetches per interval) and stores every entry with its flags in the global table `site_breaches` (readable in every context, written only by the `worker:breach_catalog` job; see [database-security.md](https://github.com/passboxnet/core/blob/main/docs/architecture/database-security.md)). `GET /api/v1/breaches/catalog` serves the entries apps need (with a domain, not fabricated, not a spam list, not retired) as one document with an `ETag`, gzip and `Cache-Control: public, no-cache`; `/api/v1/breaches/catalog/version` tells apps whether to download. Every user gets the same document, without a session: the server never learns which websites anyone has logins for. Apps compare it with their logins on the device and show "Breached website" in the security check, with a notification when a newly published breach concerns saved logins.
 
 The server needs outbound HTTPS to `haveibeenpwned.com` for this. Until the first fetch succeeds it serves the snapshot bundled with the server, and failed fetches are retried every 30 minutes (the reason is in `site_breach_catalog.error`). On an air-gapped server set `PASSBOX_BREACH_CATALOG=off`: the endpoints answer 404 and apps use the snapshot bundled with them (refreshed with each release, `scripts/update-breach-catalog.py`). The breach data is licensed CC BY 4.0 by Have I Been Pwned; the apps name it as the source wherever they show it.

@@ -446,7 +446,7 @@ pub async fn put_member(
     let mut tx = state.db.as_account(&session.account_id).await?;
     let (org_id, key_epoch) =
         require_vault_manager(&mut tx, &vault_id, &session.account_id).await?;
-    // Guests are view-only (B8): sharing with them means `view`.
+    // Guests are view-only: sharing with them means `view`.
     if principal_type == PrincipalType::Account
         && role > VaultRole::View
         && access::is_guest(&mut tx, &org_id, &req.principal_id).await?

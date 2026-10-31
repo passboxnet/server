@@ -1,4 +1,4 @@
-//! SCIM 2.0 provisioning (wave E3, RFC 7643/7644) under `/api/v1/scim/v2`,
+//! SCIM 2.0 provisioning (RFC 7643/7644) under `/api/v1/scim/v2`,
 //! authenticated with a bearer token per organization.
 //!
 //! What provisioning does in Passbox:

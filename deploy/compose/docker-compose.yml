@@ -14,7 +14,7 @@ x-hardening: &hardening
 
 x-passbox-env: &passbox-env
   # Three database roles, created by initdb/10-passbox-roles.sh (from
-  # crates/server/sql/roles.sql) on the first start: the app role is subject
+  # sql/roles.sql) on the first start: the app role is subject
   # to row level security, the migrator owns the schema, the worker runs
   # background jobs.
   PASSBOX_DATABASE_URL: postgres://passbox_app:${PASSBOX_APP_DB_PASSWORD:?set in .env}@postgres:5432/passbox
@@ -37,7 +37,7 @@ services:
       - postgres-data:/var/lib/postgresql/data
       - ./initdb:/docker-entrypoint-initdb.d:ro
       # The role definitions, run by initdb/10-passbox-roles.sh.
-      - ../../crates/server/sql/roles.sql:/passbox/roles.sql:ro
+      - ../../sql/roles.sql:/passbox/roles.sql:ro
     networks: [backend]
     shm_size: 256mb
     healthcheck:

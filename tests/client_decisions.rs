@@ -1,7 +1,6 @@
-//! The product decisions of 25.10.2026 against a real, in-process server:
-//! organization recovery on by default with automatic enrollment (C1),
-//! view-only guests (B8), the fair-use limit for agents and service
-//! accounts, and `passbox_reveal` for AI agents. Needs
+//! Against a real, in-process server: organization recovery on by default
+//! with automatic enrollment, view-only guests, the fair-use limit for
+//! agents and service accounts, and `passbox_reveal` for AI agents. Needs
 //! `PASSBOX_TEST_DATABASE_URL` (a PostgreSQL superuser).
 
 use std::sync::Arc;

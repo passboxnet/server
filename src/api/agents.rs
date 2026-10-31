@@ -1,4 +1,4 @@
-//! Approval relay and audit for AI agents (F7, concept K1/K12).
+//! Approval relay and audit for AI agents.
 //!
 //! The agent broker (`pbx mcp`) asks for a grant; the server relays the
 //! request to the account's other signed-in devices (web, desktop), where

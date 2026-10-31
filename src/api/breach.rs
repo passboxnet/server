@@ -1,4 +1,4 @@
-//! Have I Been Pwned through the user's own server (G6, G11).
+//! Have I Been Pwned through the user's own server.
 //!
 //! - **Pwned Passwords proxy** (`GET /api/v1/breach/range/{prefix}`): clients
 //!   send the same 5-character SHA-1 prefix they would send to

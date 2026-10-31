@@ -1,6 +1,5 @@
-//! Decisions of 25.10.2026: guests are view-only and not billable (B8),
-//! organization recovery is on by default (C1), and the server's part of
-//! agent reveals (`allow_agent_reveal`).
+//! Guests are view-only and not billable, organization recovery is on by
+//! default, and the server's part of agent reveals (`allow_agent_reveal`).
 
 use axum::http::{Method, StatusCode};
 use passbox_core::policy::PolicyRules;

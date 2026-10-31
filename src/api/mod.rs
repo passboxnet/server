@@ -244,7 +244,7 @@ pub fn router() -> Router<AppState> {
             get(device_links::get).delete(device_links::delete),
         )
         .route("/device-links/{id}/approve", post(device_links::approve))
-        // Organization administration (wave D): policies, audit log,
+        // Organization administration: policies, audit log,
         // reports, settings, offboarding, events API and webhooks.
         .route(
             "/orgs/{org_id}/policy",
@@ -333,7 +333,7 @@ pub fn router() -> Router<AppState> {
 }
 
 /// Have I Been Pwned through this server: password range proxy and email
-/// breach monitoring (G6, G11).
+/// breach monitoring.
 fn breach_routes() -> Router<AppState> {
     Router::new()
         .route("/breach/range/{prefix}", get(breach::range))
@@ -349,7 +349,7 @@ fn breach_routes() -> Router<AppState> {
         .route("/breaches/catalog/version", get(breach_catalog::version))
 }
 
-/// Single sign-on, trusted devices and SCIM provisioning (wave E).
+/// Single sign-on, trusted devices and SCIM provisioning.
 fn sso_routes() -> Router<AppState> {
     Router::new()
         // OIDC configuration of an organization (owners and admins).
@@ -432,8 +432,7 @@ fn sso_routes() -> Router<AppState> {
         )
 }
 
-/// Moving items, attachments, share links and access requests (B5, G2,
-/// B7, B9).
+/// Moving items, attachments, share links and access requests.
 fn comfort_routes() -> Router<AppState> {
     Router::new()
         .route("/items/move", post(moves::move_items))
