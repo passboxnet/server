@@ -30,7 +30,7 @@ case "$name" in
     exit 2
     ;;
 esac
-roles="$(dirname "$0")/../crates/server/sql/roles.sql"
+roles="$(dirname "$0")/../sql/roles.sql"
 
 case "$command" in
   create)
