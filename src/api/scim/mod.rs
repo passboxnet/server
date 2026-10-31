@@ -251,7 +251,7 @@ pub async fn service_provider_config(State(state): State<AppState>, _auth: ScimA
         StatusCode::OK,
         json!({
             "schemas": ["urn:ietf:params:scim:schemas:core:2.0:ServiceProviderConfig"],
-            "documentationUri": "https://github.com/relationsoftware/passbox/blob/master/docs/architecture/sso.md",
+            "documentationUri": "https://github.com/passboxnet/passbox/blob/main/docs/architecture/sso.md",
             "patch": { "supported": true },
             "bulk": { "supported": false, "maxOperations": 0, "maxPayloadSize": 0 },
             "filter": { "supported": true, "maxResults": MAX_PAGE },

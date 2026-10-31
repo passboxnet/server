@@ -19,7 +19,7 @@ The vault is then available at `https://<PASSBOX_DOMAIN>` with a certificate fro
 | Service | Image | Purpose |
 | --- | --- | --- |
 | `caddy` | `caddy` (pinned by digest) | HTTPS with automatic certificates (Let's Encrypt or ZeroSSL), HTTP/3, compression; forwards to Passbox and checks `/ready` |
-| `passbox` | `ghcr.io/relationsoftware/passbox` | The server and the web vault. Read-only root filesystem, no capabilities, user 65532 |
+| `passbox` | `ghcr.io/passboxnet/passbox` | The server and the web vault. Read-only root filesystem, no capabilities, user 65532 |
 | `migrate` | same image, command `migrate` | Applies database migrations and exits. `docker compose up` runs it before Passbox starts, also after every update |
 | `postgres` | `postgres:17` (pinned by digest) | The database. Only on an internal network without internet access; not published on the host |
 | `backup` | built from `deploy/compose/backup` | Encrypted backups of the database and the attachments, see [Backups with Docker Compose](#backups-with-docker-compose) |
@@ -64,17 +64,17 @@ docker compose pull          # or pin a new version in PASSBOX_IMAGE first
 docker compose up -d         # runs migrate, then restarts Passbox
 ```
 
-Pin a version for production, for example `PASSBOX_IMAGE=ghcr.io/relationsoftware/passbox:0.2.0@sha256:…`. Make a backup before updating (`docker compose run --rm backup once`). Migrations are not reversed; to go back to an older version, restore the backup made before the update.
+Pin a version for production, for example `PASSBOX_IMAGE=ghcr.io/passboxnet/passbox:0.2.0@sha256:…`. Make a backup before updating (`docker compose run --rm backup once`). Migrations are not reversed; to go back to an older version, restore the backup made before the update.
 
 ### Verifying images
 
 Release images are signed with [cosign](https://docs.sigstore.dev/) by the GitHub Actions workflow that built them, and carry an SBOM and build provenance:
 
 ```sh
-cosign verify ghcr.io/relationsoftware/passbox:0.2.0 \
-  --certificate-identity-regexp '^https://github\.com/relationsoftware/passbox/\.github/workflows/images\.yml@refs/tags/v' \
+cosign verify ghcr.io/passboxnet/passbox:0.2.0 \
+  --certificate-identity-regexp '^https://github\.com/passboxnet/passbox/\.github/workflows/images\.yml@refs/tags/v' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
-docker buildx imagetools inspect ghcr.io/relationsoftware/passbox:0.2.0 --format '{{ json .SBOM }}'
+docker buildx imagetools inspect ghcr.io/passboxnet/passbox:0.2.0 --format '{{ json .SBOM }}'
 ```
 
 To build the image yourself instead: `docker compose build` (or `docker build -t passbox .` in the repository root; `docker buildx build --platform linux/amd64,linux/arm64 .` for both architectures).

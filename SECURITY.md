@@ -6,7 +6,7 @@ Passbox is in early development. The cryptographic design in [docs/architecture/
 
 ## Reporting a vulnerability
 
-Please do **not** open a public issue for security problems. Report them privately through [GitHub Security Advisories](https://github.com/relationsoftware/passbox/security/advisories/new).
+Please do **not** open a public issue for security problems. Report them privately through [GitHub Security Advisories](https://github.com/passboxnet/passbox/security/advisories/new).
 
 Include:
 
