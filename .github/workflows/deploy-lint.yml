@@ -19,7 +19,7 @@ on:
       - ".github/workflows/deploy-lint.yml"
       - ".github/workflows/images.yml"
   push:
-    branches: [master]
+    branches: [main]
     paths:
       - "deploy/**"
       - "Dockerfile"
