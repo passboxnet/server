@@ -85,6 +85,7 @@ async fn mailer(port: u16) -> (Mailer, TestDatabase) {
             smtp_url: Some(format!("smtp://127.0.0.1:{port}")),
             from: Some("Passbox <passbox@example.com>".to_owned()),
             public_url: Some("https://vault.example.com/".to_owned()),
+            ..Default::default()
         },
     )
     .unwrap();
@@ -226,6 +227,7 @@ async fn invalid_configuration_is_refused() {
         smtp_url: Some(smtp.to_owned()),
         from: from.map(str::to_owned),
         public_url: public.map(str::to_owned),
+        ..Default::default()
     };
     // SMTP without a sender.
     assert!(Mailer::new(db.clone(), &config("smtp://localhost", None, None)).is_err());

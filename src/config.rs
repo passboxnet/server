@@ -68,6 +68,17 @@ pub struct Config {
     #[arg(long, env = "PASSBOX_SMTP_URL", hide_env_values = true)]
     pub smtp_url: Option<String>,
 
+    /// API key of a Camelmailer server. With it, mail goes through the
+    /// Camelmailer API instead of SMTP (idempotent sends, a tag per mail
+    /// kind). Set either this or PASSBOX_SMTP_URL.
+    #[arg(long, env = "PASSBOX_CAMELMAILER_API_KEY", hide_env_values = true)]
+    pub camelmailer_api_key: Option<String>,
+
+    /// Address of the Camelmailer installation for PASSBOX_CAMELMAILER_API_KEY,
+    /// default https://app.camelmailer.com (a self-hosted one works too).
+    #[arg(long, env = "PASSBOX_CAMELMAILER_URL")]
+    pub camelmailer_url: Option<String>,
+
     /// Sender address of outgoing mail, for example `Passbox <passbox@example.com>`.
     #[arg(long, env = "PASSBOX_MAIL_FROM")]
     pub mail_from: Option<String>,
@@ -225,6 +236,11 @@ impl std::fmt::Debug for Config {
             .field("trust_proxy", &self.trust_proxy)
             .field("auth_rate_limit", &self.auth_rate_limit)
             .field("smtp_url", &self.smtp_url.as_ref().map(|_| "<redacted>"))
+            .field(
+                "camelmailer_api_key",
+                &self.camelmailer_api_key.as_ref().map(|_| "<redacted>"),
+            )
+            .field("camelmailer_url", &self.camelmailer_url)
             .field("mail_from", &self.mail_from)
             .field("public_url", &self.public_url)
             .field("admin_emails", &self.admin_emails)
@@ -279,6 +295,8 @@ impl Default for Config {
             trust_proxy: false,
             auth_rate_limit: 60,
             smtp_url: None,
+            camelmailer_api_key: None,
+            camelmailer_url: None,
             mail_from: None,
             public_url: None,
             admin_emails: Vec::new(),

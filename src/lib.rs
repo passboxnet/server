@@ -109,6 +109,8 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
         state.db.clone(),
         &mail::MailConfig {
             smtp_url: config.smtp_url.clone(),
+            camelmailer_api_key: config.camelmailer_api_key.clone(),
+            camelmailer_url: config.camelmailer_url.clone(),
             from: config.mail_from.clone(),
             public_url: config.public_url.clone(),
         },

@@ -1,5 +1,6 @@
 //! Outgoing mail: a durable outbox in the database and a background task
-//! that sends it over SMTP.
+//! that sends it over SMTP, or through the Camelmailer API when
+//! `PASSBOX_CAMELMAILER_API_KEY` is set.
 //!
 //! Other modules call [`Mailer::enqueue`] (or [`Mailer::enqueue_for_account`])
 //! and never talk to SMTP themselves. The mail is stored in `mail_outbox` and
@@ -39,13 +40,15 @@ const MAX_BACKOFF_MS: i64 = 60 * 60 * 1000;
 const RETENTION_MS: i64 = 30 * 24 * 60 * 60 * 1000;
 /// How often the worker looks for due mails without being woken.
 const POLL_INTERVAL: Duration = Duration::from_secs(30);
-/// Longest time one SMTP delivery may take.
+/// Longest time one SMTP delivery or API call may take.
 const SMTP_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Mail settings from the server configuration.
 #[derive(Clone, Default)]
 pub struct MailConfig {
     pub smtp_url: Option<String>,
+    pub camelmailer_api_key: Option<String>,
+    pub camelmailer_url: Option<String>,
     pub from: Option<String>,
     pub public_url: Option<String>,
 }
@@ -57,6 +60,11 @@ enum Transport {
         transport: Box<AsyncSmtpTransport<Tokio1Executor>>,
         /// `smtps`, `starttls` or `smtp` (no TLS, for a local relay).
         security: &'static str,
+        host: String,
+    },
+    /// The Camelmailer API (`PASSBOX_CAMELMAILER_API_KEY`).
+    CamelMailer {
+        client: Box<camelmailer_rs::CamelMailer>,
         host: String,
     },
 }
@@ -81,7 +89,7 @@ pub struct Mailer {
 pub struct MailStatus {
     /// False when no SMTP server is configured and mails are only logged.
     pub configured: bool,
-    /// `smtps`, `starttls`, `smtp` or `log`.
+    /// `smtps`, `starttls`, `smtp`, `camelmailer` or `log`.
     pub transport: &'static str,
     pub host: Option<String>,
     pub from: String,
@@ -120,9 +128,43 @@ impl Mailer {
     /// Creates the mailer. Fails on an invalid SMTP URL or sender address, so
     /// a misconfiguration stops the server at startup instead of losing mail.
     pub fn new(db: Db, config: &MailConfig) -> anyhow::Result<Self> {
-        let transport = match config.smtp_url.as_deref().filter(|u| !u.trim().is_empty()) {
-            None => Transport::Log,
-            Some(url) => {
+        let smtp_url = config.smtp_url.as_deref().filter(|u| !u.trim().is_empty());
+        let api_key = config
+            .camelmailer_api_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|k| !k.is_empty());
+        let transport = match (smtp_url, api_key) {
+            (Some(_), Some(_)) => anyhow::bail!(
+                "set either PASSBOX_SMTP_URL or PASSBOX_CAMELMAILER_API_KEY, not both"
+            ),
+            (None, None) => Transport::Log,
+            (None, Some(key)) => {
+                let base_url = config
+                    .camelmailer_url
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|u| !u.is_empty())
+                    .unwrap_or(camelmailer_rs::DEFAULT_BASE_URL);
+                if !base_url.starts_with("https://") && !base_url.starts_with("http://") {
+                    anyhow::bail!("PASSBOX_CAMELMAILER_URL must start with https:// or http://");
+                }
+                let client = camelmailer_rs::CamelMailer::builder(key)
+                    .base_url(base_url)
+                    .timeout(SMTP_TIMEOUT)
+                    .build()
+                    .map_err(|e| anyhow::anyhow!("invalid Camelmailer settings: {e}"))?;
+                let host = base_url
+                    .split_once("://")
+                    .map_or(base_url, |(_, rest)| rest)
+                    .trim_end_matches('/')
+                    .to_owned();
+                Transport::CamelMailer {
+                    client: Box::new(client),
+                    host,
+                }
+            }
+            (Some(url), None) => {
                 let security = if url.starts_with("smtps://") {
                     "smtps"
                 } else if url.contains("tls=required") || url.contains("tls=opportunistic") {
@@ -146,9 +188,9 @@ impl Mailer {
             Some(from) => from
                 .parse::<Mailbox>()
                 .map_err(|e| anyhow::anyhow!("invalid PASSBOX_MAIL_FROM: {e}"))?,
-            None if matches!(transport, Transport::Smtp { .. }) => {
-                anyhow::bail!("PASSBOX_MAIL_FROM is required when PASSBOX_SMTP_URL is set")
-            }
+            None if !matches!(transport, Transport::Log) => anyhow::bail!(
+                "PASSBOX_MAIL_FROM is required when PASSBOX_SMTP_URL or PASSBOX_CAMELMAILER_API_KEY is set"
+            ),
             None => "Passbox <passbox@localhost>"
                 .parse()
                 .expect("valid default sender"),
@@ -171,9 +213,9 @@ impl Mailer {
         })
     }
 
-    /// Whether an SMTP server is configured.
+    /// Whether mail is really sent (SMTP or the Camelmailer API).
     pub fn is_configured(&self) -> bool {
-        matches!(self.inner.transport, Transport::Smtp { .. })
+        !matches!(self.inner.transport, Transport::Log)
     }
 
     /// The public URL of the web app without trailing slash, if configured.
@@ -278,6 +320,7 @@ impl Mailer {
         let (configured, transport, host) = match &self.inner.transport {
             Transport::Log => (false, "log", None),
             Transport::Smtp { security, host, .. } => (true, *security, Some(host.clone())),
+            Transport::CamelMailer { host, .. } => (true, "camelmailer", Some(host.clone())),
         };
         Ok(MailStatus {
             configured,
@@ -333,6 +376,7 @@ impl Mailer {
             };
             let result = self
                 .deliver(
+                    &id,
                     &mail.recipient,
                     &mail.template,
                     &mail.locale,
@@ -379,6 +423,7 @@ impl Mailer {
 
     async fn deliver(
         &self,
+        id: &str,
         recipient: &str,
         template: &str,
         locale: &str,
@@ -403,7 +448,7 @@ impl Mailer {
                     to = %recipient,
                     subject = %mail.subject,
                     body = %mail.text,
-                    "mail not sent: no SMTP server configured (PASSBOX_SMTP_URL)"
+                    "mail not sent: neither PASSBOX_SMTP_URL nor PASSBOX_CAMELMAILER_API_KEY is set"
                 );
                 Ok(())
             }
@@ -423,6 +468,38 @@ impl Mailer {
                     .map(|_| ())
                     .map_err(|e| Failure {
                         permanent: e.is_permanent(),
+                        message: e.to_string(),
+                    })
+            }
+            Transport::CamelMailer { client, .. } => {
+                let to: Mailbox = recipient
+                    .parse()
+                    .map_err(|e| Failure::permanent(format!("invalid recipient: {e}")))?;
+                let mut request = camelmailer_rs::SendEmailRequest::builder()
+                    .from(address(&self.inner.from))
+                    .to(address(&to))
+                    .subject(mail.subject)
+                    .text_body(mail.text)
+                    .html_body(mail.html)
+                    .tag(template.as_str());
+                for image in &layout::INLINE_IMAGES {
+                    request = request.attachment(camelmailer_rs::Attachment::inline(
+                        image.file_name,
+                        "image/png",
+                        image.content_id,
+                        image.bytes,
+                    ));
+                }
+                // The outbox id makes a retry after a lost response replay
+                // the first send instead of mailing twice.
+                client
+                    .emails()
+                    .idempotent(id)
+                    .send(request.build())
+                    .await
+                    .map(|_| ())
+                    .map_err(|e| Failure {
+                        permanent: api_error_is_permanent(&e),
                         message: e.to_string(),
                     })
             }
@@ -523,6 +600,26 @@ fn multipart(text: String, html: String) -> MultiPart {
     MultiPart::alternative()
         .singlepart(SinglePart::plain(text))
         .multipart(related)
+}
+
+/// A sender or recipient for the Camelmailer API.
+fn address(mailbox: &Mailbox) -> camelmailer_rs::Address {
+    let email = mailbox.email.to_string();
+    match mailbox.name.as_deref() {
+        Some(name) if !name.is_empty() => camelmailer_rs::Address::with_name(email, name),
+        _ => camelmailer_rs::Address::from(email),
+    }
+}
+
+/// Whether a failed API call should not be retried: a request the API
+/// refuses (4xx) fails the same way again, except for timeouts and rate
+/// limits. Network errors and server errors are retried.
+fn api_error_is_permanent(error: &camelmailer_rs::Error) -> bool {
+    match error.status() {
+        Some(408 | 425 | 429) => false,
+        Some(status) => (400..500).contains(&status),
+        None => matches!(error, camelmailer_rs::Error::Config(_)),
+    }
 }
 
 /// The host of an SMTP URL, without credentials.

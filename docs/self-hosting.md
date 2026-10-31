@@ -121,7 +121,9 @@ Every option can be set as a command-line flag or an environment variable.
 | `PASSBOX_TRUST_PROXY` | `false` | Take the client IP from `X-Forwarded-For`. Enable only behind a reverse proxy that sets it; client IPs are used for rate limiting and shown in the activity log and device list |
 | `PASSBOX_AUTH_RATE_LIMIT` | `60` | Sign-in and registration requests per client IP and minute. Raise it only for test servers that many clients share |
 | `PASSBOX_SMTP_URL` | unset | SMTP server for outgoing mail, see [Email](#email). Without it, mails are only written to the log |
-| `PASSBOX_MAIL_FROM` | unset | Sender, for example `Passbox <passbox@example.com>`. Required with `PASSBOX_SMTP_URL` |
+| `PASSBOX_CAMELMAILER_API_KEY` | unset | Instead of SMTP: send mail through the API of a [Camelmailer](https://camelmailer.com) server, see [Email](#email). Set either this or `PASSBOX_SMTP_URL` |
+| `PASSBOX_CAMELMAILER_URL` | `https://app.camelmailer.com` | Address of the Camelmailer installation, for a self-hosted one |
+| `PASSBOX_MAIL_FROM` | unset | Sender, for example `Passbox <passbox@example.com>`. Required with `PASSBOX_SMTP_URL` or `PASSBOX_CAMELMAILER_API_KEY` |
 | `PASSBOX_PUBLIC_URL` | unset | Address users open Passbox at, for example `https://passbox.example.com`. Used for links in mails; required for [single sign-on](#single-sign-on-sso) (redirect URI) |
 | `PASSBOX_SSO_ALLOW_HTTP_LOOPBACK` | unset | `1` allows `http://` identity providers on `localhost`/`127.0.0.1`/`[::1]`, for development only |
 | `PASSBOX_ADMIN_EMAILS` | unset | Comma-separated emails of accounts that are always instance admins, see [Administration](#administration) |
@@ -218,7 +220,18 @@ PASSBOX_MAIL_FROM='Passbox <passbox@example.com>'
 PASSBOX_PUBLIC_URL='https://passbox.example.com'
 ```
 
-An invalid URL or sender stops the server at startup. Without `PASSBOX_SMTP_URL`, mails are written to the server log instead (development mode) and the administration says that mail is not set up. Use **Send test email** in the administration to check the configuration.
+### Camelmailer API instead of SMTP
+
+With `PASSBOX_CAMELMAILER_API_KEY` (the API key of a Camelmailer server) mail goes through the Camelmailer API instead of SMTP. Every mail is sent with an idempotency key, so a retry after a lost answer never mails twice, and it is tagged with its kind (for example `invite` or `recovery`), so the Camelmailer dashboard shows each kind separately. The logos travel as inline images like over SMTP. Camelmailer 0.12 or newer is needed.
+
+```sh
+PASSBOX_CAMELMAILER_API_KEY='…'
+PASSBOX_MAIL_FROM='Passbox <passbox@example.com>'
+```
+
+Requests the API refuses (4xx, except timeouts and rate limits) are not retried; network and server errors are.
+
+An invalid URL or sender stops the server at startup. Without `PASSBOX_SMTP_URL` or `PASSBOX_CAMELMAILER_API_KEY`, mails are written to the server log instead (development mode) and the administration says that mail is not set up. Use **Send test email** in the administration to check the configuration.
 
 Mails go through a queue in the database (`mail_outbox`): requests never wait for the mail server, and mails survive restarts. A background task sends them and retries temporary failures with growing delays (30 seconds up to an hour, 10 attempts, about 4 hours in total); permanent rejections (5xx) are not retried. The administration shows waiting and failed mails and the last error. Sent and failed mails are deleted after 30 days, and the parameters of a mail (which can contain invitation links) are deleted as soon as it is sent. Several server processes can share one database; each mail is sent once.
 

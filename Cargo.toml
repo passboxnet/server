@@ -1,7 +1,7 @@
 [package]
 name = "passbox-server"
 description = "The Passbox headless server."
-version = "0.1.0"
+version = "0.1.2"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/passboxnet/server"
@@ -13,7 +13,7 @@ name = "passbox-server"
 path = "src/main.rs"
 
 [dependencies]
-passbox-core = { git = "https://github.com/passboxnet/core", tag = "v0.1.0", features = ["oidc"] }
+passbox-core = { git = "https://github.com/passboxnet/core", tag = "v0.1.1", features = ["oidc"] }
 anyhow = "1"
 axum = "0.8"
 clap = { version = "4", features = ["derive", "env"] }
@@ -37,13 +37,15 @@ ureq = { version = "3.5", features = ["platform-verifier"] }
 url = "2"
 # gzip of the breach catalogue document (already in the tree through ureq).
 flate2 = "1"
+# Optional mail transport: the Camelmailer API (PASSBOX_CAMELMAILER_API_KEY).
+camelmailer-rs = "0.3"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
 # The Rust client's integration tests against this server (tests/client_*.rs).
-passbox-client = { git = "https://github.com/passboxnet/core", tag = "v0.1.0" }
+passbox-client = { git = "https://github.com/passboxnet/core", tag = "v0.1.1" }
 tempfile = "3"
-passbox-core = { git = "https://github.com/passboxnet/core", tag = "v0.1.0", features = ["oidc", "test-issuer"] }
+passbox-core = { git = "https://github.com/passboxnet/core", tag = "v0.1.1", features = ["oidc", "test-issuer"] }
 
 [lints.rust]
 unsafe_code = "forbid"
