@@ -1,81 +1,8 @@
-# Passbox
+# Passbox server
 
-Passbox is an open-source password manager with passkeys, a built-in authenticator and single sign-on. Use it as a hosted service or run it on your own server.
+The server of [Passbox](https://passbox.net), an open-source password manager with passkeys, a built-in authenticator and single sign-on. It stores and syncs end-to-end encrypted data, never sees a key, and serves the web vault. Rust (axum) and PostgreSQL.
 
 > **Status: early development.** The cryptographic design is a draft and has not been audited. Do not store real secrets in Passbox yet.
-
-## What's in this repository
-
-Passbox is developed as one monorepo. It will be split into separate repositories once everything works.
-
-| Path | Description |
-| --- | --- |
-| [`crates/core`](crates/core) | Cryptographic core in Rust: key derivation, encryption, Secret Key, TOTP, password generator |
-| [`crates/core-wasm`](crates/core-wasm) | WebAssembly bindings of the core for the web client and the extension |
-| [`crates/server`](crates/server) | Headless server (axum). Stores and syncs encrypted data and serves the web client |
-| [`crates/client`](crates/client) | Rust client with encrypted offline cache, used by the CLI and the mobile apps |
-| [`crates/ffi`](crates/ffi) | Swift and Kotlin bindings of the Rust client (UniFFI) |
-| [`crates/cli`](crates/cli) | `pbx` command-line client; see [docs/cli.md](docs/cli.md) |
-| [`apps/web`](apps/web) | Web client (React, Vite) |
-| [`apps/desktop`](apps/desktop) | Desktop app for Windows, macOS and Linux (Tauri 2), wraps the web client. See [docs/desktop.md](docs/desktop.md) |
-| [`apps/extension`](apps/extension) | Chrome extension (Manifest V3) with autofill, save prompts and passkeys; see [docs/architecture/extension.md](docs/architecture/extension.md) |
-| [`apps/ios`](apps/ios) | iOS and iPadOS app (SwiftUI) with AutoFill extension; see [docs/ios.md](docs/ios.md) |
-| [`apps/android`](apps/android) | Android app (Kotlin, Jetpack Compose) with an autofill service; see [docs/android.md](docs/android.md) |
-| [`apps/website`](apps/website) | Marketing website in English and German (Next.js, static export); see [docs/website.md](docs/website.md) |
-| [`packages/ui`](packages/ui) | Shared design system (React, Tailwind CSS tokens) |
-| [`packages/api-client`](packages/api-client) | Typed TypeScript client for the server API |
-| [`packages/client`](packages/client) | Platform-neutral client logic: sign-up, sign-in, unlock, sync, item schema |
-| [`e2e`](e2e) | Browser end-to-end tests (Playwright) |
-| [`docs`](docs) | Architecture, decisions (ADRs), API specification and planning |
-| [`deploy`](deploy) | Docker Compose setup for self-hosting |
-
-## Getting started
-
-Requirements: Rust (stable, see `rust-toolchain.toml`), Node.js 22+, pnpm 10 (`corepack enable`), and [`wasm-bindgen-cli`](https://github.com/wasm-bindgen/wasm-bindgen) in the version listed in `Cargo.lock`:
-
-```sh
-cargo install wasm-bindgen-cli --version 0.2.129 --locked
-```
-
-Install and build:
-
-```sh
-pnpm install
-pnpm build:wasm          # builds the Rust core to WebAssembly
-cargo test --workspace   # Rust tests
-pnpm test                # TypeScript tests
-```
-
-Run the server and the web client in two terminals:
-
-```sh
-PASSBOX_DATABASE_URL=postgres://postgres:postgres@localhost:5432/passbox \
-  cargo run -p passbox-server # http://localhost:8080 (PostgreSQL, see CONTRIBUTING.md)
-pnpm dev:web                  # http://localhost:5173, proxies /api to the server
-```
-
-Open http://localhost:5173, create an account and keep the Emergency Kit.
-
-## Tests
-
-```sh
-PASSBOX_TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5432/postgres \
-  cargo test --workspace                   # Rust unit and API tests (PostgreSQL superuser URL)
-pnpm test                                  # TypeScript unit tests
-PASSBOX_TEST_SERVER_URL=http://127.0.0.1:8080 \
-  pnpm --filter @passbox/client test       # client against a running server
-PASSBOX_E2E_DATABASE_URL=postgres://postgres:postgres@localhost:5432/postgres \
-  pnpm e2e                                 # browser tests (after pnpm --filter @passbox/web build)
-```
-
-Other entry points:
-
-```sh
-pnpm dev:website                       # website on http://localhost:3000
-pnpm --filter @passbox/extension build # extension in apps/extension/dist, load it via chrome://extensions
-pnpm dev:desktop                       # desktop app (Tauri), see docs/desktop.md
-cargo run -p passbox-cli -- totp JBSWY3DPEHPK3PXP
-```
 
 ## Self-hosting
 
@@ -85,20 +12,39 @@ cp .env.example .env   # domain, passwords, backup key
 docker compose up -d
 ```
 
-This starts Passbox with PostgreSQL, Caddy for HTTPS and encrypted daily backups. The server image (`linux/amd64` and `linux/arm64`) serves the API and the web client. See [docs/self-hosting.md](docs/self-hosting.md#docker-compose).
+This starts Passbox with PostgreSQL, Caddy for HTTPS and encrypted daily backups. The image `ghcr.io/passboxnet/passbox-server` (`linux/amd64` and `linux/arm64`, signed with cosign) serves the API and the web vault. Every feature is included. See [docs/self-hosting.md](docs/self-hosting.md).
 
-## Pricing
+## Development
 
-Passbox is free to self-host with every feature included. The hosted service costs:
+```sh
+PASSBOX_DATABASE_URL=postgres://postgres:postgres@localhost:5432/passbox cargo run   # http://localhost:8080
+PASSBOX_TEST_DATABASE_URL=postgres://postgres:postgres@localhost:5432/postgres cargo test
+```
 
-| Plan | Monthly | Yearly |
-| --- | --- | --- |
-| Private | 1 € per member | 10 € per member |
-| Teams | 3 € per member | 30 € per member |
+The cryptographic core and the Rust client come from [passbox-core](https://github.com/passboxnet/passbox-core) (git dependency on a release tag). `tests/client_*.rs` run the Rust client against this server. For the web vault run [passbox-web](https://github.com/passboxnet/passbox-web) next to it. The queries are checked against the committed `.sqlx` cache (`SQLX_OFFLINE=true`).
+
+The API is described in [docs/api](docs/api).
+
+## Image
+
+A tag `vX.Y.Z` builds the image for both architectures, scans it with Trivy, signs it with cosign and attaches an SBOM and SLSA provenance. The web vault inside is the released archive of passbox-web at `WEB_VERSION` in the [Dockerfile](Dockerfile), checked against `WEB_SHA256`.
+
+## Repositories
+
+| Repository | Contents |
+| --- | --- |
+| [passbox-core](https://github.com/passboxnet/passbox-core) | Cryptographic core (Rust), WebAssembly build, Rust client, Swift/Kotlin bindings, AI gateway, shared TypeScript packages (`@passbox/*`) |
+| [passbox-server](https://github.com/passboxnet/passbox-server) | Server (API, sync, web vault hosting), container image, Docker Compose for self-hosting |
+| [passbox-web](https://github.com/passboxnet/passbox-web) | Web vault (React, Vite) and browser end-to-end tests |
+| [passbox-extension](https://github.com/passboxnet/passbox-extension) | Browser extension with autofill and passkeys |
+| [passbox-desktop](https://github.com/passboxnet/passbox-desktop) | Desktop app for Windows, macOS and Linux (Tauri) |
+| [passbox-ios](https://github.com/passboxnet/passbox-ios) | iOS and iPadOS app |
+| [passbox-android](https://github.com/passboxnet/passbox-android) | Android app |
+| [passbox-cli](https://github.com/passboxnet/passbox-cli) | `pbx` command-line client and MCP server |
 
 ## Security
 
-Read [SECURITY.md](SECURITY.md) to report a vulnerability and [docs/architecture/cryptography.md](docs/architecture/cryptography.md) for the design.
+Read [SECURITY.md](SECURITY.md) to report a vulnerability.
 
 ## License
 

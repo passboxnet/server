@@ -14,7 +14,6 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  WASM_BINDGEN_VERSION: 0.2.129
   # The sqlx query macros check against the committed cache in .sqlx/, no
   # database at build time.
   SQLX_OFFLINE: "true"
@@ -53,85 +52,17 @@ jobs:
       # A superuser (the image's POSTGRES_USER): every test run creates and
       # drops a database of its own with the production roles.
       PASSBOX_TEST_DATABASE_URL: postgres://passbox:passbox@localhost:5432/passbox_test
+      # The sqlx query macros check against the committed cache in .sqlx/.
+      SQLX_OFFLINE: "true"
     steps:
       - uses: actions/checkout@v5
-      # The workspace's debug and test binaries outgrow the runner's free disk;
-      # drop preinstalled SDKs this job does not use.
-      - name: Free disk space
-        run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost
-          df -h /
-      - name: Install system libraries for the desktop app (Tauri)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-          targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
-      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      - run: cargo test --workspace --locked
-      - run: cargo build --package passbox-core-wasm --target wasm32-unknown-unknown --locked
-
-  web:
-    name: TypeScript
-    runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: passbox
-          POSTGRES_PASSWORD: passbox
-          POSTGRES_DB: passbox
-        ports: ["5432:5432"]
-        options: >-
-          --health-cmd "pg_isready -U passbox -d passbox" --health-interval 5s --health-timeout 5s --health-retries 10
-    env:
-      # A superuser; e2e/database.sh creates a database per test server.
-      PASSBOX_E2E_DATABASE_URL: postgres://passbox:passbox@localhost:5432/passbox
-    steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: wasm-bindgen-cli@${{ env.WASM_BINDGEN_VERSION }}
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 22
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm lint
-      - run: pnpm build:wasm
-      - run: pnpm typecheck
-      - run: pnpm build
-      - name: Start a server for client integration tests
-        run: |
-          cargo build --package passbox-server --package passbox-cli --locked
-          sh e2e/database.sh passbox_client_tests
-          # The superuser connection switches to the production roles, so row
-          # level security applies as in production.
-          base=postgres://passbox:passbox@localhost:5432/passbox_client_tests?options=-c%20role%3D
-          PASSBOX_DATABASE_URL=${base}passbox_app \
-          PASSBOX_WORKER_DATABASE_URL=${base}passbox_worker \
-          PASSBOX_MIGRATION_DATABASE_URL=${base}passbox_migrator \
-          PASSBOX_BIND=127.0.0.1:8080 PASSBOX_AUTH_RATE_LIMIT=1000 ./target/debug/passbox-server &
-          for i in $(seq 1 60); do curl -sf http://127.0.0.1:8080/ready && break; sleep 1; done
-      - run: pnpm test
-        env:
-          PASSBOX_TEST_SERVER_URL: http://127.0.0.1:8080
-      - run: pnpm --filter @passbox/e2e exec playwright install --with-deps chromium
-      - run: pnpm e2e
-      - uses: actions/upload-artifact@v4
-        if: failure()
-        with:
-          name: playwright-results
-          path: e2e/test-results
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo test --locked
 
   audit:
     name: Dependency audit

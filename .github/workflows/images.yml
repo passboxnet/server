@@ -7,12 +7,10 @@
 # provenance (mode=max) to every image.
 #
 # Verify a published image:
-#   cosign verify ghcr.io/<owner>/passbox@sha256:<digest> \
+#   cosign verify ghcr.io/<owner>/passbox-server@sha256:<digest> \
 #     --certificate-identity-regexp '^https://github.com/<owner>/<repo>/\.github/workflows/images\.yml@refs/' \
 #     --certificate-oidc-issuer https://token.actions.githubusercontent.com
 #
-# Repository split: the "server" job stays with the public server repository;
-# the "website" job moves to the private website repository.
 #
 # Actions are pinned to commit SHAs (tag in the comment); let Dependabot or
 # Renovate update them.
@@ -26,7 +24,7 @@ on:
       image:
         description: Which image to build
         type: choice
-        options: [server, website, both]
+        options: [server]
         default: server
       push:
         description: Push, sign and tag (off = build and scan only)
@@ -56,13 +54,9 @@ jobs:
       matrix:
         include:
           - name: server
-            image: passbox
+            image: passbox-server
             dockerfile: Dockerfile
             title: Passbox server
-          - name: website
-            image: passbox-website
-            dockerfile: deploy/website/Dockerfile
-            title: Passbox website
     env:
       SELECTED: ${{ github.event_name == 'push' && 'both' || inputs.image }}
       PUSH: ${{ github.event_name == 'push' || inputs.push }}
@@ -127,7 +121,6 @@ jobs:
             VERSION=${{ steps.meta.outputs.version }}
             REVISION=${{ github.sha }}
             CREATED=${{ steps.name.outputs.created }}
-            NEXT_PUBLIC_SITE_URL=${{ vars.WEBSITE_URL || 'https://passbox.net' }}
           outputs: ${{ env.PUSH == 'true' && format('type=image,name={0},push-by-digest=true,name-canonical=true,push=true', steps.name.outputs.ref) || 'type=cacheonly' }}
           sbom: true
           provenance: mode=max

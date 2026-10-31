@@ -1,24 +1,13 @@
-# Keep the build context small and free of secrets. The Cargo and pnpm
-# workspaces need every member's manifest, so only exclude what neither
-# workspace references.
+# Keep the build context small and free of secrets.
 .git
 .github
 .claude
 .idea
 .vscode
 target
-**/node_modules
-**/dist
-**/.next
-**/out
-**/.turbo
-crates/core-wasm/pkg
-apps/ios
-apps/android
-e2e/test-results
-e2e/playwright-report
 deploy
 docs
+tests
 # Local data and secrets
 /data
 /blobs

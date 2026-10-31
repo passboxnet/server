@@ -50,7 +50,7 @@ services:
   # One-shot: applies database migrations, then exits. `docker compose up`
   # runs it again after every image update, before Passbox starts.
   migrate:
-    image: ${PASSBOX_IMAGE:-ghcr.io/passboxnet/passbox:latest}
+    image: ${PASSBOX_IMAGE:-ghcr.io/passboxnet/passbox-server:latest}
     # `docker compose up -d --build` builds the image from this checkout
     # instead of pulling it (for testing unreleased versions).
     build: &passbox-build
@@ -67,7 +67,7 @@ services:
     networks: [backend]
 
   passbox:
-    image: ${PASSBOX_IMAGE:-ghcr.io/passboxnet/passbox:latest}
+    image: ${PASSBOX_IMAGE:-ghcr.io/passboxnet/passbox-server:latest}
     build: *passbox-build
     restart: unless-stopped
     <<: *hardening

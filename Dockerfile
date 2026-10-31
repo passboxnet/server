@@ -1,14 +1,15 @@
 # syntax=docker/dockerfile:1.7
 
-# Passbox server image: the API server with the web client embedded as static
-# files. PostgreSQL only; there is no bundled database.
+# Passbox server image: the API server with the web vault embedded as static
+# files. PostgreSQL only; there is no bundled database. The web vault is the
+# released archive of passbox-web at WEB_VERSION, checked against WEB_SHA256.
 #
 #   docker build -t passbox .
 #   docker buildx build --platform linux/amd64,linux/arm64 -t passbox .
 #
 # The image is multi-arch. The Rust build always runs on the build machine's
 # architecture and cross-compiles for the target (no slow QEMU emulation), and
-# the web client is built once, because it does not depend on the target.
+# the web vault is downloaded once, because it does not depend on the target.
 #
 # Runtime:
 # - distroless "cc" (glibc, CA certificates, no shell), user 65532 (nonroot).
@@ -22,42 +23,28 @@
 # Base images are pinned by digest (multi-arch index). Update tag and digest
 # together, for example with Renovate or `docker buildx imagetools inspect`.
 
-ARG NODE_IMAGE=docker.io/library/node:22.22-bookworm-slim@sha256:e21fc383b50d5347dc7a9f1cae45b8f4e2f0d39f7ade28e4eef7d2934522b752
 ARG RUST_IMAGE=docker.io/library/rust:1.97.0-bookworm@sha256:8fa55b2f3ddf97471ab6a767bfa3f37e6bad0986ba823e75fea57e2a2a5c3073
 ARG RUNTIME_IMAGE=gcr.io/distroless/cc-debian12:nonroot@sha256:9dac0a79194e45a7da0158a9c6da57b217585af0786db3845d1f0ec1a0dd182f
 
-FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS node
+# ---------------------------------------------------------------------------
+# Web vault: the released archive of passbox-web (architecture independent).
+FROM --platform=$BUILDPLATFORM ${RUST_IMAGE} AS web
+ARG WEB_VERSION=0.1.0
+ARG WEB_SHA256=0000000000000000000000000000000000000000000000000000000000000000
+ADD --checksum=sha256:${WEB_SHA256} \
+    https://github.com/passboxnet/passbox-web/releases/download/v${WEB_VERSION}/passbox-web-${WEB_VERSION}.tar.gz \
+    /web.tar.gz
+RUN mkdir -p /web && tar -xzf /web.tar.gz -C /web
 
 # ---------------------------------------------------------------------------
-# Toolchain shared by the web and server builds (build platform only).
-FROM --platform=$BUILDPLATFORM ${RUST_IMAGE} AS toolchain
-ARG WASM_BINDGEN_VERSION=0.2.129
+# Server binary, cross-compiled for TARGETARCH.
+FROM --platform=$BUILDPLATFORM ${RUST_IMAGE} AS server
 # rust-toolchain.toml says "stable"; pin the toolchain of the base image so
 # builds are reproducible and do not download a newer compiler.
 ENV RUSTUP_TOOLCHAIN=1.97.0 \
     CARGO_TERM_COLOR=never \
     CARGO_INCREMENTAL=0
-COPY --from=node /usr/local/bin/node /usr/local/bin/node
-COPY --from=node /usr/local/lib/node_modules /usr/local/lib/node_modules
-RUN ln -s /usr/local/lib/node_modules/corepack/dist/corepack.js /usr/local/bin/corepack \
-    && corepack enable pnpm \
-    && rustup target add wasm32-unknown-unknown \
-    && cargo install wasm-bindgen-cli --version "${WASM_BINDGEN_VERSION}" --locked
 WORKDIR /src
-
-# ---------------------------------------------------------------------------
-# Web client (architecture independent, built once).
-FROM toolchain AS web
-COPY . .
-RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
-    --mount=type=cache,target=/usr/local/cargo/registry \
-    pnpm install --frozen-lockfile \
-    && pnpm build:wasm \
-    && pnpm --filter @passbox/web build
-
-# ---------------------------------------------------------------------------
-# Server binary, cross-compiled for TARGETARCH.
-FROM toolchain AS server
 ARG TARGETARCH
 # The cross toolchain comes from the Debian release of the pinned base image;
 # it only exists in this build stage.
@@ -95,13 +82,13 @@ LABEL org.opencontainers.image.title="Passbox server" \
       org.opencontainers.image.description="End-to-end encrypted password manager: API server and web vault" \
       org.opencontainers.image.licenses="MIT" \
       org.opencontainers.image.vendor="Passbox" \
-      org.opencontainers.image.source="https://github.com/passboxnet/passbox" \
-      org.opencontainers.image.documentation="https://github.com/passboxnet/passbox/blob/main/docs/self-hosting.md" \
+      org.opencontainers.image.source="https://github.com/passboxnet/passbox-server" \
+      org.opencontainers.image.documentation="https://github.com/passboxnet/passbox-server/blob/main/docs/self-hosting.md" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${REVISION}" \
       org.opencontainers.image.created="${CREATED}"
 COPY --from=server /out/passbox-server /usr/local/bin/passbox-server
-COPY --from=web /src/apps/web/dist /usr/share/passbox/web
+COPY --from=web /web /usr/share/passbox/web
 COPY --from=server --chown=65532:65532 /out/data /data
 # PASSBOX_DATABASE_URL has no default: it must point to PostgreSQL.
 ENV PASSBOX_BIND=0.0.0.0:8080 \

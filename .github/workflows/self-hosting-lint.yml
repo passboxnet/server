@@ -1,0 +1,60 @@
+# Lints the self-hosting files: the Dockerfiles (hadolint), the shell
+# scripts (shellcheck) and the Docker Compose setup.
+name: Self-hosting lint
+
+on:
+  pull_request:
+    paths:
+      - "deploy/**"
+      - "Dockerfile"
+      - ".dockerignore"
+      - ".github/workflows/self-hosting-lint.yml"
+      - ".github/workflows/images.yml"
+  push:
+    branches: [main]
+    paths:
+      - "deploy/**"
+      - "Dockerfile"
+      - ".github/workflows/self-hosting-lint.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: self-hosting-lint-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  HADOLINT_VERSION: v2.14.0
+  SHELLCHECK_VERSION: v0.11.0
+
+jobs:
+  containers:
+    name: Dockerfiles and shell scripts
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install hadolint and shellcheck
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          curl -fsSL -o "$RUNNER_TEMP/bin/hadolint" \
+            "https://github.com/hadolint/hadolint/releases/download/${HADOLINT_VERSION}/hadolint-linux-x86_64"
+          curl -fsSL "https://github.com/koalaman/shellcheck/releases/download/${SHELLCHECK_VERSION}/shellcheck-${SHELLCHECK_VERSION}.linux.x86_64.tar.xz" \
+            | tar -xJ -C "$RUNNER_TEMP"
+          mv "$RUNNER_TEMP/shellcheck-${SHELLCHECK_VERSION}/shellcheck" "$RUNNER_TEMP/bin/"
+          chmod +x "$RUNNER_TEMP/bin/"*
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: hadolint
+        run: hadolint Dockerfile deploy/compose/backup/Dockerfile
+      - name: shellcheck
+        run: |
+          find deploy -name '*.sh' -print0 | xargs -0 shellcheck
+      - name: docker compose config
+        working-directory: deploy/compose
+        run: |
+          sed 's/=$/=ci-placeholder/' .env.example > .env
+          docker compose config --quiet

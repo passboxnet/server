@@ -1,11 +1,11 @@
 [package]
 name = "passbox-server"
 description = "The Passbox headless server."
-version.workspace = true
-edition.workspace = true
-license.workspace = true
-repository.workspace = true
-rust-version.workspace = true
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/passboxnet/passbox-server"
+rust-version = "1.87"
 publish = false
 
 [[bin]]
@@ -13,34 +13,61 @@ name = "passbox-server"
 path = "src/main.rs"
 
 [dependencies]
-passbox-core = { workspace = true, features = ["oidc"] }
-anyhow.workspace = true
-axum.workspace = true
-clap.workspace = true
-data-encoding.workspace = true
-hmac.workspace = true
-lettre.workspace = true
-serde.workspace = true
-serde_json.workspace = true
-sha2.workspace = true
-sqlx.workspace = true
-thiserror.workspace = true
-tokio = { workspace = true, features = ["time", "sync", "io-util", "fs"] }
+passbox-core = { git = "https://github.com/passboxnet/passbox-core", tag = "v0.1.0", features = ["oidc"] }
+anyhow = "1"
+axum = "0.8"
+clap = { version = "4", features = ["derive", "env"] }
+data-encoding = "2"
+hmac = "0.13"
+lettre = { version = "=0.11.23", default-features = false, features = ["builder", "hostname", "smtp-transport", "tokio1", "tokio1-rustls", "ring", "rustls-platform-verifier"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.11"
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "postgres", "migrate", "macros", "json", "tls-rustls-ring-native-roots"] }
+thiserror = "2"
+tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 # Streaming attachment blobs from and to disk.
 tokio-util = { version = "0.7", features = ["io"] }
 http-body-util = "0.1"
-tower-http.workspace = true
-tracing.workspace = true
-tracing-subscriber.workspace = true
+tower-http = { version = "0.7", features = ["fs", "trace", "cors"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 # HTTP for website icons and webhook delivery (D5).
-ureq.workspace = true
+ureq = { version = "3.5", features = ["platform-verifier"] }
 url = "2"
 # gzip of the breach catalogue document (already in the tree through ureq).
 flate2 = "1"
 
 [dev-dependencies]
-tower = { workspace = true, features = ["util"] }
-passbox-core = { workspace = true, features = ["oidc", "test-issuer"] }
+tower = { version = "0.5", features = ["util"] }
+# The Rust client's integration tests against this server (tests/client_*.rs).
+passbox-client = { git = "https://github.com/passboxnet/passbox-core", tag = "v0.1.0" }
+tempfile = "3"
+passbox-core = { git = "https://github.com/passboxnet/passbox-core", tag = "v0.1.0", features = ["oidc", "test-issuer"] }
 
-[lints]
-workspace = true
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+
+# Line tables keep backtraces readable while making debug and test binaries
+# several times smaller; dependencies carry no debug info at all.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+
+# Key derivation is deliberately expensive; optimize it even in debug builds
+# so tests and development builds stay fast.
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.blake2]
+opt-level = 3
