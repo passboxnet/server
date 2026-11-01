@@ -73,6 +73,12 @@ pub enum Template {
     /// A monitored address appeared in new breaches (to the account).
     /// Parameters: `monitored`, `breaches` (titles), `count`, `link`.
     BreachMonitorAlert,
+    /// Confirms the new address of an account (to that address).
+    /// Parameters: `email`, `code`, `minutes`.
+    EmailChangeCode,
+    /// The account's address was changed (to the old address).
+    /// Parameters: `email` (the old address), `newEmail`, `device`, `ip`, `time`.
+    EmailChanged,
 }
 
 impl Template {
@@ -96,6 +102,8 @@ impl Template {
             Self::Test => "test",
             Self::BreachMonitorCode => "breach_monitor_code",
             Self::BreachMonitorAlert => "breach_monitor_alert",
+            Self::EmailChangeCode => "email_change_code",
+            Self::EmailChanged => "email_changed",
         }
     }
 
@@ -787,6 +795,58 @@ pub fn render(template: Template, locale: Locale, params: &Value, ctx: &Context<
                 format!("New data breach for {monitored}")
             }
         }
+        Template::EmailChangeCode => {
+            let code = param(params, "code");
+            let minutes = param(params, "minutes");
+            blocks.push(Block::Paragraph(if de {
+                format!(
+                    "jemand möchte {email} als neue Adresse eines {instance}-Kontos eintragen. Mit diesem Code bestätigen Sie, dass die Adresse Ihnen gehört:"
+                )
+            } else {
+                format!(
+                    "Someone wants to make {email} the new address of a {instance} account. Enter this code to confirm that the address is yours:"
+                )
+            }));
+            blocks.push(Block::Details(vec![("Code".to_owned(), code.clone())]));
+            blocks.push(Block::Paragraph(if de {
+                format!(
+                    "Der Code ist {minutes} Minuten gültig. Danach melden Sie sich mit dieser Adresse an. Wenn Sie das nicht waren, ignorieren Sie diese E-Mail."
+                )
+            } else {
+                format!(
+                    "The code is valid for {minutes} minutes. After that, you sign in with this address. If this wasn't you, ignore this email."
+                )
+            }));
+            if de {
+                format!("Bestätigungscode für Ihre neue Adresse: {code}")
+            } else {
+                format!("Confirmation code for your new address: {code}")
+            }
+        }
+        Template::EmailChanged => {
+            let new_email = param(params, "newEmail");
+            blocks.push(Block::Paragraph(if de {
+                format!(
+                    "die Adresse Ihres {instance}-Kontos wurde von {email} auf {new_email} geändert. Ab jetzt melden Sie sich mit der neuen Adresse an."
+                )
+            } else {
+                format!(
+                    "The address of your {instance} account was changed from {email} to {new_email}. From now on, you sign in with the new address."
+                )
+            }));
+            blocks.push(device_details(params));
+            blocks.push(Block::Paragraph(if de {
+                "Wenn Sie das nicht waren, wenden Sie sich sofort an die Administration Ihrer Passbox-Instanz."
+                    .to_owned()
+            } else {
+                "If this wasn't you, contact the administrators of your Passbox server right away.".to_owned()
+            }));
+            if de {
+                format!("Die Adresse Ihres {instance}-Kontos wurde geändert")
+            } else {
+                format!("The address of your {instance} account was changed")
+            }
+        }
         Template::Test => {
             let requested_by = param(params, "requestedBy");
             blocks.push(Block::Paragraph(if de {
@@ -874,7 +934,9 @@ mod tests {
         public_url: Some("https://vault.example.com"),
     };
 
-    const ALL: [Template; 18] = [
+    const ALL: [Template; 20] = [
+        Template::EmailChangeCode,
+        Template::EmailChanged,
         Template::BreachMonitorCode,
         Template::BreachMonitorAlert,
         Template::Invitation,

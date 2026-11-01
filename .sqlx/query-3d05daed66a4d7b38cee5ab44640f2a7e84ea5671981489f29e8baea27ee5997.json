@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE email_changes SET code_attempts = code_attempts + 1 WHERE account_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "3d05daed66a4d7b38cee5ab44640f2a7e84ea5671981489f29e8baea27ee5997"
+}

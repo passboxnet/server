@@ -26,6 +26,8 @@ mod admin;
 mod breach;
 #[path = "api/comfort.rs"]
 mod comfort;
+#[path = "api/email_change.rs"]
+mod email_change;
 #[path = "api/guests.rs"]
 mod guests;
 #[path = "api/icons.rs"]
@@ -281,6 +283,7 @@ async fn run_all(database: &passbox_server::testing::TestDatabase) {
     cross_origin_requests_are_allowed_without_credentials(&server).await;
     sessions_and_activity_log(&server).await;
     master_password_change(&server).await;
+    email_change::email_change(&server).await;
     known_devices_survive_email_lockout(&server).await;
     item_history(&server).await;
     website_icons(&server).await;

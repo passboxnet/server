@@ -1,0 +1,64 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT new_email, code_hash, code_expires_at, code_attempts FROM email_changes WHERE account_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "new_email",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "email_changes",
+            "name": "new_email"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "code_hash",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "email_changes",
+            "name": "code_hash"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "code_expires_at",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "email_changes",
+            "name": "code_expires_at"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "code_attempts",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "email_changes",
+            "name": "code_attempts"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "c33fd0156c5a45379b471a24e5e1524a121482eaaec02f12fd1f29c05c5a2952"
+}

@@ -483,7 +483,7 @@ fn hash_code(email_id: &str, code: &str) -> String {
     HEXLOWER.encode(&Sha256::digest(format!("{email_id}:{code}").as_bytes()))
 }
 
-fn valid_email(email: &str) -> bool {
+pub(crate) fn valid_email(email: &str) -> bool {
     let Some((local, domain)) = email.rsplit_once('@') else {
         return false;
     };

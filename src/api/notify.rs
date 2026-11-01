@@ -96,3 +96,45 @@ pub async fn two_factor_changed(
         tracing::warn!(error = ?err, "could not queue the two-factor mail");
     }
 }
+
+/// After the account's address was changed: to the old address, so a
+/// hijacked session cannot move the account away unnoticed.
+pub async fn email_changed(
+    state: &AppState,
+    account_id: &str,
+    old_email: &str,
+    new_email: &str,
+    device_name: &str,
+    ip: &str,
+) {
+    let result = async {
+        let mut tx = state.db.as_account(account_id).await?;
+        let locale = sqlx::query_scalar!("SELECT locale FROM accounts WHERE id = $1", account_id)
+            .fetch_one(&mut *tx)
+            .await?;
+        let locale = match crate::mail::Locale::parse(&locale) {
+            Some(locale) => locale,
+            None => {
+                crate::instance::load_settings(&mut tx)
+                    .await?
+                    .default_locale
+            }
+        };
+        drop(tx);
+        let params = json!({
+            "email": old_email,
+            "newEmail": new_email,
+            "device": device_name,
+            "ip": ip,
+            "time": crate::db::now_ms(),
+        });
+        state
+            .mailer
+            .enqueue(old_email, Template::EmailChanged, locale, params)
+            .await
+    }
+    .await;
+    if let Err(err) = result {
+        tracing::warn!(error = ?err, "could not queue the email-changed mail");
+    }
+}

@@ -1,0 +1,41 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT new_email, code_expires_at FROM email_changes WHERE account_id = $1 AND code_expires_at > $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "new_email",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "email_changes",
+            "name": "new_email"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "code_expires_at",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "email_changes",
+            "name": "code_expires_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "e7318e1ce0e80750b4ca6c224e108f51b01500e1090abe6ed00168532b737676"
+}

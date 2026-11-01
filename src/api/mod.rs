@@ -87,6 +87,13 @@ pub fn router() -> Router<AppState> {
         .route("/account/password/start", post(account::password_start))
         .route("/account/password/finish", post(account::password_finish))
         .route(
+            "/account/email",
+            get(account::email_pending)
+                .post(account::email_start)
+                .delete(account::email_cancel),
+        )
+        .route("/account/email/confirm", post(account::email_confirm))
+        .route(
             "/account/preferences",
             get(preferences::get).put(preferences::put),
         )

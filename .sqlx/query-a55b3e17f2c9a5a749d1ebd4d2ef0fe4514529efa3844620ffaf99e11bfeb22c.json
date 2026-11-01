@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT EXISTS (SELECT 1 FROM sso_identities WHERE account_id = $1)\n              OR EXISTS (SELECT 1 FROM scim_users WHERE account_id = $1 AND active) AS \"managed!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "managed!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "a55b3e17f2c9a5a749d1ebd4d2ef0fe4514529efa3844620ffaf99e11bfeb22c"
+}
