@@ -29,8 +29,8 @@ ARG RUNTIME_IMAGE=gcr.io/distroless/cc-debian12:nonroot@sha256:9dac0a79194e45a7d
 # ---------------------------------------------------------------------------
 # Web vault: the released archive of passboxnet/web (architecture independent).
 FROM --platform=$BUILDPLATFORM ${RUST_IMAGE} AS web
-ARG WEB_VERSION=0.1.1
-ARG WEB_SHA256=7b5f3018fdf7ddbb86a6c8888553c55e158544ebbd86d98bb021735a2fe2aef7
+ARG WEB_VERSION=0.1.2
+ARG WEB_SHA256=6df57b8c596e9181136900c6f4a9c826944c2fbb0f275d43719a2658e53ada0a
 ADD --checksum=sha256:${WEB_SHA256} \
     https://github.com/passboxnet/web/releases/download/v${WEB_VERSION}/passbox-web-${WEB_VERSION}.tar.gz \
     /web.tar.gz
