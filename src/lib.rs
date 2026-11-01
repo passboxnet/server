@@ -116,10 +116,10 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
         },
     )?;
     if state.mailer.is_configured() {
-        info!("mail is sent over SMTP");
+        info!("mail is sent over {}", state.mailer.transport_name());
     } else {
         tracing::warn!(
-            "PASSBOX_SMTP_URL is not set: mails are written to the log instead of being sent"
+            "no mail transport is set (PASSBOX_SMTP_URL or PASSBOX_CAMELMAILER_API_KEY): mails are written to the log instead of being sent"
         );
     }
     state.mailer.spawn_worker();

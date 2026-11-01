@@ -218,6 +218,15 @@ impl Mailer {
         !matches!(self.inner.transport, Transport::Log)
     }
 
+    /// How mail leaves the server, for the startup log.
+    pub fn transport_name(&self) -> &'static str {
+        match &self.inner.transport {
+            Transport::Log => "the log",
+            Transport::Smtp { .. } => "SMTP",
+            Transport::CamelMailer { .. } => "the Camelmailer API",
+        }
+    }
+
     /// The public URL of the web app without trailing slash, if configured.
     pub fn public_url(&self) -> Option<&str> {
         self.inner.public_url.as_deref()
