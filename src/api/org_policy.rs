@@ -7,6 +7,15 @@
 //! requires two-factor sign-in cannot turn it off, and members of an
 //! organization that does not allow personal vaults cannot create personal
 //! vaults or new items in them.
+//!
+//! Policies are a feature of team organizations (Business). A family keeps
+//! one rule only: whether members must enroll in recovery through the
+//! organization, which every app sets up when it creates the family
+//! ([`PolicyRules::new_org_defaults`]) and family recovery depends on.
+//! Families can store versions that restrict nothing else; every other
+//! rule of a family's policy, including versions stored earlier, stays in
+//! the database but is not enforced, here or in the apps
+//! (`passbox_core::policy`).
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -26,7 +35,23 @@ use crate::error::{ApiError, ApiResult};
 use crate::security::ClientIp;
 use crate::state::AppState;
 
-/// The rules of an organization's newest policy, if it has one.
+/// 403 for policies of a family organization.
+const TEAM_ONLY: (&str, &str) = (
+    "policies_team_only",
+    "policies are available for team organizations",
+);
+
+/// The rules of a family's policy that are in force: recovery enrollment,
+/// nothing else.
+pub fn family_rules(rules: &PolicyRules) -> PolicyRules {
+    PolicyRules {
+        require_recovery_enrollment: rules.require_recovery_enrollment,
+        ..PolicyRules::default()
+    }
+}
+
+/// The rules of an organization's newest policy, if it has one (for a
+/// family only the rules in force, [`family_rules`]).
 pub async fn current_rules(
     conn: &mut PgConnection,
     org_id: &str,
@@ -37,13 +62,18 @@ pub async fn current_rules(
     )
     .fetch_optional(&mut *conn)
     .await?;
-    rules
+    let rules: Option<PolicyRules> = rules
         .map(|r| serde_json::from_value(r).map_err(|e| ApiError::Internal(e.into())))
-        .transpose()
+        .transpose()?;
+    match rules {
+        Some(rules) if access::is_family(conn, org_id).await? => Ok(Some(family_rules(&rules))),
+        rules => Ok(rules),
+    }
 }
 
 /// The newest policy rules of every organization the account is a
-/// confirmed or suspended member of.
+/// confirmed or suspended member of (for families only the rules in
+/// force, [`family_rules`]).
 pub async fn rules_for_account(
     conn: &mut PgConnection,
     account_id: &str,
@@ -58,13 +88,18 @@ pub async fn rules_for_account(
     .map(|row| (row.org_id, row.rules))
     .fetch_all(&mut *conn)
     .await?;
-    rows.into_iter()
-        .map(|(org, rules)| {
-            serde_json::from_value(rules)
-                .map(|r| (org, r))
-                .map_err(|e| ApiError::Internal(e.into()))
-        })
-        .collect()
+    let mut out = Vec::with_capacity(rows.len());
+    for (org, rules) in rows {
+        let rules: PolicyRules =
+            serde_json::from_value(rules).map_err(|e| ApiError::Internal(e.into()))?;
+        let rules = if access::is_family(conn, &org).await? {
+            family_rules(&rules)
+        } else {
+            rules
+        };
+        out.push((org, rules));
+    }
+    Ok(out)
 }
 
 /// 403 `policy_violation` if an organization of the account requires
@@ -107,6 +142,8 @@ pub async fn ensure_personal_vaults_allowed(
 }
 
 /// The newest policy of each organization in `org_ids` (for sync).
+/// Families' versions are delivered unchanged: they carry the recovery
+/// rule, and apps pin what they verified.
 pub async fn records(conn: &mut PgConnection, org_ids: &[String]) -> ApiResult<Vec<PolicyRecord>> {
     let mut out = Vec::new();
     for org_id in org_ids {
@@ -140,7 +177,7 @@ pub struct PolicyResponse {
 }
 
 /// `GET /orgs/{id}/policy`: the newest policy (members) and its history
-/// (admins).
+/// (admins). Team organizations only.
 pub async fn get(
     State(state): State<AppState>,
     session: Session,
@@ -149,6 +186,7 @@ pub async fn get(
     validate::id("organization id", &org_id)?;
     let mut conn = state.db.as_account(&session.account_id).await?;
     let membership = access::require_member(&mut conn, &org_id, &session.account_id).await?;
+    access::require_team(&mut conn, &org_id, TEAM_ONLY.0, TEAM_ONLY.1).await?;
     let rows: Vec<(i64, String, String)> = sqlx::query!(
         "SELECT version, policy, signature FROM org_policies WHERE org_id = $1 ORDER BY version",
         &org_id,
@@ -173,7 +211,9 @@ pub async fn get(
 }
 
 /// `PUT /orgs/{id}/policy`: stores the next policy version, signed by the
-/// uploading owner or admin and linked to the current version.
+/// uploading owner or admin and linked to the current version. A family
+/// can only store versions that restrict nothing but recovery enrollment
+/// (or sign the version in force again, as apps do after the signer left).
 pub async fn put(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
@@ -194,7 +234,7 @@ pub async fn put(
     .await?;
     let me = signed::own_bundle(&mut tx, &session.account_id).await?;
     let signed = signed::parse::<OrgPolicy>("policy", &req.policy, &req.signature, &me)?;
-    let (_, rules, _unknown) = parse_policy(&org_id, &req.policy, &req.signature)
+    let (_, rules, unknown) = parse_policy(&org_id, &req.policy, &req.signature)
         .map_err(|e| ApiError::bad_request(format!("invalid policy: {e}")))?;
     let p = &signed.value;
     if p.signer_id != session.account_id || p.version != req.version {
@@ -208,13 +248,13 @@ pub async fn put(
     .map(|row| (row.version, row.policy, row.signature))
     .fetch_optional(&mut *tx)
     .await?;
-    let (current_version, current_hash) = match &current {
+    let (current_version, current_hash, current_rules) = match &current {
         Some((version, policy, signature)) => {
             let previous = Signed::<OrgPolicy>::parse(policy, signature)
                 .map_err(|e| ApiError::Internal(anyhow::anyhow!("stored policy: {e}")))?;
-            (*version, previous.hash())
+            (*version, previous.hash(), Some(previous.value.rules))
         }
-        None => (0, [0u8; 32]),
+        None => (0, [0u8; 32], None),
     };
     let version = i64::try_from(p.version).map_err(|_| bad("invalid version"))?;
     if version != current_version + 1 || p.prev_hash != current_hash {
@@ -222,6 +262,12 @@ pub async fn put(
             "the policy was changed meanwhile; sync and try again",
             json!({ "currentVersion": current_version }),
         ));
+    }
+    if access::is_family(&mut tx, &org_id).await? {
+        let signed_again = current_rules.as_ref() == Some(&p.rules);
+        if !signed_again && (!unknown.is_empty() || family_rules(&rules) != rules) {
+            return Err(ApiError::forbidden(TEAM_ONLY.0, TEAM_ONLY.1));
+        }
     }
     let seq = db::next_seq(&mut tx).await?;
     let rules_json = serde_json::to_value(&rules).map_err(|e| ApiError::Internal(e.into()))?;

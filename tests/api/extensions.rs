@@ -462,7 +462,7 @@ async fn read_only_organizations(base: &TestServer) {
         .call(
             &server,
             Method::GET,
-            &format!("/api/v1/orgs/{org_id}/policy"),
+            &format!("/api/v1/orgs/{org_id}/reports"),
             None,
         )
         .await;

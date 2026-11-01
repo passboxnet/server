@@ -92,6 +92,32 @@ pub async fn require_admin(
     Ok(m)
 }
 
+/// Whether the organization is a family, as far as the current context
+/// can see it (members, the organization's SCIM, SSO and events
+/// contexts). Policies, the activity log, single sign-on and provisioning
+/// are features of team organizations (Business); families do without
+/// them on every instance.
+pub async fn is_family(conn: &mut PgConnection, org_id: &str) -> ApiResult<bool> {
+    let kind: Option<String> =
+        sqlx::query_scalar!("SELECT kind FROM organizations WHERE id = $1", org_id)
+            .fetch_optional(&mut *conn)
+            .await?;
+    Ok(kind.as_deref() == Some("family"))
+}
+
+/// 403 `code` for a family organization: the feature is for teams.
+pub async fn require_team(
+    conn: &mut PgConnection,
+    org_id: &str,
+    code: &'static str,
+    message: &'static str,
+) -> ApiResult<()> {
+    if is_family(conn, org_id).await? {
+        return Err(ApiError::forbidden(code, message));
+    }
+    Ok(())
+}
+
 /// How an account may use a vault.
 #[derive(Debug, Clone)]
 pub enum VaultAccess {

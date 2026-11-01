@@ -13,6 +13,9 @@
 //! Webhook URLs must use HTTPS and resolve to public addresses, unless the
 //! server runs with `PASSBOX_WEBHOOK_ALLOW_PRIVATE=true` (self-hosted SIEM
 //! in the same network).
+//!
+//! Both carry the activity log, so they are for team organizations only
+//! (`audit_team_only` for families, like the log itself).
 
 use std::net::{IpAddr, ToSocketAddrs};
 use std::time::Duration;
@@ -144,6 +147,8 @@ pub async fn create_token(
         true,
     )
     .await?;
+    let (code, message) = org_audit::TEAM_ONLY;
+    access::require_team(&mut tx, &org_id, code, message).await?;
     let count: i64 = sqlx::query_scalar!(
         "SELECT COUNT(*) AS \"count!\" FROM org_event_tokens WHERE org_id = $1 AND revoked_at = 0",
         &org_id,
@@ -284,6 +289,8 @@ pub async fn pull(
     let row = row.ok_or(ApiError::Unauthorized)?;
     let (token_id, org_id, last_used_at) = (row.id, row.org_id, row.last_used_at);
     let mut conn = state.db.as_org(OrgCredential::Events, &org_id).await?;
+    let (code, message) = org_audit::TEAM_ONLY;
+    access::require_team(&mut conn, &org_id, code, message).await?;
     let now = now_ms();
     if now - last_used_at > 60_000 {
         sqlx::query!(
@@ -489,6 +496,8 @@ pub async fn create_webhook(
             true,
         )
         .await?;
+        let (code, message) = org_audit::TEAM_ONLY;
+        access::require_team(&mut conn, &org_id, code, message).await?;
     }
     let allow_private = state.webhook_allow_private;
     let check = url.clone();

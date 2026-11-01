@@ -10,6 +10,12 @@
 //! [`passbox_core::audit::AuditRecord::compute_hash`], so an export can be
 //! checked by anyone. Retention deletes old entries and remembers the hash
 //! the first remaining entry links to.
+//!
+//! The activity log is a feature of team organizations (Business). Nothing
+//! else reads it (security notifications and recovery work from their own
+//! records), so families get no new entries and cannot view, verify or
+//! export the log. Entries a family has from before stay stored but are
+//! not shown (retention and deleting the organization still remove them).
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
@@ -183,8 +189,14 @@ async fn append(
     Ok(record.seq)
 }
 
+/// 403 for the activity log of a family organization.
+pub(crate) const TEAM_ONLY: (&str, &str) = (
+    "audit_team_only",
+    "the activity log is available for team organizations",
+);
+
 /// Appends a server-side entry inside the caller's transaction, so the
-/// entry exists exactly when the change does.
+/// entry exists exactly when the change does. Families keep no log.
 pub async fn record_in(
     conn: &mut PgConnection,
     org_id: &str,
@@ -193,6 +205,9 @@ pub async fn record_in(
     target: Target<'_>,
     details: Value,
 ) -> ApiResult<()> {
+    if access::is_family(conn, org_id).await? {
+        return Ok(());
+    }
     append(
         conn,
         org_id,
@@ -509,7 +524,8 @@ pub struct AuditPage {
     head: AuditHead,
 }
 
-/// `GET /orgs/{id}/audit`: a page of entries, newest first (admins).
+/// `GET /orgs/{id}/audit`: a page of entries, newest first (admins of
+/// team organizations).
 pub async fn list(
     State(state): State<AppState>,
     session: Session,
@@ -519,6 +535,7 @@ pub async fn list(
     validate::id("organization id", &org_id)?;
     let mut conn = state.db.as_account(&session.account_id).await?;
     access::require_admin(&mut conn, &org_id, &session.account_id).await?;
+    access::require_team(&mut conn, &org_id, TEAM_ONLY.0, TEAM_ONLY.1).await?;
     let events = query(&mut conn, &org_id, &q, 500).await?;
     let head = head(&mut conn, &org_id).await?;
     Ok(Json(AuditPage { events, head }))
@@ -550,7 +567,8 @@ pub async fn verify_org_chain(conn: &mut PgConnection, org_id: &str) -> ApiResul
     Ok(check)
 }
 
-/// `GET /orgs/{id}/audit/verify`: checks the hash chain (admins).
+/// `GET /orgs/{id}/audit/verify`: checks the hash chain (admins of team
+/// organizations).
 pub async fn verify(
     State(state): State<AppState>,
     session: Session,
@@ -559,6 +577,7 @@ pub async fn verify(
     validate::id("organization id", &org_id)?;
     let mut conn = state.db.as_account(&session.account_id).await?;
     access::require_admin(&mut conn, &org_id, &session.account_id).await?;
+    access::require_team(&mut conn, &org_id, TEAM_ONLY.0, TEAM_ONLY.1).await?;
     Ok(Json(verify_org_chain(&mut conn, &org_id).await?))
 }
 
@@ -605,8 +624,8 @@ pub fn to_csv(records: &[AuditRecord]) -> String {
 }
 
 /// `GET /orgs/{id}/audit/export?format=csv|json&…`: up to 100,000 entries
-/// matching the filters, oldest first (admins). The export itself is
-/// logged.
+/// matching the filters, oldest first (admins of team organizations). The
+/// export itself is logged.
 pub async fn export(
     State(state): State<AppState>,
     ClientIp(ip): ClientIp,
@@ -629,6 +648,7 @@ pub async fn export(
         false,
     )
     .await?;
+    access::require_team(&mut conn, &org_id, TEAM_ONLY.0, TEAM_ONLY.1).await?;
     q.limit = Some(100_000);
     if q.after.is_none() {
         q.after = Some(0);

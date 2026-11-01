@@ -325,6 +325,8 @@ async fn run_all(database: &passbox_server::testing::TestDatabase) {
     recovery::device_links(&server).await;
     sso::single_sign_on(&server).await;
     org_admin::organization_administration(&server).await;
+    // Its own rate limits: it turns two-factor sign-in on and off.
+    org_admin::families_have_no_policies_or_activity_log(&server.sibling().await).await;
     comfort::comfort(&server).await;
     guests::guests_and_defaults(&server).await;
     extensions::extensions(&server, database).await;

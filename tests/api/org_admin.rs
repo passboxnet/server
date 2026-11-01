@@ -695,6 +695,187 @@ pub(super) async fn organization_administration(server: &TestServer) {
     assert_eq!(check["brokenAt"], 6);
 }
 
+/// Policies and the activity log are for team organizations (Business).
+/// A family keeps only the recovery rule its apps set up, keeps no log,
+/// and the other rules of a policy it stored earlier stay in the database
+/// without being enforced.
+pub(super) async fn families_have_no_policies_or_activity_log(server: &TestServer) {
+    let mut alice = Member::new(server, "10.52.0.1").await;
+    let mut bob = Member::new(server, "10.52.0.2").await;
+    let org = alice
+        .keyring
+        .create_org(
+            OrgKind::Family,
+            r#"{"name":"Doe"}"#,
+            Some(r#"{"name":"Family"}"#),
+            1,
+        )
+        .unwrap();
+    let org_id = org.id.clone();
+    let (status, body) = alice
+        .call(
+            server,
+            Method::POST,
+            "/api/v1/orgs",
+            Some(serde_json::to_value(&org).unwrap()),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    alice.sync(server).await;
+    invite_and_confirm(server, &mut alice, &mut bob, &org_id, "member").await;
+    bob.sync(server).await;
+
+    // A strict policy the family stored before policies became a team
+    // feature.
+    let strict = PolicyRules {
+        allow_personal_vault: false,
+        require_two_factor: true,
+        report_item_usage: true,
+        ..PolicyRules::default()
+    };
+    let upload = alice.keyring.sign_org_policy(&org_id, &strict, 1).unwrap();
+    sqlx::query(
+        "INSERT INTO org_policies (org_id, version, policy, signature, signer_id, rules, seq, created_at) \
+         VALUES ($1, 1, $2, $3, $4, $5, 0, 0)",
+    )
+    .bind(&org_id)
+    .bind(&upload.policy)
+    .bind(&upload.signature)
+    .bind(alice.id())
+    .bind(serde_json::to_value(&strict).unwrap())
+    .execute(server.db())
+    .await
+    .unwrap();
+
+    // No version that restricts more than recovery enrollment ...
+    let stricter = PolicyRules {
+        forbid_export: true,
+        ..strict.clone()
+    };
+    let (status, body) = put_policy(server, &mut alice, &org_id, &stricter).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(body["error"], "policies_team_only");
+    let agents = PolicyRules {
+        allow_agent_reveal: true,
+        ..PolicyRules::new_org_defaults()
+    };
+    let (status, body) = put_policy(server, &mut alice, &org_id, &agents).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(body["error"], "policies_team_only");
+    // ... and nothing to read.
+    for member in [&alice, &bob] {
+        let (status, body) = member
+            .call(
+                server,
+                Method::GET,
+                &format!("/api/v1/orgs/{org_id}/policy"),
+                None,
+            )
+            .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        assert_eq!(body["error"], "policies_team_only");
+    }
+
+    // The stored rules are not enforced: personal vaults stay allowed ...
+    let vault = bob.keyring.create_vault(r#"{"name":"Mine"}"#).unwrap();
+    let (status, body) = bob
+        .call(
+            server,
+            Method::POST,
+            "/api/v1/vaults",
+            Some(json!({ "id": vault.id, "encryptedKey": vault.encrypted_key, "encryptedMeta": vault.encrypted_meta })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    // ... two-factor sign-in can be turned off again ...
+    let bob_ip = "10.52.0.2";
+    let (bob_token, _, recovery_codes) = enable_totp(server, &bob.client, bob_ip).await;
+    bob.token = bob_token;
+    let (status, body) = server
+        .post(
+            "/api/v1/account/two-factor/disable",
+            Some(&bob.token),
+            json!({ "method": "recovery", "code": recovery_codes[0] }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    // ... and no item usage is collected.
+    let (status, body) = bob
+        .call(
+            server,
+            Method::POST,
+            &format!("/api/v1/orgs/{org_id}/audit/client-events"),
+            Some(json!({ "events": [] })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+
+    // Apps sign the version in force again when its signer leaves, and set
+    // the recovery rule when they create a family: both still work.
+    let (status, body) = put_policy(server, &mut alice, &org_id, &strict).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["version"], 2);
+    let (status, body) = put_policy(
+        server,
+        &mut alice,
+        &org_id,
+        &PolicyRules::new_org_defaults(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["version"], 3);
+    // Every version is kept.
+    let kept: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM org_policies WHERE org_id = $1")
+        .bind(&org_id)
+        .fetch_one(server.db())
+        .await
+        .unwrap();
+    assert_eq!(kept, 3);
+
+    // Activity log: nothing recorded, nothing to view, verify or export.
+    let logged: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM org_audit_events WHERE org_id = $1")
+        .bind(&org_id)
+        .fetch_one(server.db())
+        .await
+        .unwrap();
+    assert_eq!(logged, 0, "families keep no activity log");
+    for uri in [
+        format!("/api/v1/orgs/{org_id}/audit"),
+        format!("/api/v1/orgs/{org_id}/audit/verify"),
+        format!("/api/v1/orgs/{org_id}/audit/export?format=json"),
+    ] {
+        let (status, body) = alice.call(server, Method::GET, &uri, None).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{uri}: {body}");
+        assert_eq!(body["error"], "audit_team_only", "{uri}: {body}");
+    }
+    // Members still get 403 for admin-only reads.
+    let (status, body) = bob
+        .call(
+            server,
+            Method::GET,
+            &format!("/api/v1/orgs/{org_id}/audit"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(body["error"], "forbidden");
+    // The events API carries the log: no tokens, no webhooks.
+    for (uri, body) in [
+        (
+            format!("/api/v1/orgs/{org_id}/event-tokens"),
+            json!({ "name": "Splunk" }),
+        ),
+        (
+            format!("/api/v1/orgs/{org_id}/webhooks"),
+            json!({ "url": "https://siem.example.com/hook" }),
+        ),
+    ] {
+        let (status, body) = alice.call(server, Method::POST, &uri, Some(body)).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{uri}: {body}");
+        assert_eq!(body["error"], "audit_team_only", "{uri}: {body}");
+    }
+}
+
 fn passbox_core_now() -> i64 {
     i64::try_from(
         std::time::SystemTime::now()
