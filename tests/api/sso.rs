@@ -1036,7 +1036,7 @@ async fn trusted_devices(
 
 // --- SCIM ----------------------------------------------------------------------------------
 
-async fn scim(
+pub(super) async fn scim(
     server: &TestServer,
     method: Method,
     uri: &str,

@@ -12,12 +12,21 @@ use tower_http::trace::TraceLayer;
 
 use crate::config::Config;
 use crate::error::ApiResult;
+use crate::ext::Extensions;
 use crate::instance::{PasswordPolicy, RegistrationMode};
 use crate::mail::Locale;
 use crate::state::AppState;
 
 /// Builds the application router.
 pub fn router(config: &Config, state: AppState) -> Router {
+    router_with(config, state, &Extensions::default())
+}
+
+/// Builds the application router with the gate, meta hook and routes of
+/// `ext`. Extension routes are merged at the root (give them their full
+/// path, such as `/api/v1/billing/...`) before the state is attached.
+pub fn router_with(config: &Config, mut state: AppState, ext: &Extensions) -> Router {
+    ext.install(&mut state);
     let api = crate::api::router().route("/meta", get(meta));
 
     let metrics = state.metrics.clone();
@@ -27,6 +36,9 @@ pub fn router(config: &Config, state: AppState) -> Router {
         .nest("/api/v1", api)
         // Email logos and the typeface of the server's own pages.
         .merge(crate::brand::routes());
+    if let Some(routes) = &ext.routes {
+        app = app.merge(routes(&state));
+    }
     if config.web_dir.is_none() {
         // Without a web vault the server answers browsers with its own pages.
         app = app.fallback(crate::brand::pages::fallback);
@@ -166,6 +178,13 @@ struct Meta {
     email_monitoring: bool,
     /// Whether `/api/v1/breaches/catalog` serves the breach catalogue.
     breach_catalog: bool,
+    /// `PASSBOX_FAMILY_MEMBER_LIMIT`, if set: most owners, admins and members
+    /// of a family including pending invitations (guests do not count).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    family_member_limit: Option<u32>,
+    /// Information from the extensions of an embedding program.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    extensions: Option<serde_json::Value>,
 }
 
 async fn meta(State(state): State<AppState>) -> ApiResult<Json<Meta>> {
@@ -189,6 +208,8 @@ async fn meta(State(state): State<AppState>) -> ApiResult<Json<Meta>> {
         breach_proxy: state.breach.proxy,
         email_monitoring: state.breach.monitoring,
         breach_catalog: state.breach_catalog.enabled,
+        family_member_limit: Some(state.family_member_limit).filter(|limit| *limit > 0),
+        extensions: state.ext_meta.as_ref().map(|meta| meta()),
     }))
 }
 

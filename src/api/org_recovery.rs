@@ -248,6 +248,7 @@ pub async fn create_key(
     validate::id("organization id", &org_id)?;
     let mut tx = state.db.as_account(&session.account_id).await?;
     access::require_admin(&mut tx, &org_id, &session.account_id).await?;
+    access::require_unlocked(&mut tx, &org_id).await?;
     let latest = current_key(&mut tx, &org_id).await?.map_or(0, |k| k.0);
     if i64::from(req.key_version) != latest + 1 {
         return Err(ApiError::conflict(
@@ -349,6 +350,7 @@ pub async fn add_grant(
     validate::id("account id", &req.account_id)?;
     let mut tx = state.db.as_account(&session.account_id).await?;
     access::require_admin(&mut tx, &org_id, &session.account_id).await?;
+    access::require_unlocked(&mut tx, &org_id).await?;
     if !holds_key(&mut tx, &org_id, &session.account_id).await? {
         return Err(ApiError::forbidden(
             "forbidden",

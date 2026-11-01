@@ -52,6 +52,14 @@ pub struct AppState {
     /// `PASSBOX_AGENT_LIMIT_PER_MEMBER` (0 = unlimited); the instance
     /// setting `agentLimitPerMember` overrides it.
     pub agent_limit_per_member: u32,
+    /// `PASSBOX_FAMILY_MEMBER_LIMIT`: owner, admins and members of a family
+    /// plus its pending invitations (guests do not count); 0 = unlimited.
+    pub family_member_limit: u32,
+    /// Asked before organizations grow or use features (`crate::ext`);
+    /// allows everything unless an embedding program installs its own.
+    pub gate: Arc<dyn crate::ext::OrgGate>,
+    /// The `extensions` object of `/api/v1/meta`.
+    pub ext_meta: Option<crate::ext::MetaHook>,
     /// Request counters for `/metrics`.
     pub metrics: Arc<crate::metrics::Metrics>,
 }
@@ -104,6 +112,9 @@ impl AppState {
             breach: Arc::new(BreachService::http()),
             breach_catalog: Arc::new(CatalogService::http()),
             agent_limit_per_member: 0,
+            family_member_limit: 0,
+            gate: Arc::new(crate::ext::AllowAll),
+            ext_meta: None,
             metrics: Arc::default(),
             db,
             opaque: Arc::new(opaque),

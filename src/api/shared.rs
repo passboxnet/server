@@ -347,6 +347,7 @@ pub async fn create(
     validate::id("organization id", &org_id)?;
     let mut tx = state.db.as_account(&session.account_id).await?;
     access::require_admin(&mut tx, &org_id, &session.account_id).await?;
+    access::require_unlocked(&mut tx, &org_id).await?;
     let me = signed::own_bundle(&mut tx, &session.account_id).await?;
     let seq = insert_shared_vault(&mut tx, &org_id, &me, &req, now_ms()).await?;
     super::org_audit::record_in(
@@ -554,7 +555,7 @@ pub async fn rotate(
     )?;
     let mut tx = state.db.as_account(&session.account_id).await?;
     let (org_id, key_epoch) =
-        require_vault_manager(&mut tx, &vault_id, &session.account_id).await?;
+        access::vault_manager(&mut tx, &vault_id, &session.account_id).await?;
     let key_epoch = u32::try_from(key_epoch).map_err(|_| bad("invalid key epoch"))?;
     if req.key_epoch != key_epoch + 1 {
         return Err(ApiError::conflict(

@@ -28,6 +28,8 @@ mod breach;
 mod comfort;
 #[path = "api/email_change.rs"]
 mod email_change;
+#[path = "api/extensions.rs"]
+mod extensions;
 #[path = "api/guests.rs"]
 mod guests;
 #[path = "api/icons.rs"]
@@ -55,14 +57,33 @@ impl TestServer {
     /// A second server process on the same database, with its own rate
     /// limits.
     async fn with_db(db: passbox_server::db::Db, owner: sqlx::PgPool) -> Self {
+        Self::with_extensions(
+            db,
+            owner,
+            &passbox_server::ext::Extensions::default(),
+            |_| {},
+        )
+        .await
+    }
+
+    /// A server process with the extensions of an embedding program;
+    /// `configure` adjusts the state first.
+    async fn with_extensions(
+        db: passbox_server::db::Db,
+        owner: sqlx::PgPool,
+        ext: &passbox_server::ext::Extensions,
+        configure: impl FnOnce(&mut AppState),
+    ) -> Self {
         let mut state = AppState::load(db).await.unwrap();
+        configure(&mut state);
+        ext.install(&mut state);
         // Lets tests pick the client IP with `X-Forwarded-For`. Requests
         // without it count as IP "unknown".
         state.trust_proxy = true;
         let env_admin_email = format!("{}@env-admin.example", id::new_id().unwrap());
         state.admin_emails = std::sync::Arc::new(vec![env_admin_email.clone()]);
         Self {
-            app: passbox_server::routes::router(&Config::default(), state.clone()),
+            app: passbox_server::routes::router_with(&Config::default(), state.clone(), ext),
             state,
             env_admin_email,
             owner,
@@ -306,6 +327,7 @@ async fn run_all(database: &passbox_server::testing::TestDatabase) {
     org_admin::organization_administration(&server).await;
     comfort::comfort(&server).await;
     guests::guests_and_defaults(&server).await;
+    extensions::extensions(&server, database).await;
     // Its own rate limits: the last test counts failures for the test IP.
     rls::policies(&server.sibling().await, database).await;
     // Last: it locks out an email and counts failures for the test IP.

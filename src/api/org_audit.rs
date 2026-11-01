@@ -621,6 +621,14 @@ pub async fn export(
     }
     let mut conn = state.db.as_account(&session.account_id).await?;
     access::require_admin(&mut conn, &org_id, &session.account_id).await?;
+    crate::ext::check_feature(
+        &state,
+        &mut conn,
+        &org_id,
+        crate::ext::OrgFeature::AuditLog,
+        false,
+    )
+    .await?;
     q.limit = Some(100_000);
     if q.after.is_none() {
         q.after = Some(0);

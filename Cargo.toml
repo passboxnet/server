@@ -1,7 +1,7 @@
 [package]
 name = "passbox-server"
 description = "The Passbox headless server."
-version = "0.1.3"
+version = "0.2.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/passboxnet/server"
@@ -15,6 +15,7 @@ path = "src/main.rs"
 [dependencies]
 passbox-core = { git = "https://github.com/passboxnet/core", tag = "v0.1.1", features = ["oidc"] }
 anyhow = "1"
+async-trait = "0.1"
 axum = "0.8"
 clap = { version = "4", features = ["derive", "env"] }
 data-encoding = "2"

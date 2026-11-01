@@ -206,8 +206,33 @@ pub async fn vault_access(
     }
 }
 
+/// The organization's lock, if it is read-only (`crate::ext`).
+pub async fn org_lock(
+    conn: &mut PgConnection,
+    org_id: &str,
+) -> ApiResult<Option<crate::ext::OrgLock>> {
+    Ok(sqlx::query_as!(
+        crate::ext::OrgLock,
+        "SELECT reason, source FROM org_locks WHERE org_id = $1",
+        org_id,
+    )
+    .fetch_optional(&mut *conn)
+    .await?)
+}
+
+/// 403 `org_read_only` while the organization is locked. Reading, syncing,
+/// exporting, removing and suspending members and deleting the
+/// organization stay possible; creating and changing things does not.
+pub async fn require_unlocked(conn: &mut PgConnection, org_id: &str) -> ApiResult<()> {
+    match org_lock(conn, org_id).await? {
+        Some(lock) => Err(crate::ext::read_only(&lock)),
+        None => Ok(()),
+    }
+}
+
 /// Requires write access (personal vault, or `edit`/`manage`). A member
-/// with `view` gets 403.
+/// with `view` gets 403, and so does everyone while the vault's
+/// organization is read-only.
 pub async fn require_vault_write(
     conn: &mut PgConnection,
     vault_id: &str,
@@ -227,10 +252,29 @@ pub async fn require_vault_write(
             "you can only view this vault",
         ));
     }
+    if let VaultAccess::Shared { org_id, .. } = &access {
+        require_unlocked(conn, org_id).await?;
+    }
     Ok(access)
 }
 
+/// Requires the right to manage a shared vault (members, keys), and an
+/// organization that is not read-only. Returns the organization and the
+/// vault's key epoch.
 pub async fn require_vault_manager(
+    conn: &mut PgConnection,
+    vault_id: &str,
+    account_id: &str,
+) -> ApiResult<(String, i64)> {
+    let (org_id, key_epoch) = vault_manager(conn, vault_id, account_id).await?;
+    require_unlocked(conn, &org_id).await?;
+    Ok((org_id, key_epoch))
+}
+
+/// Like [`require_vault_manager`], also while the organization is
+/// read-only: for rotating keys after a member left and for checks that
+/// change nothing.
+pub async fn vault_manager(
     conn: &mut PgConnection,
     vault_id: &str,
     account_id: &str,

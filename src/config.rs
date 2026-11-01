@@ -134,6 +134,12 @@ pub struct Config {
     /// Instance admins can override it in the admin console.
     #[arg(long, env = "PASSBOX_AGENT_LIMIT_PER_MEMBER", default_value_t = 0)]
     pub agent_limit_per_member: u32,
+
+    /// Most people in a family organization: the owner, admins and members
+    /// (in any status) plus pending invitations. Guests do not count. 0 =
+    /// unlimited, the default.
+    #[arg(long, env = "PASSBOX_FAMILY_MEMBER_LIMIT", default_value_t = 0)]
+    pub family_member_limit: u32,
     /// Have I Been Pwned "Pwned Passwords" through this server: `on` lets
     /// signed-in clients check passwords via `/api/v1/breach/range/{prefix}`
     /// (k-anonymity; the server sees only 5-character hash prefixes and Have
@@ -252,6 +258,7 @@ impl std::fmt::Debug for Config {
             .field("attachment_quota_mb", &self.attachment_quota_mb)
             .field("org_attachment_quota_mb", &self.org_attachment_quota_mb)
             .field("agent_limit_per_member", &self.agent_limit_per_member)
+            .field("family_member_limit", &self.family_member_limit)
             .field("breach_proxy", &self.breach_proxy)
             .field(
                 "hibp_api_key",
@@ -308,6 +315,7 @@ impl Default for Config {
             attachment_quota_mb: 0,
             org_attachment_quota_mb: 0,
             agent_limit_per_member: 0,
+            family_member_limit: 0,
             breach_proxy: Switch::On,
             hibp_api_key: None,
             hibp_check_hours: 24,

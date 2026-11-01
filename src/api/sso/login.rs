@@ -282,6 +282,14 @@ pub async fn test_start(
     validate::id("organization id", &org_id)?;
     let mut conn = state.db.as_account(&session.account_id).await?;
     access::require_admin(&mut conn, &org_id, &session.account_id).await?;
+    crate::ext::check_feature(
+        &state,
+        &mut conn,
+        &org_id,
+        crate::ext::OrgFeature::Sso,
+        false,
+    )
+    .await?;
     let config = load_config(&mut conn, &org_id)
         .await?
         .ok_or(ApiError::NotFound)?;
@@ -455,8 +463,15 @@ fn identity(config: &StoredConfig, claims: Map<String, Value>) -> Identity {
 
 /// The Passbox account the identity signs in, if any.
 enum Resolved {
-    Account { account_id: String, email: String },
-    NoAccount { email: String },
+    Account {
+        account_id: String,
+        email: String,
+        /// The sign-in accepted an invitation.
+        joined: bool,
+    },
+    NoAccount {
+        email: String,
+    },
 }
 
 /// Maps the provider's identity to an account of the organization:
@@ -465,12 +480,14 @@ enum Resolved {
 /// accepts a pending invitation of the organization (directory-provisioned
 /// people); without, only reports (the "test connection" check).
 async fn resolve(
+    state: &AppState,
     conn: &mut PgConnection,
     config: &StoredConfig,
     who: &Identity,
     commit: bool,
 ) -> ApiResult<Result<Resolved, &'static str>> {
     let org_id = &config.org_id;
+    let mut joined = false;
     let linked: Option<(String, String)> = sqlx::query!(
         r#"SELECT sso_identities.account_id, accounts.email AS "email!" FROM sso_identities
          JOIN account_directory accounts ON accounts.id = sso_identities.account_id
@@ -543,6 +560,24 @@ async fn resolve(
                 return Ok(Err("sso_not_member"));
             };
             if commit {
+                // Refusals (read-only organization, family limit, the
+                // organization gate) end the sign-in with their code.
+                let joining_role = passbox_core::sharing::objects::OrgRole::parse(&role)
+                    .map_err(|e| ApiError::Internal(e.into()))?;
+                match crate::ext::check_add_member(
+                    state,
+                    conn,
+                    org_id,
+                    joining_role,
+                    crate::ext::Joining::Accept,
+                )
+                .await
+                {
+                    Ok(_) => {}
+                    Err(ApiError::Denied { code, .. }) => return Ok(Err(code)),
+                    Err(err) => return Err(err),
+                }
+                joined = true;
                 accept_invitation(
                     conn,
                     org_id,
@@ -582,7 +617,11 @@ async fn resolve(
             .await?;
         }
     }
-    Ok(Ok(Resolved::Account { account_id, email }))
+    Ok(Ok(Resolved::Account {
+        account_id,
+        email,
+        joined,
+    }))
 }
 
 async fn accept_invitation(
@@ -726,7 +765,7 @@ async fn handle_callback(
     let now = now_ms();
     let (outcome, account_id, email, result) = if purpose == "test" {
         let mut conn = state.db.as_org(OrgCredential::Sso, &org_id).await?;
-        let resolved = resolve(&mut conn, &config, &who, false).await?;
+        let resolved = resolve(state, &mut conn, &config, &who, false).await?;
         drop(conn);
         let (outcome, account_found) = match &resolved {
             Ok(Resolved::Account { .. }) => ("ok", true),
@@ -751,14 +790,19 @@ async fn handle_callback(
         )
     } else {
         let mut tx = state.db.as_org(OrgCredential::Sso, &org_id).await?;
-        let resolved = resolve(&mut tx, &config, &who, true).await?;
+        let resolved = resolve(state, &mut tx, &config, &who, true).await?;
         tx.commit().await?;
+        if let Ok(Resolved::Account { joined: true, .. }) = &resolved {
+            crate::ext::members_changed(state, &org_id);
+        }
         match resolved {
             Err(code) => return Ok(Err(code)),
             Ok(Resolved::NoAccount { email }) => {
                 ("no_account".to_owned(), None, email, String::new())
             }
-            Ok(Resolved::Account { account_id, email }) => {
+            Ok(Resolved::Account {
+                account_id, email, ..
+            }) => {
                 record_event(state, &account_id, "sso_authenticated", "", "", ip).await?;
                 ("ok".to_owned(), Some(account_id), email, String::new())
             }

@@ -248,7 +248,7 @@ pub async fn list(
         if row.3 == session.account_id {
             continue;
         }
-        if access::require_vault_manager(&mut conn, &row.1, &session.account_id)
+        if access::vault_manager(&mut conn, &row.1, &session.account_id)
             .await
             .is_ok()
         {

@@ -77,8 +77,9 @@ pub struct SyncResponse {
     cursor: i64,
     vaults: Vec<SyncVault>,
     items: Vec<SyncItem>,
+    /// The sharing delta; its organizations carry `lock` as well.
     #[serde(skip_serializing_if = "Option::is_none")]
-    sharing: Option<SharingDelta>,
+    sharing: Option<serde_json::Value>,
 }
 
 /// An item row as sync reads it.
@@ -170,7 +171,7 @@ pub async fn sync(
         .await?;
     }
     if query.sharing == 1 {
-        let sharing = sync_sharing(
+        let (sharing, locks) = sync_sharing(
             &mut conn,
             &session.account_id,
             query.since,
@@ -179,7 +180,7 @@ pub async fn sync(
             &mut moved_from,
         )
         .await?;
-        response.sharing = Some(sharing);
+        response.sharing = Some(with_locks(sharing, &locks)?);
     }
     let tombstones = super::moves::tombstones(&mut conn, &moved_from, query.since, cursor).await?;
     if !tombstones.is_empty() {
@@ -202,7 +203,34 @@ pub async fn sync(
     Ok(Json(response))
 }
 
-/// Adds shared vaults and items to `response` and returns the sharing delta.
+/// The sharing delta as JSON, with `lock` on every organization (`null`
+/// unless it is read-only).
+fn with_locks(
+    delta: SharingDelta,
+    locks: &BTreeMap<String, crate::ext::OrgLock>,
+) -> ApiResult<serde_json::Value> {
+    let mut value = serde_json::to_value(delta).map_err(|e| ApiError::Internal(e.into()))?;
+    if let Some(orgs) = value
+        .get_mut("orgs")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        for org in orgs {
+            let lock = org
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .and_then(|id| locks.get(id))
+                .map(|lock| serde_json::json!(lock))
+                .unwrap_or(serde_json::Value::Null);
+            if let Some(org) = org.as_object_mut() {
+                org.insert("lock".to_owned(), lock);
+            }
+        }
+    }
+    Ok(value)
+}
+
+/// Adds shared vaults and items to `response` and returns the sharing delta
+/// with the locks of the account's organizations.
 #[allow(clippy::type_complexity)]
 async fn sync_sharing(
     conn: &mut PgConnection,
@@ -211,10 +239,14 @@ async fn sync_sharing(
     cursor: i64,
     response: &mut SyncResponse,
     moved_from: &mut Vec<String>,
-) -> ApiResult<SharingDelta> {
+) -> ApiResult<(SharingDelta, BTreeMap<String, crate::ext::OrgLock>)> {
     let mut delta = SharingDelta::default();
     let orgs = super::orgs::org_records(conn, me).await?;
-    for (org, org_seq) in &orgs {
+    let locks: BTreeMap<String, crate::ext::OrgLock> = orgs
+        .iter()
+        .filter_map(|(org, _, lock)| lock.clone().map(|lock| (org.id.clone(), lock)))
+        .collect();
+    for (org, org_seq, _) in &orgs {
         let confirmed = org.status == "confirmed";
         let (roster, roster_seq) = super::orgs::roster(conn, &org.id).await?;
         if (*org_seq).max(roster_seq) > since {
@@ -301,7 +333,7 @@ async fn sync_sharing(
 
     // Shared vaults this account can open.
     let mut signer_ids: Vec<String> = Vec::new();
-    for (org, org_seq) in orgs.iter().filter(|(o, _)| o.status == "confirmed") {
+    for (org, org_seq, _) in orgs.iter().filter(|(o, _, _)| o.status == "confirmed") {
         let vaults = sqlx::query!(
             "SELECT id, encrypted_meta, revision, updated_at, key_epoch, rotation_pending, seq FROM vaults \
              WHERE org_id = $1",
@@ -439,8 +471,8 @@ async fn sync_sharing(
             }));
     }
     // Organization policies: the newest of every organization, every time.
-    let org_ids: Vec<String> = orgs.iter().map(|(o, _)| o.id.clone()).collect();
+    let org_ids: Vec<String> = orgs.iter().map(|(o, _, _)| o.id.clone()).collect();
     delta.policies = super::org_policy::records(conn, &org_ids).await?;
-    delta.orgs = orgs.into_iter().map(|(o, _)| o).collect();
-    Ok(delta)
+    delta.orgs = orgs.into_iter().map(|(o, _, _)| o).collect();
+    Ok((delta, locks))
 }

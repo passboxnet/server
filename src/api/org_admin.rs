@@ -667,6 +667,14 @@ pub async fn put_settings(
     }
     let mut tx = state.db.as_account(&session.account_id).await?;
     access::require_admin(&mut tx, &org_id, &session.account_id).await?;
+    crate::ext::check_feature(
+        &state,
+        &mut tx,
+        &org_id,
+        crate::ext::OrgFeature::AdminConsole,
+        true,
+    )
+    .await?;
     let before = load_settings(&mut tx, &org_id).await?;
     sqlx::query!("DELETE FROM org_settings WHERE org_id = $1", &org_id,)
         .execute(&mut *tx)

@@ -64,6 +64,9 @@ pub struct ScimError {
     status: StatusCode,
     scim_type: Option<&'static str>,
     detail: String,
+    /// The Passbox error code of a refusal (`org_read_only`, a gate's
+    /// code), sent as `passboxError`.
+    code: Option<&'static str>,
 }
 
 impl ScimError {
@@ -72,6 +75,7 @@ impl ScimError {
             status,
             scim_type,
             detail: detail.into(),
+            code: None,
         }
     }
     fn bad(scim_type: &'static str, detail: impl Into<String>) -> Self {
@@ -90,6 +94,12 @@ impl From<ApiError> for ScimError {
                 Self::new(StatusCode::TOO_MANY_REQUESTS, None, "too many requests")
             }
             ApiError::BadRequest(message) => Self::bad("invalidValue", message),
+            ApiError::Denied { code, message, .. } | ApiError::Forbidden { code, message } => {
+                Self {
+                    code: Some(code),
+                    ..Self::new(StatusCode::FORBIDDEN, None, message)
+                }
+            }
             other => {
                 tracing::error!(error = ?other, "SCIM request failed");
                 Self::new(
@@ -126,6 +136,9 @@ impl IntoResponse for ScimError {
         });
         if let Some(scim_type) = self.scim_type {
             body["scimType"] = json!(scim_type);
+        }
+        if let Some(code) = self.code {
+            body["passboxError"] = json!(code);
         }
         scim_json(self.status, body)
     }
@@ -722,6 +735,14 @@ async fn apply_user(
             (Some(account_id), Some(m)) => {
                 user.account_id = Some(account_id.clone());
                 if m.status == "suspended" && !user.suspended_from.is_empty() {
+                    crate::ext::check_add_member(
+                        state,
+                        tx,
+                        org_id,
+                        m.role,
+                        crate::ext::Joining::Reactivate,
+                    )
+                    .await?;
                     set_member_status(tx, org_id, account_id, &user.suspended_from).await?;
                 }
                 user.suspended_from.clear();
@@ -807,6 +828,14 @@ async fn ensure_invitation(
     if pending.is_some() {
         return Ok(());
     }
+    crate::ext::check_add_member(
+        state,
+        conn,
+        &auth.org_id,
+        OrgRole::Member,
+        crate::ext::Joining::Invite,
+    )
+    .await?;
     let invitation_id = new_id()?;
     let token = encoding::encode(
         &passbox_core::random::bytes::<32>().map_err(|e| ApiError::Internal(e.into()))?,
@@ -962,6 +991,7 @@ async fn write_user(
     .await?;
     save_user(&mut tx, &auth.org_id, &user, previous.is_none()).await?;
     tx.commit().await?;
+    crate::ext::members_changed(state, &auth.org_id);
     if mails {
         state.mailer.wake();
     }
@@ -1137,6 +1167,7 @@ pub async fn delete_user(
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
+    crate::ext::members_changed(&state, &auth.org_id);
     deprovision_events(&state, &ended).await;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1745,6 +1776,7 @@ pub async fn create_token(
     }
     let mut tx = state.db.as_account(&session.account_id).await?;
     access::require_admin(&mut tx, &org_id, &session.account_id).await?;
+    crate::ext::check_feature(&state, &mut tx, &org_id, crate::ext::OrgFeature::Scim, true).await?;
     let kind: String =
         sqlx::query_scalar!("SELECT kind FROM organizations WHERE id = $1", &org_id,)
             .fetch_one(&mut *tx)

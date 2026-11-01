@@ -30,6 +30,7 @@ use super::validate;
 use super::vaults::decode;
 use crate::db::{self, Public, now_ms};
 use crate::error::{ApiError, ApiResult};
+use crate::ext::{Joining, OrgLock};
 use crate::mail::{Mailer, Template};
 use crate::security::ClientIp;
 use crate::state::AppState;
@@ -233,6 +234,14 @@ pub async fn create(
     )
     .await?;
     tx.commit().await?;
+    crate::ext::emit(
+        &state,
+        crate::ext::OrgEvent::Created {
+            org_id: req.id.clone(),
+            kind,
+            owner_id: session.account_id.clone(),
+        },
+    );
     event(&state, &session.account_id, "org_created", &session, &ip).await?;
     Ok((
         StatusCode::CREATED,
@@ -244,11 +253,22 @@ pub async fn create(
     ))
 }
 
-/// The organizations an account belongs to, with its own role and status.
+/// An organization as clients get it: the record and whether it is
+/// read-only (`lock`, `null` otherwise).
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OrgView {
+    #[serde(flatten)]
+    org: OrgRecord,
+    lock: Option<OrgLock>,
+}
+
+/// The organizations an account belongs to, with its own role and status,
+/// the change sequence and the lock.
 pub async fn org_records(
     conn: &mut PgConnection,
     account_id: &str,
-) -> ApiResult<Vec<(OrgRecord, i64)>> {
+) -> ApiResult<Vec<(OrgRecord, i64, Option<OrgLock>)>> {
     #[allow(clippy::type_complexity)]
     let rows: Vec<(
         String,
@@ -263,12 +283,15 @@ pub async fn org_records(
         Option<String>,
         i64,
         i64,
+        Option<String>,
+        Option<String>,
     )> = sqlx::query_as(
         "SELECT organizations.id, organizations.kind, org_members.role, org_members.status, \
              organizations.genesis, organizations.genesis_signature, organizations.encrypted_meta, \
              organizations.meta_epoch, organizations.revision, organizations.default_vault_id, \
-             organizations.seq, org_members.seq FROM org_members \
+             organizations.seq, org_members.seq, org_locks.reason, org_locks.source FROM org_members \
              JOIN organizations ON organizations.id = org_members.org_id \
+             LEFT JOIN org_locks ON org_locks.org_id = org_members.org_id \
              WHERE org_members.account_id = $1 ORDER BY organizations.created_at",
     )
     .bind(account_id)
@@ -290,6 +313,8 @@ pub async fn org_records(
                 default_vault_id,
                 org_seq,
                 member_seq,
+                lock_reason,
+                lock_source,
             )| {
                 (
                     OrgRecord {
@@ -305,6 +330,9 @@ pub async fn org_records(
                         default_vault_id,
                     },
                     org_seq.max(member_seq),
+                    lock_reason
+                        .zip(lock_source)
+                        .map(|(reason, source)| OrgLock { reason, source }),
                 )
             },
         )
@@ -390,13 +418,13 @@ pub async fn roster(conn: &mut PgConnection, org_id: &str) -> ApiResult<(RosterR
 pub async fn list(
     State(state): State<AppState>,
     session: Session,
-) -> ApiResult<Json<Vec<OrgRecord>>> {
+) -> ApiResult<Json<Vec<OrgView>>> {
     let mut conn = state.db.as_account(&session.account_id).await?;
     Ok(Json(
         org_records(&mut conn, &session.account_id)
             .await?
             .into_iter()
-            .map(|(o, _)| o)
+            .map(|(org, _, lock)| OrgView { org, lock })
             .collect(),
     ))
 }
@@ -405,7 +433,7 @@ pub async fn list(
 #[serde(rename_all = "camelCase")]
 pub struct OrgDetail {
     #[serde(flatten)]
-    org: OrgRecord,
+    org: OrgView,
     members: Vec<RosterMember>,
 }
 
@@ -421,8 +449,8 @@ pub async fn get(
     let org = org_records(&mut conn, &session.account_id)
         .await?
         .into_iter()
-        .map(|(o, _)| o)
-        .find(|o| o.id == org_id)
+        .find(|(o, _, _)| o.id == org_id)
+        .map(|(org, _, lock)| OrgView { org, lock })
         .ok_or(ApiError::NotFound)?;
     // Guests and unconfirmed members only see themselves and the admins.
     let (roster, _) = roster(&mut conn, &org_id).await?;
@@ -464,6 +492,7 @@ pub async fn update(
     )?;
     let mut tx = state.db.as_account(&session.account_id).await?;
     access::require_admin(&mut tx, &org_id, &session.account_id).await?;
+    access::require_unlocked(&mut tx, &org_id).await?;
     let (revision, epoch): (i64, i64) = sqlx::query!(
         "SELECT revision, meta_epoch FROM organizations WHERE id = $1",
         &org_id,
@@ -526,6 +555,12 @@ pub async fn delete(
     // Every member's sync must notice; bump the counter so cursors move.
     db::next_seq(&mut tx).await?;
     tx.commit().await?;
+    crate::ext::emit(
+        &state,
+        crate::ext::OrgEvent::Deleted {
+            org_id: org_id.clone(),
+        },
+    );
     event(&state, &session.account_id, "org_deleted", &session, &ip).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -613,6 +648,7 @@ pub async fn invite(
             serde_json::Value::Null,
         ));
     }
+    crate::ext::check_add_member(&state, &mut tx, &org_id, role, Joining::Invite).await?;
     let now = now_ms();
     let pending: i64 = sqlx::query_scalar!(
         "SELECT COUNT(*) AS \"count!\" FROM org_invitations WHERE org_id = $1 AND status = 'pending' AND expires_at > $2",
@@ -690,6 +726,7 @@ pub async fn invite(
     .await?;
     tx.commit().await?;
     state.mailer.wake();
+    crate::ext::members_changed(&state, &org_id);
     event(
         &state,
         &session.account_id,
@@ -801,6 +838,7 @@ pub async fn revoke_invitation(
     )
     .await?;
     tx.commit().await?;
+    crate::ext::members_changed(&state, &org_id);
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -954,6 +992,8 @@ pub async fn accept(
             serde_json::Value::Null,
         ));
     }
+    let joining_role = OrgRole::parse(&role).map_err(|e| ApiError::Internal(e.into()))?;
+    crate::ext::check_add_member(&state, &mut tx, &org_id, joining_role, Joining::Accept).await?;
     let seq = db::next_seq(&mut tx).await?;
     sqlx::query!(
         "INSERT INTO org_members (org_id, account_id, role, status, attestation, attestation_signature, \
@@ -986,6 +1026,7 @@ pub async fn accept(
     )
     .await?;
     tx.commit().await?;
+    crate::ext::members_changed(&state, &org_id);
     event(
         &state,
         &session.account_id,
@@ -1050,6 +1091,7 @@ pub async fn confirm(
     validate::id("account id", &account_id)?;
     let mut tx = state.db.as_account(&session.account_id).await?;
     let me_membership = access::require_admin(&mut tx, &org_id, &session.account_id).await?;
+    access::require_unlocked(&mut tx, &org_id).await?;
     let target = target_member(&mut tx, &org_id, &account_id).await?;
     if target.status != "accepted" {
         return Err(ApiError::conflict(
@@ -1102,6 +1144,7 @@ pub async fn confirm(
     )
     .await?;
     tx.commit().await?;
+    crate::ext::members_changed(&state, &org_id);
     event(
         &state,
         &account_id,
@@ -1155,6 +1198,11 @@ pub async fn update_member(
             "only the owner can grant or revoke admin rights",
         ));
     }
+    if target.role == OrgRole::Guest && role != OrgRole::Guest {
+        crate::ext::check_add_member(&state, &mut tx, &org_id, role, Joining::Promote).await?;
+    } else {
+        access::require_unlocked(&mut tx, &org_id).await?;
+    }
     let me = signed::own_bundle(&mut tx, &session.account_id).await?;
     let member = signed::own_bundle(&mut tx, &account_id).await?;
     let attestation = signed::parse::<MemberAttestation>(
@@ -1203,6 +1251,7 @@ pub async fn update_member(
     )
     .await?;
     tx.commit().await?;
+    crate::ext::members_changed(&state, &org_id);
     if role != target.role {
         event(&state, &account_id, "org_role_changed", &session, &ip).await?;
     }
@@ -1245,6 +1294,10 @@ async fn set_status(
             serde_json::Value::Null,
         ));
     }
+    if status != "suspended" {
+        crate::ext::check_add_member(state, &mut tx, org_id, target.role, Joining::Reactivate)
+            .await?;
+    }
     let seq = db::next_seq(&mut tx).await?;
     sqlx::query!(
         "UPDATE org_members SET status = $1, seq = $2, updated_at = $3 WHERE org_id = $4 AND account_id = $5",
@@ -1270,6 +1323,7 @@ async fn set_status(
     )
     .await?;
     tx.commit().await?;
+    crate::ext::members_changed(state, org_id);
     Ok(())
 }
 
@@ -1411,6 +1465,7 @@ pub async fn remove_member(
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
+    crate::ext::members_changed(&state, &org_id);
     event(&state, &account_id, "org_membership_removed", &session, &ip).await?;
     if !leaving {
         event(

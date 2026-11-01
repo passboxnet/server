@@ -29,6 +29,14 @@ pub enum ApiError {
     /// as `forbidden`, `account_disabled` or `registration_closed`.
     #[error("{message}")]
     Forbidden { code: &'static str, message: String },
+    /// Refused with a code and details, for example by an organization
+    /// gate (`crate::ext::Denial`), `org_read_only` or `family_limit_reached`.
+    #[error("{message}")]
+    Denied {
+        code: &'static str,
+        message: String,
+        details: Value,
+    },
     #[error(transparent)]
     Internal(#[from] anyhow::Error),
 }
@@ -79,7 +87,9 @@ impl IntoResponse for ApiError {
             Self::TwoFactorExpired => (StatusCode::UNAUTHORIZED, "two_factor_expired"),
             Self::RateLimited(_) => (StatusCode::TOO_MANY_REQUESTS, "rate_limited"),
             Self::Conflict { .. } => (StatusCode::CONFLICT, "conflict"),
-            Self::Forbidden { code, .. } => (StatusCode::FORBIDDEN, *code),
+            Self::Forbidden { code, .. } | Self::Denied { code, .. } => {
+                (StatusCode::FORBIDDEN, *code)
+            }
             Self::Internal(err) => {
                 tracing::error!(error = ?err, "internal error");
                 (StatusCode::INTERNAL_SERVER_ERROR, "internal")
@@ -94,7 +104,7 @@ impl IntoResponse for ApiError {
             _ => None,
         };
         let details = match self {
-            Self::Conflict { details, .. } => details,
+            Self::Conflict { details, .. } | Self::Denied { details, .. } => details,
             Self::RateLimited(_) => serde_json::json!({ "retryAfterSeconds": retry_after }),
             _ => Value::Null,
         };

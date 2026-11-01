@@ -149,6 +149,7 @@ pub async fn create(
     }
     let mut tx = state.db.as_account(&session.account_id).await?;
     access::require_admin(&mut tx, &org_id, &session.account_id).await?;
+    access::require_unlocked(&mut tx, &org_id).await?;
     if i64::from(req.meta_epoch) != org_epoch(&mut tx, &org_id).await? {
         return Err(ApiError::conflict(
             "the organization key changed meanwhile",
@@ -323,6 +324,7 @@ pub async fn update(
     )?;
     let mut tx = state.db.as_account(&session.account_id).await?;
     access::require_admin(&mut tx, &org_id, &session.account_id).await?;
+    access::require_unlocked(&mut tx, &org_id).await?;
     require_group(&mut tx, &org_id, &group_id).await?;
     if i64::from(req.meta_epoch) != org_epoch(&mut tx, &org_id).await? {
         return Err(ApiError::conflict(
@@ -409,6 +411,7 @@ pub async fn add_member(
     validate::id("accountId", &req.account_id)?;
     let mut tx = state.db.as_account(&session.account_id).await?;
     access::require_admin(&mut tx, &org_id, &session.account_id).await?;
+    access::require_unlocked(&mut tx, &org_id).await?;
     let key_version = require_group(&mut tx, &org_id, &group_id).await?;
     let me = signed::own_bundle(&mut tx, &session.account_id).await?;
     let (bundle, bundle_signature): (String, String) = sqlx::query!(

@@ -117,6 +117,10 @@ pub enum Job {
     IconRefresh,
     /// Refreshing the public breach catalogue from Have I Been Pwned.
     BreachCatalog,
+    /// Code that embeds the server (`crate::ext`): reads organizations,
+    /// their members and invitations, and sets and removes organization
+    /// locks (`org_locks`). Nothing else.
+    Extensions,
 }
 
 impl Job {
@@ -133,13 +137,14 @@ impl Job {
             Self::Icons => "icons",
             Self::IconRefresh => "worker:icons",
             Self::BreachCatalog => "worker:breach_catalog",
+            Self::Extensions => "ext",
         }
     }
 
     fn on_worker_pool(self) -> bool {
         !matches!(
             self,
-            Self::Secrets | Self::Outbox | Self::Metrics | Self::Icons
+            Self::Secrets | Self::Outbox | Self::Metrics | Self::Icons | Self::Extensions
         )
     }
 }

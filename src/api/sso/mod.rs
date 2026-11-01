@@ -426,6 +426,16 @@ pub async fn put(
     let previous = {
         let mut conn = state.db.as_account(&session.account_id).await?;
         access::require_admin(&mut conn, &org_id, &session.account_id).await?;
+        if settings.enabled {
+            crate::ext::check_feature(
+                &state,
+                &mut conn,
+                &org_id,
+                crate::ext::OrgFeature::Sso,
+                true,
+            )
+            .await?;
+        }
         let kind: String =
             sqlx::query_scalar!("SELECT kind FROM organizations WHERE id = $1", &org_id,)
                 .fetch_one(&mut *conn)

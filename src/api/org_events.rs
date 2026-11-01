@@ -136,6 +136,14 @@ pub async fn create_token(
     let name = clean_name(&req.name)?;
     let mut tx = state.db.as_account(&session.account_id).await?;
     access::require_admin(&mut tx, &org_id, &session.account_id).await?;
+    crate::ext::check_feature(
+        &state,
+        &mut tx,
+        &org_id,
+        crate::ext::OrgFeature::EventsApi,
+        true,
+    )
+    .await?;
     let count: i64 = sqlx::query_scalar!(
         "SELECT COUNT(*) AS \"count!\" FROM org_event_tokens WHERE org_id = $1 AND revoked_at = 0",
         &org_id,
@@ -473,6 +481,14 @@ pub async fn create_webhook(
     {
         let mut conn = state.db.as_account(&session.account_id).await?;
         access::require_admin(&mut conn, &org_id, &session.account_id).await?;
+        crate::ext::check_feature(
+            &state,
+            &mut conn,
+            &org_id,
+            crate::ext::OrgFeature::EventsApi,
+            true,
+        )
+        .await?;
     }
     let allow_private = state.webhook_allow_private;
     let check = url.clone();

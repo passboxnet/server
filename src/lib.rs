@@ -9,6 +9,7 @@ pub mod brand;
 pub mod config;
 pub mod db;
 pub mod error;
+pub mod ext;
 pub mod instance;
 pub mod mail;
 pub mod metrics;
@@ -24,22 +25,34 @@ use tokio::net::TcpListener;
 use tracing::info;
 
 use crate::config::{Command, Config};
+use crate::ext::Extensions;
 use crate::state::AppState;
 
 /// Runs the command of the configuration (`serve` by default).
 pub async fn run(config: Config) -> anyhow::Result<()> {
+    run_with(config, Extensions::default()).await
+}
+
+/// Like [`run`], with the extensions of an embedding program
+/// ([`ext::Extensions`]).
+pub async fn run_with(config: Config, ext: Extensions) -> anyhow::Result<()> {
     match config.command.unwrap_or(Command::Serve) {
         Command::Migrate => {
             db::migrate(config.migration_url()).await?;
             info!(version = db::expected_version(), "database migrated");
             Ok(())
         }
-        Command::Serve => serve(config).await,
+        Command::Serve => serve_with(config, ext).await,
     }
 }
 
 /// Starts the HTTP server and runs until it receives a shutdown signal.
 pub async fn serve(config: Config) -> anyhow::Result<()> {
+    serve_with(config, Extensions::default()).await
+}
+
+/// Like [`serve`], with extensions.
+pub async fn serve_with(config: Config, ext: Extensions) -> anyhow::Result<()> {
     if config.auto_migrate {
         db::migrate(config.migration_url()).await?;
     }
@@ -54,6 +67,8 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
     state.admin_emails = std::sync::Arc::new(admin_emails(&config.admin_emails));
     state.webhook_allow_private = config.webhook_allow_private;
     state.agent_limit_per_member = config.agent_limit_per_member;
+    state.family_member_limit = config.family_member_limit;
+    ext.install(&mut state);
     state.blobs = std::sync::Arc::new(blobs::DiskBlobStore::new(&config.blob_dir));
     state.attachment_limits = api::attachments::AttachmentLimits::from_mib(
         config.attachment_max_mb,
@@ -129,6 +144,9 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
     api::breach::spawn_worker(state.clone());
     api::icons::spawn_refresher(state.clone());
     api::breach_catalog::spawn_worker(state.clone());
+    if let Some(on_start) = &ext.on_start {
+        on_start(state.clone());
+    }
     if let Some(bind) = config.metrics_bind {
         let metrics_app = metrics::router(state.metrics.clone(), state.db.clone());
         let listener = TcpListener::bind(bind)
@@ -141,7 +159,7 @@ pub async fn serve(config: Config) -> anyhow::Result<()> {
             }
         });
     }
-    let app = routes::router(&config, state);
+    let app = routes::router_with(&config, state, &ext);
     let listener = TcpListener::bind(config.bind)
         .await
         .with_context(|| format!("failed to bind {}", config.bind))?;

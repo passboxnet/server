@@ -3489,6 +3489,16 @@ components:
             type: boolean,
             description: "Whether `/api/v1/breaches/catalog` serves the breach catalogue (`PASSBOX_BREACH_CATALOG`).",
           }
+        familyMemberLimit:
+          {
+            type: integer,
+            description: "`PASSBOX_FAMILY_MEMBER_LIMIT`, when set: most owners, admins and members of a family organization including pending invitations (guests do not count). Absent when unlimited. Inviting or accepting beyond it answers 403 `family_limit_reached` with `details.limit`.",
+          }
+        extensions:
+          {
+            type: object,
+            description: "Information from the extensions of a program that embeds the server. Absent on a plain server.",
+          }
     SiteBreach:
       type: object
       description: One breached website of the catalogue (Have I Been Pwned's breach model, compacted).
@@ -3744,6 +3754,18 @@ components:
         metaEpoch: { type: integer }
         revision: { type: integer }
         defaultVaultId: { type: [string, "null"] }
+        lock:
+          description: >-
+            Set while the organization is read-only: members read, sync and export; admins can
+            remove and suspend members and delete the organization. Creating and changing vault
+            contents, members and settings answers 403 `org_read_only` with the lock as `details`.
+          oneOf:
+            - type: "null"
+            - type: object
+              required: [reason, source]
+              properties:
+                reason: { type: string }
+                source: { type: string }
     RosterMember:
       type: object
       required: [accountId, role, status]

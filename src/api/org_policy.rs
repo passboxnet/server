@@ -184,6 +184,14 @@ pub async fn put(
     validate::id("organization id", &org_id)?;
     let mut tx = state.db.as_account(&session.account_id).await?;
     access::require_admin(&mut tx, &org_id, &session.account_id).await?;
+    crate::ext::check_feature(
+        &state,
+        &mut tx,
+        &org_id,
+        crate::ext::OrgFeature::Policies,
+        true,
+    )
+    .await?;
     let me = signed::own_bundle(&mut tx, &session.account_id).await?;
     let signed = signed::parse::<OrgPolicy>("policy", &req.policy, &req.signature, &me)?;
     let (_, rules, _unknown) = parse_policy(&org_id, &req.policy, &req.signature)
