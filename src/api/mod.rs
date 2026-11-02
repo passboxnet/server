@@ -9,6 +9,7 @@ pub mod attachments;
 pub mod auth;
 pub mod breach;
 pub mod breach_catalog;
+pub mod cli_logins;
 pub mod device_links;
 pub mod emergency;
 pub mod groups;
@@ -251,6 +252,13 @@ pub fn router() -> Router<AppState> {
             get(device_links::get).delete(device_links::delete),
         )
         .route("/device-links/{id}/approve", post(device_links::approve))
+        // Signing in a device without a session (pbx login) from a browser.
+        .route("/cli-logins", post(cli_logins::create))
+        .route("/cli-logins/poll", post(cli_logins::poll))
+        .route("/cli-logins/cancel", post(cli_logins::cancel))
+        .route("/cli-logins/{id}", get(cli_logins::get))
+        .route("/cli-logins/{id}/approve", post(cli_logins::approve))
+        .route("/cli-logins/{id}/deny", post(cli_logins::deny))
         // Organization administration: policies, audit log,
         // reports, settings, offboarding, events API and webhooks.
         .route(

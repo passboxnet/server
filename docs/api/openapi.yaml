@@ -2594,6 +2594,142 @@ paths:
                 properties:
                   status: { type: string }
                   sealedPayload: { type: string }
+  # --- Signing in a device without a session (pbx login) from a browser (passboxnet/core: docs/architecture/recovery.md) ---
+  /api/v1/cli-logins:
+    post:
+      summary: Register a sign-in request from a device without a session (pbx login)
+      description: |
+        The device picks the ID, creates an ephemeral X-Wing key pair and sends its public key,
+        its name and a MAC under a secret that only travels in the fragment of the link the user
+        opens in the web vault (`#/cli-login/{id}#{secret}`). The server never sees the secret and
+        does not check the MAC; the approving browser does. Valid for 10 minutes. Limited to
+        10 new requests per IP and hour, 3 open requests per IP and 300 new requests per minute
+        on the server.
+      operationId: cliLoginCreate
+      tags: [devices]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, ephemeralKey, mac, deviceName]
+              properties:
+                id: { type: string, description: "26-character ID chosen by the device." }
+                ephemeralKey: { type: string, description: "Base64url X-Wing public key." }
+                mac: { type: string, description: "Base64url HMAC-SHA256 over the ID, the key and the device name." }
+                deviceName: { type: string, maxLength: 80, description: "Without control characters; the MAC covers it." }
+      responses:
+        "201":
+          description: The poll token (shown once; the server stores its hash).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  pollToken: { type: string }
+                  expiresAt: { type: integer }
+        "400": { description: Malformed ID, key, MAC or device name. }
+        "409": { description: A request with this ID exists. }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /api/v1/cli-logins/{id}:
+    get:
+      summary: A pending sign-in request, for the signed-in account that opened its link
+      description: Returns 403 `cli_login_expired` when the request is unknown, expired, cancelled or already answered.
+      operationId: cliLoginGet
+      tags: [devices]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: The request. Check the MAC before showing or approving it.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string }
+                  deviceName: { type: string }
+                  ip: { type: string, description: "The IP the request came from." }
+                  createdAt: { type: integer }
+                  expiresAt: { type: integer }
+                  ephemeralKey: { type: string }
+                  mac: { type: string }
+        "403": { description: "`cli_login_expired`." }
+  /api/v1/cli-logins/{id}/approve:
+    post:
+      summary: Approve a sign-in request with the sealed email, account ID and Secret Key
+      operationId: cliLoginApprove
+      tags: [devices]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sealedPayload]
+              properties: { sealedPayload: { type: string } }
+      responses:
+        "204": { description: Approved; logged as `cli_login_approved`. }
+        "403": { description: "`cli_login_expired`." }
+  /api/v1/cli-logins/{id}/deny:
+    post:
+      summary: Deny a sign-in request
+      operationId: cliLoginDeny
+      tags: [devices]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        "204": { description: Denied; logged as `cli_login_denied`. }
+        "403": { description: "`cli_login_expired`." }
+  /api/v1/cli-logins/poll:
+    post:
+      summary: Poll a sign-in request from the requesting device
+      operationId: cliLoginPoll
+      tags: [devices]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [pollToken]
+              properties: { pollToken: { type: string } }
+      responses:
+        "200":
+          description: |
+            `pending` until answered. `approved` (with the sealed payload and the approving
+            device's name) and `denied` are returned once, then the request is deleted. Unknown,
+            expired and cancelled requests answer `expired`. Limited to 120 polls per IP and minute.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, enum: [pending, approved, denied, expired] }
+                  sealedPayload: { type: string }
+                  approvedBy: { type: string }
+        "429": { $ref: "#/components/responses/RateLimited" }
+  /api/v1/cli-logins/cancel:
+    post:
+      summary: Withdraw a sign-in request (for example on Ctrl+C)
+      operationId: cliLoginCancel
+      tags: [devices]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [pollToken]
+              properties: { pollToken: { type: string } }
+      responses:
+        "204": { description: Withdrawn (also for unknown tokens). }
   # --- Single sign-on, trusted devices and SCIM (passboxnet/core: docs/architecture/sso.md) ---
   /api/v1/orgs/{orgId}/sso:
     parameters:

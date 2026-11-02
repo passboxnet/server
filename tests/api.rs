@@ -24,6 +24,8 @@ use tower::ServiceExt;
 mod admin;
 #[path = "api/breach.rs"]
 mod breach;
+#[path = "api/cli_logins.rs"]
+mod cli_logins;
 #[path = "api/comfort.rs"]
 mod comfort;
 #[path = "api/email_change.rs"]
@@ -323,6 +325,8 @@ async fn run_all(database: &passbox_server::testing::TestDatabase) {
     recovery::organization_recovery(&server).await;
     recovery::emergency_access(&server).await;
     recovery::device_links(&server).await;
+    // Its own rate limits: it signs in from the test IP and fills the request limits.
+    cli_logins::cli_logins(&server.sibling().await).await;
     sso::single_sign_on(&server).await;
     org_admin::organization_administration(&server).await;
     // Its own rate limits: it turns two-factor sign-in on and off.
@@ -332,6 +336,7 @@ async fn run_all(database: &passbox_server::testing::TestDatabase) {
     extensions::extensions(&server, database).await;
     // Its own rate limits: the last test counts failures for the test IP.
     rls::policies(&server.sibling().await, database).await;
+    rls::cli_logins(&server.sibling().await, database).await;
     // Last: it locks out an email and counts failures for the test IP.
     failed_logins_are_rate_limited(&server).await;
 }

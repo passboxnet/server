@@ -1,0 +1,27 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT passbox.decide_cli_login($1, $2, $3, $4, $5) AS \"decided!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "decided!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "e11aab2d0c6dbb3a585c66801beaad297fd88c3a4c0160d8d522202720ad0abe"
+}

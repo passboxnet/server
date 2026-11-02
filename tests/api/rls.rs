@@ -521,3 +521,95 @@ async fn every_table_has_forced_rls(server: &TestServer) {
         );
     }
 }
+
+/// Sign-in requests of devices without a session (`pbx login`): only the
+/// sign-in context sees the table; signed-in accounts read and answer one
+/// pending request by ID through the functions, never anyone's answered
+/// requests.
+pub async fn cli_logins(server: &TestServer, database: &TestDatabase) {
+    let a = tenant(server).await;
+    let b = tenant(server).await;
+    let pending = id::new_id().unwrap();
+    let answered = id::new_id().unwrap();
+    let far = passbox_server::db::now_ms() + 600_000;
+    for (request, status, account, hash) in [
+        (&pending, "pending", None, "a".repeat(64)),
+        (&answered, "approved", Some(&b.account_id), "b".repeat(64)),
+    ] {
+        sqlx::query(
+            "INSERT INTO cli_logins (id, status, ephemeral_key, mac, poll_token_hash, device_name, \
+             created_ip, account_id, sealed_payload, created_at, expires_at) \
+             VALUES ($1, $2, 'k', $3, $4, 'pbx', '10.0.0.1', $5, 's', 0, $6)",
+        )
+        .bind(request)
+        .bind(status)
+        .bind("m".repeat(43))
+        .bind(hash)
+        .bind(account)
+        .bind(far)
+        .execute(server.db())
+        .await
+        .unwrap();
+    }
+    let mut app = database.connect_as("passbox_app").await;
+    for request in [&pending, &answered] {
+        for account in [&a.account_id, &b.account_id] {
+            begin(&mut app, account, "", "", "").await;
+            assert_eq!(
+                count(
+                    &mut app,
+                    "SELECT count(*) FROM cli_logins WHERE id = $1",
+                    request
+                )
+                .await,
+                0,
+                "accounts never see the table"
+            );
+            assert_eq!(
+                affected(
+                    &mut app,
+                    "UPDATE cli_logins SET sealed_payload = 'x' WHERE id = $1",
+                    request
+                )
+                .await,
+                0
+            );
+            assert_eq!(
+                affected(&mut app, "DELETE FROM cli_logins WHERE id = $1", request).await,
+                0
+            );
+            rollback(&mut app).await;
+        }
+    }
+    let lookup = "SELECT count(*) FROM passbox.pending_cli_login($1, 0)";
+    begin(&mut app, &a.account_id, "", "", "").await;
+    assert_eq!(count(&mut app, lookup, &pending).await, 1);
+    assert_eq!(count(&mut app, lookup, &answered).await, 0);
+    let decided: bool =
+        sqlx::query_scalar("SELECT passbox.decide_cli_login($1, 'denied', '', 'web', 0)")
+            .bind(&answered)
+            .fetch_one(&mut app)
+            .await
+            .unwrap();
+    assert!(!decided, "an answered request cannot be answered again");
+    rollback(&mut app).await;
+    // Without an account the functions answer nothing.
+    begin(&mut app, "", "auth", "", "").await;
+    assert_eq!(count(&mut app, lookup, &pending).await, 0);
+    assert_eq!(
+        count(
+            &mut app,
+            "SELECT count(*) FROM cli_logins WHERE id = $1",
+            &answered
+        )
+        .await,
+        1,
+        "the sign-in context polls"
+    );
+    rollback(&mut app).await;
+    sqlx::query("DELETE FROM cli_logins WHERE id = ANY($1)")
+        .bind([&pending, &answered])
+        .execute(server.db())
+        .await
+        .unwrap();
+}
